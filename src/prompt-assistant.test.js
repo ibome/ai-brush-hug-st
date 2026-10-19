@@ -136,6 +136,58 @@ function textFixture() {
     } }) };
   return { context, api };
 }
+function nativeHostFixture(t) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, '__TAURI_RUNNING__');
+  Object.defineProperty(globalThis, '__TAURI_RUNNING__', { value: true, configurable: true });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, '__TAURI_RUNNING__', previous);
+    else delete globalThis.__TAURI_RUNNING__;
+  });
+}
+test('Tauri model queries preserve native channel format and secret selection without returning them', async (t) => {
+  nativeHostFixture(t);
+  for (const source of ['custom', 'claude', 'opencode']) {
+    const { context, api } = textFixture();
+    Object.assign(context.chatCompletionSettings, {
+      chat_completion_source: source, custom_api_format: 'claude_messages',
+      opencode_endpoint: 'https://opencode.test', opencode_api_format: 'openai_compat',
+      secret_id: 'fixture-secret-reference',
+    });
+    const original = structuredClone(context.chatCompletionSettings);
+    let calls = 0;
+    const access = createTavernTextAccess({ getContext: () => context, loadAPI: async () => api, document: null,
+      fetcher: async (url, request) => {
+        calls++;
+        assert.equal(url, '/api/backends/chat-completions/status');
+        const body = JSON.parse(request.body);
+        assert.equal(body.chat_completion_source, source);
+        for (const field of ['custom_api_format', 'opencode_endpoint', 'opencode_api_format', 'secret_id']) {
+          assert.equal(body[field], original[field]);
+        }
+        return Response.json({ data: [{ id: 'native-model' }] });
+      },
+    });
+    const response = await access.models({ refresh: true });
+    assert.equal(calls, 1);
+    assert.ok(response.models.includes('native-model'));
+    assert.ok(!JSON.stringify(response).includes('fixture-secret-reference'));
+    assert.deepEqual(context.chatCompletionSettings, original);
+  }
+});
+
+test('a native API format switch discards the previous model list', async (t) => {
+  nativeHostFixture(t);
+  const { context, api } = textFixture();
+  context.chatCompletionSettings.custom_api_format = 'openai_compat';
+  const access = createTavernTextAccess({ getContext: () => context, loadAPI: async () => api, document: null,
+    fetcher: async () => {
+      context.chatCompletionSettings.custom_api_format = 'claude_messages';
+      return Response.json({ data: [{ id: 'stale-model' }] });
+    },
+  });
+  await assert.rejects(access.models({ refresh: true }), /接口已切换/);
+});
+
 test('following Tavern reads cached and fresh models through its backend without exposing credentials or switching its model', async () => {
   const { context, api } = textFixture();
   context.chatCompletionSettings.proxy_password = 'never-return-this';

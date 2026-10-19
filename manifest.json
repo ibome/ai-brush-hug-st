@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.24.2&build=20261016-assistant-compat-r2",
+  "js": "dist/index.js?ver=0.25.0&build=20261019-tauritavern-r1",
   "author": "小波",
-  "version": "0.24.2",
+  "version": "0.25.0",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

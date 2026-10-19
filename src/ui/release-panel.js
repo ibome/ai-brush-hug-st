@@ -34,7 +34,8 @@ export class ReleasePanel {
       ${newer ? `<div class="release-announcement"><img src="${updateMascots[theme] || updateMascots.whale}" alt="" width="128" height="128" decoding="async" /><div><strong>插件更新啦！</strong><p>v${esc(RELEASE.version)} ${icon('arrow-right')} v${esc(latest.version)}</p>
         ${isInstalled() ? button('download', this.busy ? '正在更新…' : '立即更新', 'install', disabled, true) : ''}</div></div>` : ''}
       <dl class="backup-version"><div><dt>前端版本</dt><dd>v${esc(RELEASE.version)}${this.updated ? ` · 已下载 v${esc(this.updated.version)}` : ''}</dd></div><div><dt>服务器组件</dt><dd>${esc(this.backend
-        ? this.backend.version === 'native' ? '内置账号存储 · 增强组件未安装'
+        ? this.backend.enhanced === 'unsupported' ? '内置本机存储 · 不支持服务端增强组件'
+          : this.backend.version === 'native' ? '内置账号存储 · 增强组件未安装'
           : `${this.backend.version} · ${this.backend.protocol === RELEASE.storageProtocol ? '协议兼容' : '需同步更新'}` : '尚未检查')}</dd></div></dl>
       <div class="backup-actions">${this.updated ? button('rotate-cw', '刷新酒馆以生效', 'reload', disabled, true) : ''}
         ${button('refresh-cw', this.state.status === 'checking' ? '正在检查…' : '检查版本', 'check', disabled || this.state.status === 'checking')}

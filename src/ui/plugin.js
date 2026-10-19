@@ -1,4 +1,5 @@
 import { randomUUID } from '../crypto-compat.js';
+import { postWindowMessage } from '../host-compat.js';
 import { escapeHtml, downloadJson } from '../config.js';
 import { assistantHostRequest, credentialRequest, currentAccount, currentChat, extensionChatRequest, isInstalled, persistUIState, readUIState, storageKey, storageRequest } from '../runtime.js';
 import { readBrowserCache, writeBrowserCache } from '../browser-cache.js';
@@ -520,7 +521,7 @@ const backupPanel = new BackupPanel({
   applyLayout: async (value) => {
     if (value) {
       config = value;
-      if (isInstalled()) window.parent.postMessage({ type: 'linghuashi:restore-layout', layout: value }, location.origin);
+      if (isInstalled()) postWindowMessage(window.parent, { type: 'linghuashi:restore-layout', layout: value });
     }
   },
   importParameters: (snapshot) => { restoreSnapshot(state, snapshot); persist(); showPage('generate'); },
@@ -1949,7 +1950,7 @@ function applyTokens() {
   document.documentElement.style.setProperty('--font-size', `${config.fontSize}px`);
   document.documentElement.style.setProperty('--chat-image-width', `${config.imageWidth}%`);
   document.documentElement.style.colorScheme = config.theme;
-  if (window.parent !== window) window.parent.postMessage({ type: 'draw-lab:appearance', characterTheme: appearance.id }, location.origin);
+  if (window.parent !== window) postWindowMessage(window.parent, { type: 'draw-lab:appearance', characterTheme: appearance.id });
 }
 
 function render(force = false) {
@@ -2056,7 +2057,7 @@ export function showSettings() {
   persist();
   render();
   if (changedSurface && window.parent !== window) {
-    window.parent.postMessage({ type: 'draw-lab:surface', surface: 'console' }, location.origin);
+    postWindowMessage(window.parent, { type: 'draw-lab:surface', surface: 'console' });
   }
 }
 
@@ -2397,7 +2398,7 @@ function restoreViewerParameters() {
     persist(); closeDrawingViewer();
     config = { ...config, surface: 'console' };
     render();
-    if (window.parent !== window) window.parent.postMessage({ type: 'draw-lab:surface', surface: 'console' }, location.origin);
+    if (window.parent !== window) postWindowMessage(window.parent, { type: 'draw-lab:surface', surface: 'console' });
     toast(message);
   } catch (error) { Object.assign(state, previous); toast(error.message); }
 }
@@ -2789,7 +2790,7 @@ async function runGeneration(job) {
 }
 
 function chatPost(type, value) {
-  if (isInstalled()) window.parent.postMessage({ type, ...value }, location.origin);
+  if (isInstalled()) postWindowMessage(window.parent, { type, ...value });
 }
 
 function reportChatTask(job) {
@@ -3636,7 +3637,7 @@ export function mountPlugin(root, next) {
       case 'console':
         config = { ...config, surface: 'console' };
         state.page = 'generate'; persist(); render();
-        if (window.parent !== window) window.parent.postMessage({ type: 'draw-lab:surface', surface: 'console' }, location.origin);
+        if (window.parent !== window) postWindowMessage(window.parent, { type: 'draw-lab:surface', surface: 'console' });
         break;
       case 'new-character':
         if (!discardProfileChanges()) break;

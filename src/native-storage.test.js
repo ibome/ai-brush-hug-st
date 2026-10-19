@@ -197,3 +197,32 @@ test('optional plugin detection only falls back on absence; failed image writes 
   await a('add', addition('restricted-native'));
   assert.equal((await a('list')).rows.length, 2);
 });
+
+test('TauriTavern saves and reloads images, references and tasks without probing Node plugin routes', async () => {
+  const f = memory(), native = f.endpoint('default-user'), browserTasks = ledger(), calls = [];
+  const request = async (url, options = {}) => {
+    const path = new URL(url, 'https://tauri.localhost').pathname;
+    calls.push(path);
+    assert.ok(!path.startsWith('/api/plugins/'), 'native clients must not probe unsupported Node routes');
+    return options.method === 'POST' ? json(await native.api(path, JSON.parse(options.body))) : native.read(path);
+  };
+  const adapter = () => createStorageRequest(() => ({ 'Content-Type': 'application/json' }), {
+    account: 'default-user', enhancedSupported: false, request, browserTasks, locks: native.locks, now: native.now,
+  });
+  const a = adapter();
+  assert.equal((await a('components/status', { refresh: true })).enhanced, 'unsupported');
+  assert.equal(calls.length, 0);
+  await a('add', addition('tauri-image', { favorite: true }));
+  const id = '33333333-3333-4333-8333-333333333333';
+  await a('task/create', { id, plan });
+  const bytes = Uint8Array.from(Buffer.from(png, 'base64'));
+  const hash = Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex');
+  await a('reference/put', { id: hash, total: bytes.length, offset: 0, data: png, mime: 'image/png', width: 1, height: 1 });
+  const fresh = adapter();
+  assert.equal((await fresh('list')).rows[0].favorite, true);
+  assert.equal((await fresh('task/list')).rows[0].id, id);
+  assert.equal((await fresh('reference/get', { id: hash, offset: 0 })).data, png);
+  assert.equal((await fresh('backup/status')).enhanced, 'unsupported');
+  assert.equal((await fresh('diagnostics/status')).enhanced, 'unsupported');
+  assert.equal((await fresh('components/status')).taskStorage, 'browser');
+});

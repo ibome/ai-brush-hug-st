@@ -1,13 +1,18 @@
 import { assistantModelNames } from './prompt-assistant.js';
 import { withRequestTimeout } from './request-timeout.js';
+import { hostEnvironment } from './host-compat.js';
 
 const STATUS_SOURCES = new Set(['openai', 'openrouter', 'mistralai', 'custom', 'cohere', 'chutes',
   'electronhub', 'nanogpt', 'deepseek', 'xai', 'aimlapi', 'pollinations', 'groq', 'moonshot',
   'fireworks', 'makersuite', 'siliconflow', 'workers_ai']);
 const STATUS_FIELDS = ['reverse_proxy', 'proxy_password', 'custom_url', 'custom_include_headers',
-  'siliconflow_endpoint', 'minimax_endpoint', 'workers_ai_account_id'];
+  'siliconflow_endpoint', 'minimax_endpoint', 'workers_ai_account_id', 'moonshot_endpoint'];
+const TAURI_STATUS_SOURCES = new Set(['claude', 'opencode']);
+const TAURI_STATUS_FIELDS = ['custom_api_format', 'opencode_endpoint', 'opencode_api_format', 'secret_id'];
 const signature = (context) => JSON.stringify([context.mainApi, context.chatCompletionSettings?.chat_completion_source,
-  context.chatCompletionSettings?.custom_url, context.chatCompletionSettings?.reverse_proxy]);
+  context.chatCompletionSettings?.custom_url, context.chatCompletionSettings?.reverse_proxy,
+  context.chatCompletionSettings?.custom_api_format, context.chatCompletionSettings?.opencode_endpoint,
+  context.chatCompletionSettings?.opencode_api_format]);
 const loadTavernAPI = () => {
   const url = new URL('/scripts/openai.js', globalThis.location.href);
   return import(/* @vite-ignore */ url.href);
@@ -17,6 +22,7 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
   loadAPI = loadTavernAPI, document = globalThis.document }) {
   async function models({ refresh = false, signal } = {}) {
     const context = getContext();
+    const tauri = hostEnvironment().kind === 'tauritavern';
     const before = signature(context);
     if (context.mainApi !== 'openai') {
       return { models: [], current: '', source: context.mainApi || '', signature: signature(context),
@@ -31,9 +37,11 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
     const cached = assistantModelNames([...(api.model_list || []),
       ...Array.from(options, (option) => option.value), current].filter(Boolean));
     let list = cached, message = '';
-    if (refresh && STATUS_SOURCES.has(source)) {
+    if (refresh && (STATUS_SOURCES.has(source) || tauri && TAURI_STATUS_SOURCES.has(source))) {
       const body = { chat_completion_source: source };
-      for (const key of STATUS_FIELDS) if (typeof settings[key] === 'string') body[key] = settings[key];
+      for (const key of [...STATUS_FIELDS, ...(tauri ? TAURI_STATUS_FIELDS : [])]) {
+        if (typeof settings[key] === 'string') body[key] = settings[key];
+      }
       const data = await withRequestTimeout(signal, 15000, '酒馆模型列表读取超时，请手动重试', async (requestSignal) => {
         const response = await fetcher('/api/backends/chat-completions/status', {
           method: 'POST', headers: context.getRequestHeaders(), credentials: 'same-origin', cache: 'no-store',

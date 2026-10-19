@@ -4,6 +4,7 @@ import { openAIURLs } from './ui/openai.js';
 import { normalizeComfyEndpoint } from './ui/comfyui.js';
 import { sdwebuiBase, sdwebuiHeaders } from './sdwebui.js';
 import { assistantURLs } from './prompt-assistant.js';
+import { hostEnvironment } from './host-compat.js';
 
 const PROVIDERS = { novelai: 'NovelAI', openai: 'OpenAI 兼容', comfyui: 'ComfyUI', sdwebui: 'SDWebUI', assistant: '提示词助手 · 独立 API' };
 const ROUTES = ['/user/subscription', '/v1/models', '/models', '/system_stats', '/sdapi/v1/samplers'];
@@ -99,13 +100,17 @@ export function networkDiagnosticPlan(context) {
 function environmentInfo(environment, redact) {
   const navigator = environment.navigator || {}, page = environment.location || {};
   const connection = navigator.connection;
+  const host = hostEnvironment(environment);
   return {
     page: redact(page.origin || page.href), protocol: page.protocol || '', secureContext: Boolean(environment.isSecureContext),
     online: typeof navigator.onLine === 'boolean' ? navigator.onLine : null,
     userAgent: redact(navigator.userAgent || ''), platform: redact(navigator.platform || ''),
     language: redact(navigator.language || ''),
     ...(connection ? { connection: { effectiveType: redact(connection.effectiveType || ''), saveData: Boolean(connection.saveData) } } : {}),
-    proxy: '浏览器不提供代理状态，无法自动判断是否开启代理或命中分流规则',
+    host: host.kind, requestTransport: host.network,
+    proxy: host.kind === 'tauritavern'
+      ? '外部生图与独立 API 由 WebView 直连，不自动使用 TauriTavern 的 Request Proxy；无法自动判断系统代理或分流状态'
+      : '浏览器不提供代理状态，无法自动判断是否开启代理或命中分流规则',
   };
 }
 
@@ -194,6 +199,9 @@ export function diagnosticConclusions(report) {
   }
   if (report.provider === 'assistant') {
     findings.push('本次检测的是提示词助手独立 API。模型列表可读不代表所选文字模型支持聊天补全；跟随酒馆成功也不代表当前浏览器能直接访问同一接口。');
+  }
+  if (report.environment.host === 'tauritavern') {
+    findings.push('当前为 TauriTavern：生图与独立 API 使用 WebView 网络；跟随酒馆使用宿主文字接口。Request Proxy 配置不会自动应用到本次直连检测，请分别核对设备代理、跨域与接口地址。');
   }
   if (/Android|iPhone|iPad|Mobile/i.test(report.environment.userAgent)
     && checks.some((row) => row.id !== 'tavern-page' && row.hostKind === 'loopback')) {

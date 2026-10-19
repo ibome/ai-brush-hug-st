@@ -4,6 +4,7 @@ import { apiError } from './extension-api.js';
 import { createReleaseMonitor } from './release-monitor.js';
 import { getBrowserStorage, readBrowserCache, writeBrowserCache } from './browser-cache.js';
 import { restoreStorageFailure } from './debug-errors.js';
+import { isWindowMessage, postWindowMessage } from './host-compat.js';
 
 const environment = () => window.__LINGHUASHI_ENV__ || {};
 const secretRequests = new Map();
@@ -22,7 +23,7 @@ function receiveReleaseState(value) {
   for (const listener of releaseListeners) listener(value);
 }
 window.addEventListener('message', (event) => {
-  if (event.origin !== location.origin || event.source !== window.parent) return;
+  if (!isWindowMessage(event, window.parent)) return;
   if (event.data?.type === 'linghuashi:release-state') receiveReleaseState(event.data.value);
   if (event.data?.type === 'linghuashi:release-result') {
     const pending = releaseRequests.get(event.data.requestId);
@@ -59,11 +60,11 @@ export function checkReleaseVersion() {
     const requestId = randomUUID();
     const timer = setTimeout(() => { releaseRequests.delete(requestId); reject(new Error('检查更新超时，请稍后重试')); }, 20000);
     releaseRequests.set(requestId, { resolve, reject, timer });
-    window.parent.postMessage({ type: 'linghuashi:release-check', requestId }, location.origin);
+    postWindowMessage(window.parent, { type: 'linghuashi:release-check', requestId });
   });
 }
 export function openExtensionManager() {
-  if (isInstalled()) window.parent.postMessage({ type: 'linghuashi:extension-manager' }, location.origin);
+  if (isInstalled()) postWindowMessage(window.parent, { type: 'linghuashi:extension-manager' });
 }
 export function updateExtensionVersion(version) {
   if (!isInstalled()) return Promise.reject(new Error('请在酒馆内执行更新，设计预览可从发布页下载'));
@@ -73,14 +74,14 @@ export function updateExtensionVersion(version) {
       updateRequests.delete(requestId); reject(new Error('更新响应超时，请先到扩展管理核对结果'));
     }, 285000);
     updateRequests.set(requestId, { resolve, reject, timer });
-    window.parent.postMessage({ type: 'linghuashi:update', requestId, version }, location.origin);
+    postWindowMessage(window.parent, { type: 'linghuashi:update', requestId, version });
   });
 }
 export function reloadUpdatedExtension() {
-  if (isInstalled()) window.parent.postMessage({ type: 'linghuashi:update-reload' }, location.origin);
+  if (isInstalled()) postWindowMessage(window.parent, { type: 'linghuashi:update-reload' });
 }
 window.addEventListener('message', (event) => {
-  if (event.origin !== location.origin || event.source !== window.parent || event.data?.type !== 'linghuashi:extension-chat-result') return;
+  if (!isWindowMessage(event, window.parent) || event.data?.type !== 'linghuashi:extension-chat-result') return;
   extensionChatRequests.get(event.data.requestId)?.(event.data);
 });
 
@@ -96,12 +97,12 @@ export function extensionChatRequest(value) {
       clearTimeout(timer); extensionChatRequests.delete(requestId);
       if (data.error) reject(apiError(data.error.code, data.error.message)); else resolve(data.value);
     });
-    window.parent.postMessage({ type: 'linghuashi:extension-chat-request', requestId, ...value }, location.origin);
+    postWindowMessage(window.parent, { type: 'linghuashi:extension-chat-request', requestId, ...value });
   });
 }
 
 window.addEventListener('message', (event) => {
-  if (event.origin !== location.origin || event.source !== window.parent || event.data?.type !== 'linghuashi:assistant-result') return;
+  if (!isWindowMessage(event, window.parent) || event.data?.type !== 'linghuashi:assistant-result') return;
   const pending = assistantRequests.get(event.data.requestId);
   if (!pending) return;
   pending.finish(event.data.error ? new Error(event.data.error) : null, event.data.value);
@@ -117,7 +118,7 @@ export function assistantHostRequest(action, value = {}, { signal, timeout = 120
   return new Promise((resolve, reject) => {
     const requestId = randomUUID();
     const cancel = () => {
-      window.parent.postMessage({ type: 'linghuashi:assistant-request', requestId, action: 'cancel' }, location.origin);
+      postWindowMessage(window.parent, { type: 'linghuashi:assistant-request', requestId, action: 'cancel' });
       finish(new Error('提示词助手操作已取消'));
     };
     const finish = (error, result) => {
@@ -128,17 +129,17 @@ export function assistantHostRequest(action, value = {}, { signal, timeout = 120
       if (error) reject(error); else resolve(result);
     };
     const timer = setTimeout(() => {
-      window.parent.postMessage({ type: 'linghuashi:assistant-request', requestId, action: 'cancel' }, location.origin);
+      postWindowMessage(window.parent, { type: 'linghuashi:assistant-request', requestId, action: 'cancel' });
       finish(new Error('文字处理超时，请核对接口后手动重试'));
     }, Math.min(300, timeout) * 1000);
     assistantRequests.set(requestId, { finish });
     signal?.addEventListener('abort', cancel, { once: true });
-    window.parent.postMessage({ type: 'linghuashi:assistant-request', requestId, action, ...value }, location.origin);
+    postWindowMessage(window.parent, { type: 'linghuashi:assistant-request', requestId, action, ...value });
   });
 }
 
 window.addEventListener('message', (event) => {
-  if (event.origin !== location.origin || event.source !== window.parent || event.data?.type !== 'linghuashi:secret-result') return;
+  if (!isWindowMessage(event, window.parent) || event.data?.type !== 'linghuashi:secret-result') return;
   const pending = secretRequests.get(event.data.requestId);
   if (!pending) return;
   secretRequests.delete(event.data.requestId);
@@ -148,7 +149,7 @@ window.addEventListener('message', (event) => {
 });
 
 window.addEventListener('message', (event) => {
-  if (event.origin !== location.origin || event.source !== window.parent || event.data?.type !== 'linghuashi:storage-result') return;
+  if (!isWindowMessage(event, window.parent) || event.data?.type !== 'linghuashi:storage-result') return;
   const pending = storageRequests.get(event.data.requestId);
   if (!pending) return;
   storageRequests.delete(event.data.requestId);
@@ -166,7 +167,7 @@ export function storageRequest(action, body = {}) {
       reject(restoreStorageFailure('酒馆服务器存图请求超时，请重试', { name: 'TimeoutError', scope: 'tavern-storage' }));
     }, 125000);
     storageRequests.set(requestId, { resolve, reject, timer });
-    window.parent.postMessage({ type: 'linghuashi:storage-request', requestId, action, body }, location.origin);
+    postWindowMessage(window.parent, { type: 'linghuashi:storage-request', requestId, action, body });
   });
 }
 
@@ -184,7 +185,7 @@ export function credentialRequest(action, provider, value = {}) {
       reject(new Error('酒馆秘钥存储超时，请重试'));
     }, 12000);
     secretRequests.set(requestId, { resolve, reject, timer });
-    window.parent.postMessage({ type: 'linghuashi:secret-request', requestId, action, provider, ...value }, location.origin);
+    postWindowMessage(window.parent, { type: 'linghuashi:secret-request', requestId, action, provider, ...value });
   });
 }
 
@@ -206,7 +207,7 @@ export function readUIState(name) {
 }
 
 export function notifyUIState(ui) {
-  if (isInstalled()) window.parent.postMessage({ type: 'linghuashi:state', ui }, location.origin);
+  if (isInstalled()) postWindowMessage(window.parent, { type: 'linghuashi:state', ui });
 }
 
 export function persistUIState(name, ui, serialized = JSON.stringify(ui)) {

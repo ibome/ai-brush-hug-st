@@ -10,6 +10,8 @@
 
 查看 HTTP 状态、耗时和检测结论。浏览器的网络错误不能精确区分 DNS、代理、TLS 和跨域，能打开其他外网也不能证明当前接口已走代理。不透明响应不能验证鉴权或实际生图权限。
 
+TauriTavern 日志会标记 `host: tauritavern` 与 `requestTransport: webview-direct`。插件生图和独立 API 不自动使用宿主 Request Proxy；「酒馆服务器」存图位于本机数据目录。具体边界见 [TauriTavern](tauritavern.md)。
+
 ## 存储与缓存
 
 点击「检测存储与缓存」，保持页面在前台，等待结果。

@@ -8,7 +8,8 @@ function fixture(options = {}) {
   const calls = [];
   let busy = false, complete;
   const updater = createExtensionUpdater({
-    moduleURL, getHeaders: () => ({ 'x-csrf-token': 'fixture' }), isBusy: () => busy,
+    moduleURL: options.moduleURL || moduleURL, nativeUpdates: Boolean(options.nativeUpdates),
+    getHeaders: () => ({ 'x-csrf-token': 'fixture' }), isBusy: () => busy,
     request: async (url, init) => {
       calls.push({ url, ...init, body: init.body && JSON.parse(init.body) });
       if (url.includes('/discover')) return Response.json([{ name: 'third-party/Linghuashi Custom', type: options.global ? 'global' : 'local' }]);
@@ -66,4 +67,14 @@ test('permission and git failures are actionable and a stale manifest cannot rep
     const f = fixture(options);
     await assert.rejects(f.updater.update('99.0.0'), message);
   }
+});
+test('native extension updates accept custom-scheme URLs and do not pretend to cancel native writes', async () => {
+  const nativeURL = moduleURL.replace('https://tavern.test', 'tauri://localhost');
+  assert.equal(installedExtension(nativeURL).manifestURL,
+    'tauri://localhost/scripts/extensions/third-party/Linghuashi%20Custom/manifest.json');
+  const f = fixture({ moduleURL: nativeURL, nativeUpdates: true });
+  assert.equal((await f.updater.update('99.0.0')).reloadRequired, true);
+  assert.equal(f.calls.find((row) => row.url === '/api/extensions/update').signal, undefined);
+  assert.ok(f.calls.find((row) => row.url === '/api/extensions/version').signal);
+  await assert.rejects(fixture({ nativeUpdates: true, fail: 500 }).updater.update('99.0.0'), /设备网络/);
 });

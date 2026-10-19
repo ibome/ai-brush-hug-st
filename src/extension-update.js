@@ -6,7 +6,7 @@ export function installedExtension(moduleURL) {
   if (!match) throw new Error('无法定位安装目录，请通过酒馆扩展管理更新');
   const name = decodeURIComponent(match[1]);
   if (!name || name === '.' || name === '..' || /[/\\\0]/.test(name)) throw new Error('扩展安装目录无效');
-  return { name, manifestURL: new URL(`/scripts/extensions/third-party/${encodeURIComponent(name)}/manifest.json`, url.origin).href };
+  return { name, manifestURL: new URL(`/scripts/extensions/third-party/${encodeURIComponent(name)}/manifest.json`, url).href };
 }
 
 function officialRemote(remote) {
@@ -14,7 +14,7 @@ function officialRemote(remote) {
     .replace(/\.git\/?$/, '').replace(/\/$/, '').toLowerCase() === RELEASE.url.toLowerCase();
 }
 
-export function createExtensionUpdater({ moduleURL, getHeaders, request = fetch, isBusy = () => false }) {
+export function createExtensionUpdater({ moduleURL, getHeaders, request = fetch, isBusy = () => false, nativeUpdates = false }) {
   let pending;
   return {
     update(version) {
@@ -27,12 +27,14 @@ export function createExtensionUpdater({ moduleURL, getHeaders, request = fetch,
         const send = async (path, body) => {
           const response = await request(`/api/extensions/${path}`, {
             method: body ? 'POST' : 'GET', headers, credentials: 'same-origin',
-            cache: 'no-store', signal: AbortSignal.timeout(path === 'discover' ? 15000 : 120000),
+            cache: 'no-store', ...(nativeUpdates && path === 'update' ? {}
+              : { signal: AbortSignal.timeout(path === 'discover' ? 15000 : 120000) }),
             ...(body ? { body: JSON.stringify(body) } : {}),
           });
           if (!response.ok) throw new Error(response.status === 403
             ? '没有更新权限；全局扩展请由管理账号更新'
-            : '酒馆更新失败，请检查 Git 安装、服务器网络或本地修改后重试，也可打开扩展管理');
+            : nativeUpdates ? '扩展更新失败，请检查设备网络、仓库来源或本地修改后重试，也可打开扩展管理'
+              : '酒馆更新失败，请检查 Git 安装、服务器网络或本地修改后重试，也可打开扩展管理');
           return response.json();
         };
         const list = await send('discover');

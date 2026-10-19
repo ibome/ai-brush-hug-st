@@ -7,7 +7,7 @@ import { createBrowserTaskRequest } from './task-persistence.js';
 export const STORAGE_ACTIONS = new Set(['list', 'image/get', 'version/select', 'policy', 'cleanup', 'add', 'favorite', 'remove', 'audit',
   'chat/list', 'chat/get', 'chat/reserve', 'chat/update', 'components/status', 'diagnostics/status', ...TASK_ACTIONS, ...REFERENCE_ACTIONS, ...BACKUP_ACTIONS]);
 
-export function createStorageRequest(getHeaders, { account = 'default-user', request = fetch, browserTasks, locks, now } = {}) {
+export function createStorageRequest(getHeaders, { account = 'default-user', request = fetch, browserTasks, locks, now, enhancedSupported = true } = {}) {
   async function api(url, body, { missing = false } = {}) {
     const headers = getHeaders();
     if (!headers) throw new Error('酒馆请求验证尚未就绪');
@@ -37,6 +37,7 @@ export function createStorageRequest(getHeaders, { account = 'default-user', req
     return tasks(action, body);
   };
   async function component(force = false) {
+    if (!enhancedSupported) return null;
     if (force) discovery = null;
     if (!discovery) {
       discovery = enhanced('backup/status', {}, { missing: true }).then((status) => {
@@ -72,7 +73,7 @@ export function createStorageRequest(getHeaders, { account = 'default-user', req
     if (action === 'components/status') {
       try {
         const status = await component(body.refresh === true);
-        return { native: true, enhanced: status?.restricted ? 'denied' : status ? 'installed' : 'missing', version: status?.version || '',
+        return { native: true, enhanced: !enhancedSupported ? 'unsupported' : status?.restricted ? 'denied' : status ? 'installed' : 'missing', version: status?.version || '',
           ...(status?.restricted ? { error: status.error } : {}),
           protocol: status?.protocol || 0, taskStorage: status && !status.restricted ? 'server' : 'browser' };
       } catch (error) {
@@ -82,7 +83,7 @@ export function createStorageRequest(getHeaders, { account = 'default-user', req
     if (action === 'diagnostics/status') {
       const summary = await native(action);
       const status = await component(true).catch((error) => ({ unavailable: true, status: error.status || 0 }));
-      return { ...summary, enhanced: status?.restricted ? 'denied' : status?.unavailable ? 'error' : status ? 'installed' : 'missing',
+      return { ...summary, enhanced: !enhancedSupported ? 'unsupported' : status?.restricted ? 'denied' : status?.unavailable ? 'error' : status ? 'installed' : 'missing',
         componentVersion: typeof status?.version === 'string' ? status.version : '', componentProtocol: status?.protocol || 0,
         componentHttpStatus: status?.status || 0, taskStorage: status && !status.restricted && !status.unavailable ? 'server' : 'browser' };
     }
@@ -109,7 +110,8 @@ export function createStorageRequest(getHeaders, { account = 'default-user', req
       return enhanced(action, body);
     }
     if (action === 'list') return images(available, body);
-    if (action === 'backup/status') return { ...(available || await native(action)), native: true };
+    if (action === 'backup/status') return { ...(available || await native(action)), native: true,
+      enhanced: !enhancedSupported ? 'unsupported' : available ? 'installed' : 'missing' };
     if (action === 'add') {
       if (available) {
         await images(available);

@@ -65,6 +65,15 @@ test('reports retain HTTP evidence and timing without reading bodies or claiming
   assert.doesNotMatch(formatNetworkDiagnostics(report), /private response body/);
 });
 
+test('native diagnostics identify WebView transport without claiming the host proxy was used', async () => {
+  const report = await runNetworkDiagnostics(official, { environment: environment({ __TAURI_RUNNING__: true }),
+    fetcher: async () => readable() });
+  assert.equal(report.environment.host, 'tauritavern');
+  assert.equal(report.environment.requestTransport, 'webview-direct');
+  assert.match(report.environment.proxy, /不自动使用.*Request Proxy/);
+  assert.match(report.conclusions.join(' '), /WebView.*跟随酒馆/);
+});
+
 test('diagnostic logs redact keys, basic credentials, embedded URLs, paths and queries', async () => {
   const password = 'fixture-password-private', username = 'fixture-account-private';
   const encoded = btoa(`${username}:${password}`);

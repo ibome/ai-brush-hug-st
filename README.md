@@ -4,7 +4,7 @@
 
 **作者：小波** · **许可：[灵画师个人使用与署名许可](LICENSE)**
 
-**当前前端版本：0.24.2** · **可选服务器组件：0.21.0，存储协议 2**
+**当前前端版本：0.25.0** · **可选服务器组件：0.21.0，存储协议 2**
 
 灵画师是 SillyTavern 的图片生成扩展。可以在生图工坊手动绘图，也可以识别聊天里的提示词，在原位置显示图片；支持 NovelAI、OpenAI 兼容、ComfyUI、SDWebUI 四种模式，以及角色档案、提示词编辑、图片历史版本和九套人物主题。
 
@@ -15,6 +15,8 @@
 ```text
 https://github.com/ibome/ai-brush-hug-st
 ```
+
+也提供 **TauriTavern v2.3.0** 宿主适配。安装包需允许第三方扩展；公开 TestFlight 默认策略、存图位置和代理差异见 [TauriTavern 使用说明](docs/tauritavern.md)。
 
 刷新酒馆，从扩展设置打开「灵画师」，或点击人物悬浮图标再选「设置」。仓库包含可直接安装的 `manifest.json` 和 `dist/`，普通用户无需编译。
 
@@ -31,6 +33,7 @@ https://github.com/ibome/ai-brush-hug-st
 | 想完成的事 | 教程 |
 | --- | --- |
 | 第一次安装、配置并画出第一张图 | [新手入门](docs/quickstart.md) |
+| 在 TauriTavern 安装、存图、使用代理和排查问题 | [TauriTavern](docs/tauritavern.md) |
 | 插件开关、主题、悬浮球、排队与并发、自动生图、存储与清理 | [插件设置](docs/settings.md) |
 | 配置四种接口、模型、秘钥、命名接口和参数预设 | [接口配置](docs/interfaces.md) |
 | 文生图、参考图、图生图、蒙版重绘、Vibe、组合生图和画风探索 | [生图工坊与高级生图](docs/generation.md) |

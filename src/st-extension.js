@@ -16,6 +16,7 @@ import { createExtensionUpdater } from './extension-update.js';
 import { createUpdateNotice } from './ui/update-notice.js';
 import { createExtensionAPI, apiError } from './extension-api.js';
 import { getBrowserStorage } from './browser-cache.js';
+import { hostEnvironment, resolveHostAccount, isWindowMessage, postWindowMessage, showExtensionSurface } from './host-compat.js';
 
 const VERSION = RELEASE.version;
 const BUILD = RELEASE.build;
@@ -31,14 +32,13 @@ async function start() {
   if (!context?.extensionSettings || typeof context.saveSettingsDebounced !== 'function') {
     throw new Error('酒馆设置尚未就绪');
   }
-  const response = await fetch('/api/users/me', { credentials: 'same-origin' });
-  if (!response.ok) throw new Error('酒馆账号无法读取');
-  const profile = await response.json();
-  if (typeof profile.handle !== 'string' || !profile.handle) throw new Error('酒馆账号无效');
-  const account = profile.handle;
+  const hostInfo = hostEnvironment();
+  const account = await resolveHostAccount();
   const browserStorage = getBrowserStorage();
   const releaseMonitor = createReleaseMonitor({ storage: browserStorage });
-  const storageRequest = createStorageRequest(() => getContext()?.getRequestHeaders?.(), { account });
+  const storageRequest = createStorageRequest(() => getContext()?.getRequestHeaders?.(), {
+    account, enhancedSupported: hostInfo.serverPlugins,
+  });
   const credentialVault = createCredentialVault({
     account, storage: browserStorage,
     request: async (action, body) => {
@@ -74,7 +74,8 @@ async function start() {
   let textGenerating = Boolean(context.streamingProcessor && !context.streamingProcessor.isFinished && !context.streamingProcessor.isStopped);
   let extensionUpdateResult;
   const extensionUpdater = createExtensionUpdater({ moduleURL: import.meta.url,
-    getHeaders: () => getContext()?.getRequestHeaders?.(), isBusy: () => textGenerating });
+    getHeaders: () => getContext()?.getRequestHeaders?.(), isBusy: () => textGenerating,
+    nativeUpdates: hostInfo.kind === 'tauritavern' });
   const assistantHost = createAssistantHost({ getContext, settings: () => ui.assistant,
     post, isBusy: () => textGenerating });
   const textStarted = (type, _options, dryRun) => {
@@ -95,11 +96,10 @@ async function start() {
 
   const host = document.createElement('div');
   host.id = 'linghuashi-extension-host';
-  host.popover = 'manual';
   document.body.append(host);
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = `<style>
-    :host { all: initial; position: fixed; inset: 0; width: 100vw; height: 100dvh; margin: 0; padding: 0; border: 0; background: transparent; pointer-events: none; font: 14px "Segoe UI","Microsoft YaHei",sans-serif; color: #26334b; }
+    :host { all: initial; position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; margin: 0; padding: 0; border: 0; background: transparent; pointer-events: none; font: 14px "Segoe UI","Microsoft YaHei",sans-serif; color: #26334b; }
     *, *::before, *::after { box-sizing: border-box; }
     [hidden] { display: none !important; }
     button { font: inherit; cursor: pointer; }
@@ -242,7 +242,7 @@ async function start() {
   }
 
   function post(type, value = {}) {
-    frame?.contentWindow?.postMessage({ type, ...value }, location.origin);
+    postWindowMessage(frame?.contentWindow, { type, ...value });
   }
 
   function ensureFrame() {
@@ -290,7 +290,7 @@ async function start() {
   }
 
   function onMessage(event) {
-    if (destroyed || event.origin !== location.origin || event.source !== frame?.contentWindow) return;
+    if (destroyed || !isWindowMessage(event, frame?.contentWindow)) return;
     const data = event.data;
     if (!plainObject(data)) return;
     if (data.type === 'linghuashi:release-check' && typeof data.requestId === 'string' && data.requestId.length <= 64) {
@@ -337,7 +337,7 @@ async function start() {
     if (data.type === 'linghuashi:ready') {
       activeChat = chatContext();
       post('linghuashi:init', { account, ui: clone(ui), layout: clone(layout), chat: activeChat,
-        page: requestedPage, releaseState: releaseMonitor.getState() });
+        host: hostInfo, page: requestedPage, releaseState: releaseMonitor.getState() });
       requestedPage = null;
     } else if (data.type === 'linghuashi:mounted') {
       mounted = true;
@@ -507,7 +507,7 @@ async function start() {
     notice: (message) => window.toastr?.info(message, '灵画师'),
   });
   // The top layer avoids transformed Tavern themes changing fixed positioning.
-  host.showPopover();
+  showExtensionSurface(host);
   updateAppearance();
   window.Linghuashi = Object.freeze({
     ...extensionAPI.api, open, close,
@@ -517,7 +517,8 @@ async function start() {
       }
       return { chatKey: chatIdentity(getContext()), messageId, slot };
     },
-    capabilities: Object.freeze({ ui: true, generate: true, extensionAPI: 1, chatImages: true, serverImages: true, promptAssistant: true, smartIllustration: true, characterProfiles: true, backends: Object.freeze(['novelai', 'comfyui', 'openai', 'sdwebui']) }),
+    capabilities: Object.freeze({ ui: true, generate: true, extensionAPI: 1, chatImages: true, serverImages: true, promptAssistant: true, smartIllustration: true, characterProfiles: true,
+      host: hostInfo.kind, serverEnhancement: hostInfo.serverPlugins, backends: Object.freeze(['novelai', 'comfyui', 'openai', 'sdwebui']) }),
   });
   window.dispatchEvent(new CustomEvent('linghuashi:api-ready', { detail: { version: VERSION, apiVersion: 1 } }));
 }

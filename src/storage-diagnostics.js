@@ -1,6 +1,7 @@
 import { randomUUID, sha256Hex } from './crypto-compat.js';
 import { RELEASE } from './release.js';
 import { diagnosticURL } from './network-diagnostics.js';
+import { hostEnvironment } from './host-compat.js';
 
 const size = (value) => Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
 const abortError = () => new DOMException('检测已取消', 'AbortError');
@@ -156,7 +157,9 @@ export function storageDiagnosticConclusions(report) {
   if (runtime.running > 1 || runtime.concurrency > 1 && runtime.generationMode === 'parallel') {
     findings.push('当前启用了并行生成。低内存设备可先使用顺序队列、并发 1、每次 1 张，减少图片解码及保存的同时开销。');
   }
-  if (report.storageLocation === 'server') findings.push('浏览器容量估计不代表酒馆服务器磁盘。此工具只读检查服务器目录，服务器剩余磁盘和上传限制需管理员查看。');
+  if (report.storageLocation === 'server') findings.push(report.environment?.host === 'tauritavern'
+    ? 'TauriTavern 的酒馆存图位于当前设备数据目录。WebView 容量估计不等于设备剩余磁盘；本次仅读取图片目录。'
+    : '浏览器容量估计不代表酒馆服务器磁盘。此工具只读检查服务器目录，服务器剩余磁盘和上传限制需管理员查看。');
   if (rows.some((row) => row.id === 'image-write' && row.outcome === 'pass')) findings.push('1 KB 图片数据试写通过，只能证明小型读写可用，不能保证大图、整批图片或后续请求一定成功。');
   if (!findings.length) findings.push('目前未检出明确的存储故障；请在问题出现后复制日志，结合最近失败阶段继续排查。');
   return findings;
@@ -170,6 +173,7 @@ export async function runStorageDiagnostics(context, { environment = globalThis,
     createdAt: new Date().toISOString(), scope: 'current-browser', status: 'running',
     storageLocation: context.storageLocation === 'server' ? 'server' : 'browser',
     environment: { page: diagnosticURL(location.origin || location.href || ''), protocol: location.protocol || '',
+      host: hostEnvironment(environment).kind,
       secureContext: Boolean(environment.isSecureContext), online: navigator.onLine ?? null,
       visibility: environment.document?.visibilityState || 'unknown',
       userAgent: String(navigator.userAgent || '').slice(0, 400) },
@@ -234,7 +238,7 @@ export async function runStorageDiagnostics(context, { environment = globalThis,
       detail: '目录读取已响应，未上传测试文件；目录可读不代表大图上传、磁盘空间或组件写权限正常。',
       metrics: { originals: size(result.originals), thumbnails: size(result.thumbnails), unmatched: size(result.unmatched),
         maxRecords: size(result.maxRecords), diskFree: null,
-        enhanced: ['installed', 'missing', 'denied', 'error'].includes(result.enhanced) ? result.enhanced : 'unknown',
+        enhanced: ['installed', 'missing', 'denied', 'error', 'unsupported'].includes(result.enhanced) ? result.enhanced : 'unknown',
         componentVersion: /^\d+\.\d+\.\d+$/.test(result.componentVersion) ? result.componentVersion : '',
         taskStorage: result.taskStorage === 'server' ? 'server' : 'browser', componentHttpStatus: size(result.componentHttpStatus) } };
   });

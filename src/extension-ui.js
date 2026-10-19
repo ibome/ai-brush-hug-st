@@ -1,4 +1,5 @@
 import './styles/plugin.css';
+import { isWindowMessage, postWindowMessage } from './host-compat.js';
 
 async function boot() {
   if (window.parent === window) throw new Error('酒馆连接未建立');
@@ -8,18 +9,18 @@ async function boot() {
       reject(new Error('酒馆连接超时，请重新打开'));
     }, 15000);
     function onMessage(event) {
-      if (event.origin !== location.origin || event.source !== window.parent) return;
+      if (!isWindowMessage(event, window.parent)) return;
       if (event.data?.type !== 'linghuashi:init' || typeof event.data.account !== 'string' || !event.data.account) return;
       clearTimeout(timeout);
       window.removeEventListener('message', onMessage);
       resolve(event.data);
     }
     window.addEventListener('message', onMessage);
-    window.parent.postMessage({ type: 'linghuashi:ready' }, location.origin);
+    postWindowMessage(window.parent, { type: 'linghuashi:ready' });
   });
 
   window.__LINGHUASHI_ENV__ = {
-    mode: 'extension', account: initial.account, ui: initial.ui, chat: initial.chat, releaseState: initial.releaseState,
+    mode: 'extension', account: initial.account, ui: initial.ui, chat: initial.chat, releaseState: initial.releaseState, host: initial.host,
   };
   const [{ normalizeConfig }, plugin] = await Promise.all([
     import('./config.js'), import('./ui/plugin.js'),
@@ -29,7 +30,7 @@ async function boot() {
   if (initial.page) plugin.showPage(initial.page);
 
   window.addEventListener('message', (event) => {
-    if (event.origin !== location.origin || event.source !== window.parent) return;
+    if (!isWindowMessage(event, window.parent)) return;
     if (event.data?.type === 'linghuashi:layout') {
       plugin.applyConfig(normalizeConfig({ ...event.data.layout, surface: 'console', state: 'ready' }));
     }
@@ -43,9 +44,9 @@ async function boot() {
     if (event.key !== 'Escape' || document.getElementById('overlay-root').childElementCount
       || document.querySelector('.tag-picker[open], .profile-ai-dialog[open], .novelai-processing-dialog[open], .network-diagnostic-dialog[open]')) return;
     event.preventDefault();
-    window.parent.postMessage({ type: 'linghuashi:close' }, location.origin);
+    postWindowMessage(window.parent, { type: 'linghuashi:close' });
   }, true);
-  window.parent.postMessage({ type: 'linghuashi:mounted' }, location.origin);
+  postWindowMessage(window.parent, { type: 'linghuashi:mounted' });
 }
 
 boot().catch((error) => {
@@ -53,5 +54,5 @@ boot().catch((error) => {
   message.textContent = error.message;
   message.setAttribute('role', 'alert');
   document.getElementById('plugin-root').replaceChildren(message);
-  window.parent.postMessage({ type: 'linghuashi:error', message: error.message }, location.origin);
+  postWindowMessage(window.parent, { type: 'linghuashi:error', message: error.message });
 });
