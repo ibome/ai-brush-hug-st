@@ -2,6 +2,7 @@ import { currentDrawing, insertVersion, normalizeVersion, protectedVersionGroups
 import { normalizeBackupChats, STORAGE_PROTOCOL } from '../server/linghuashi-storage/backup-records.mjs';
 import { validBinding } from './chat.js';
 import { sha256Hex } from './crypto-compat.js';
+import { NativeMetadataIndex } from './native-metadata-index.js';
 
 const FOLDER = 'linghuashi';
 const THUMBS = 'linghuashi-thumbnails';
@@ -76,10 +77,32 @@ async function mapLimit(values, operation) {
 
 // Each image has its own atomic account file, so two devices adding different images
 // never overwrite a shared index. The image directory is the discovery index.
-export function createNativeStorage({ api, read, account, now = Date.now, locks = globalThis.navigator?.locks }) {
+export function createNativeStorage({ api, read, account, now = Date.now, locks = globalThis.navigator?.locks,
+  index = new NativeMetadataIndex(account) }) {
   const cache = new Map(), chats = new Map(), uploads = new Map();
   let queue = Promise.resolve(), snapshot, lastList = 0, pendingFiles = 0;
+  let indexReady, indexAvailable = true, indexPending = 0, indexErrors = 0, cachedRows = 0;
+  let verificationPending = new Set(), lastVerification = 0;
   let originals = new Set(), thumbnails = new Set();
+  const metadataTTL = 5 * 60 * 1000;
+  async function warmIndex() {
+    indexReady ||= index.read().then((rows) => {
+      for (const entry of rows.slice(0, LIMIT)) if (validImageId(entry.id) && entry.row?.id === entry.id
+        && entry.row.nativeStorage === 1 && ['png', 'jpg', 'webp'].includes(entry.row.extension)
+        && ['png', 'jpg', 'webp'].includes(entry.row.thumbExtension) && Number.isFinite(entry.at)) {
+        const row = entry.row;
+        row.nativePath = imagePath(row.id, row.extension);
+        row.nativeThumbPath = imagePath(row.id, row.thumbExtension, true);
+        row.chatBinding = binding(row.chatBinding);
+        if (!cache.has(entry.id)) cache.set(entry.id, { at: entry.at, row });
+      }
+    }).catch(() => { indexAvailable = false; });
+    await indexReady;
+  }
+  async function persistIndex(rows = [], removed = []) {
+    try { await index.write(rows, removed); indexAvailable = true; }
+    catch { indexAvailable = false; }
+  }
   async function readJSON(name, limit = 2500000) {
     const response = await read(filePath(name));
     if (response.status === 404) return null;
@@ -93,9 +116,9 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
     const result = await api('/api/files/upload', { name, data });
     if (String(result.path).replace(/^\//, '') !== filePath(name)) throw new Error('酒馆返回的账号文件路径不正确');
   }
-  async function metadata(id) {
+  async function metadata(id, refresh = false) {
     const old = cache.get(id);
-    if (old && now() - old.at < 5000) return clone(old.row);
+    if (old && !refresh && now() - old.at < metadataTTL) return clone(old.row);
     const row = await readJSON(metaName(id));
     if (!row) return null;
     if (row.id !== id || row.nativeStorage !== 1 || !['png', 'jpg', 'webp'].includes(row.extension)
@@ -109,6 +132,8 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
   async function saveRow(row) {
     await writeJSON(metaName(row.id), row);
     cache.set(row.id, { at: now(), row: clone(row) });
+    await persistIndex([{ id: row.id, ...cache.get(row.id) }]);
+    verificationPending.delete(row.id);
     snapshot = null;
   }
   function resolveVersions(rows) {
@@ -125,13 +150,38 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
     return rows;
   }
   async function list(force = false) {
-    if (snapshot && !force && now() - lastList < 1500) return clone(snapshot);
+    await warmIndex();
+    if (snapshot && !force && !indexPending && now() - lastList < 1500) return clone(snapshot);
     const [names, thumbs] = await Promise.all([FOLDER, THUMBS].map((folder) => api('/api/images/list', { folder, sortField: 'name' })));
     if (!Array.isArray(names) || !Array.isArray(thumbs)) throw new Error('酒馆图片列表格式无效');
     originals = new Set(names); thumbnails = new Set(thumbs);
     const discovered = [...new Set([...names, ...thumbs].map((name) => /^lh-([A-Za-z0-9_-]{1,80})\.(?:png|jpg|webp)$/i.exec(name)?.[1]).filter((id) => validImageId(id)))];
     if (discovered.length > LIMIT) throw new Error('账号图片超过 10000 张，请先分批备份整理');
-    const rows = await mapLimit(discovered, (id) => metadata(id));
+    const present = new Set(discovered), removed = [...cache.keys()].filter((id) => !present.has(id));
+    removed.forEach((id) => { cache.delete(id); verificationPending.delete(id); });
+    const stale = discovered.filter((id) => cache.has(id) && (now() - cache.get(id).at >= metadataTTL || now() < cache.get(id).at));
+    if (!verificationPending.size && now() - lastVerification >= metadataTTL) {
+      verificationPending = new Set(stale.sort((a, b) => cache.get(a).at - cache.get(b).at));
+    }
+    const refresh = new Set(force ? discovered : [...verificationPending].slice(0, 48));
+    const changed = [];
+    indexErrors = 0; cachedRows = 0;
+    const rows = await mapLimit(discovered, async (id) => {
+      const old = cache.get(id);
+      if (old && !refresh.has(id)) { cachedRows++; return clone(old.row); }
+      try {
+        const row = await metadata(id, refresh.has(id));
+        if (row) { changed.push({ id, ...cache.get(id) }); verificationPending.delete(id); }
+        if (!row && old) { indexErrors++; return clone(old.row); }
+        return row;
+      } catch (error) {
+        if (!old || force) throw error;
+        indexErrors++; return clone(old.row);
+      }
+    });
+    indexPending = verificationPending.size;
+    if (!indexPending) lastVerification = now();
+    await persistIndex(changed, removed);
     pendingFiles = rows.filter((row) => !row).length;
     snapshot = resolveVersions(rows.filter(Boolean)); lastList = now();
     return clone(snapshot);
@@ -165,6 +215,7 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
       await api('/api/images/delete', { path: row.nativeThumbPath }, { missing: true });
       await api('/api/files/delete', { path: filePath(metaName(row.id)) }, { missing: true });
       deleted.push(row.id); cache.delete(row.id); snapshot = null;
+      await persistIndex([], [row.id]);
     }
     return { ids: deleted, pendingFiles };
   }
@@ -219,17 +270,31 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
       return { readable: true, originals: images.size, thumbnails: thumbnails.size, maxRecords: LIMIT, diskFree: null,
         unmatched: [...images].filter((id) => !thumbnails.has(id)).length + [...thumbnails].filter((id) => !images.has(id)).length };
     }
+    if (action === 'comic/chapter-get' || action === 'comic/chapter-put') {
+      if (!/^[a-f0-9]{64}$/.test(body.key || '')) throw new Error('章节文件标识无效');
+      const name = `linghuashi-comic-${body.key}.json`;
+      if (action === 'comic/chapter-get') return readJSON(name, 750000);
+      const record = body.record, raw = JSON.stringify(record);
+      if (record?.format !== 'linghuashi-comic-chapter' || record.version !== 1
+        || !/^[A-Za-z0-9_-]{1,100}$/.test(record.project?.id || '')
+        || !Array.isArray(record.project.panels) || record.project.panels.length > 12
+        || new TextEncoder().encode(raw).length > 750000
+        || await hash(new TextEncoder().encode(raw)) !== body.key) throw new Error('章节文件内容或校验无效');
+      await writeJSON(name, record);
+      return { saved: true };
+    }
     if (action === 'backup/status') return { version: 'native', protocol: STORAGE_PROTOCOL, account, native: true };
     if (action === 'list') {
       const rows = await list(body.refresh === true);
       return { rows, native: true, directory: 'user/images/linghuashi', maxRecords: LIMIT, pendingFiles,
+        index: { available: indexAvailable, pending: indexPending, errors: indexErrors, cached: cachedRows, checkedAt: lastList },
         bytes: rows.reduce((sum, row) => sum + row.bytes + row.thumbBytes, 0) };
     }
     if (action === 'add') {
       const value = body.row;
       validId(value?.id);
       const original = imageData(body.image, 20 * 1024 * 1024), thumb = imageData(body.thumbnail, 1024 * 1024);
-      const digest = await hash(original.bytes), existing = await metadata(value.id);
+      const digest = await hash(original.bytes), existing = await metadata(value.id, true);
       if (existing) {
         if (existing.digest !== digest) throw new Error('同 ID 图片内容不同，请重新导入');
         return { row: existing, existing: true };
@@ -238,7 +303,13 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
         || value.width * value.height > 40000000) throw new Error('图片尺寸无效');
       if (value.snapshot != null && (!object(value.snapshot) || !['novelai', 'comfyui', 'openai', 'sdwebui'].includes(value.snapshot.provider)
         || JSON.stringify(value.snapshot).length > 2000000)) throw new Error('图片参数格式无效或超过限制');
-      const rows = await list(true);
+      let rows = await list();
+      const groupId = normalizeVersion(value.version, value.id).groupId;
+      const group = rows.filter((item) => versionGroupId(item) === groupId);
+      if (group.length) {
+        const fresh = new Map((await mapLimit(group, (item) => metadata(item.id, true))).filter(Boolean).map((item) => [item.id, item]));
+        rows = rows.map((item) => fresh.get(item.id) || item);
+      }
       if (rows.length >= LIMIT) throw new Error('服务器最多保存 10000 张图片，请先导出并清理');
       const snapshot = safeImageSnapshot(value.snapshot ?? null);
       const row = insertVersion(rows, { id: value.id, nativeStorage: 1, title: text(value.title, 100) || '未命名图片',
@@ -261,18 +332,24 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
     }
     if (action === 'image/get') {
       validId(body.id); const rows = await list();
-      return body.current ? currentDrawing(rows, body.id) : rows.find((row) => row.id === body.id) || null;
+      if (!body.current) return rows.find((row) => row.id === body.id) || null;
+      const target = rows.find((row) => row.id === body.id);
+      if (!target) return null;
+      const group = await mapLimit(rows.filter((row) => versionGroupId(row) === versionGroupId(target)),
+        (row) => metadata(row.id, true));
+      return currentDrawing(resolveVersions(group.filter(Boolean)), body.id);
     }
     if (action === 'favorite' || action === 'version/select') {
       validId(body.id);
-      const row = await metadata(body.id);
+      const row = await metadata(body.id, true);
       if (!row) throw new Error('图片已经删除');
       if (action === 'favorite') {
         if (typeof body.favorite !== 'boolean') throw new Error('收藏参数无效');
         row.favorite = body.favorite;
       } else {
-        const group = (await list()).filter((item) => versionGroupId(item) === versionGroupId(row));
-        row.selectionAt = Math.max(now(), ...group.map((item) => (item.selectionAt || 0) + 1));
+        const known = (await list()).filter((item) => versionGroupId(item) === versionGroupId(row));
+        const group = await mapLimit(known, (item) => metadata(item.id, true));
+        row.selectionAt = Math.max(now(), ...group.filter(Boolean).map((item) => (item.selectionAt || 0) + 1));
       }
       await saveRow(row);
       return action === 'favorite' ? { saved: true } : { selected: row.id };

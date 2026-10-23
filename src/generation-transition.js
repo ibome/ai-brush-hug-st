@@ -7,6 +7,17 @@ const phases = {
   downloading: ['正在下载图片', '正在接收图片文件'],
   saving: ['正在保存图片', '正在存入绘图管理'],
 };
+const preparationPhases = {
+  inbox: ['等待前面的配图任务', '前面的提示词分析或确认完成后继续'],
+  window: ['等待关闭编辑窗口', '请先完成或关闭插件内的编辑窗口；尚未提交生图'],
+  storage: ['正在读取图片存储', '正在准备图库与任务记录'],
+  context: ['正在提取聊天上下文', '正在读取当前回复与角色资料'],
+  preset: ['正在组装提示词预设', '正在按顺序读取已启用的预设条目'],
+  analysis: ['正在分析画面', '正在等待文字模型生成绘图提示词'],
+  parse: ['正在解析画面提示词', '正在检查文字模型返回的画面内容'],
+  validate: ['正在核对配图内容', '正在确认原消息与绘图设置'],
+  draft: ['正在保存提示词草稿', '正在保留画面与角色信息'],
+};
 
 export function generationTransitionState(task, { remote = false } = {}) {
   if (!task || !pending.has(task.status)) return null;
@@ -19,7 +30,7 @@ export function generationTransitionState(task, { remote = false } = {}) {
   } else if (stage === 'confirming') {
     title = '等待确认提示词'; detail = '确认后开始绘制';
   } else if (stage === 'preparing') {
-    title = '准备生图'; detail = '正在准备提示词与绘图参数';
+    [title, detail] = preparationPhases[task.phase] || ['准备生图', '正在准备提示词与绘图参数'];
   } else {
     stage = Object.hasOwn(phases, task.phase) ? task.phase : 'submitting';
     [title, detail] = phases[stage];

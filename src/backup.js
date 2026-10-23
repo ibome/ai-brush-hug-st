@@ -4,6 +4,8 @@ import { RELEASE } from './release.js';
 import { backupSize, cloneBackup, scrubBackup, normalizeBackupConfig, portableCredentials, referencedAssets } from './backup-config.js';
 import { assetBase64, assetBytes, normalizeAsset } from './reference-assets.js';
 import { normalizeBackupChats } from '../server/linghuashi-storage/backup-records.mjs';
+import { inspectRecovery } from './recovery-drafts.js';
+import { normalizeComicChapterBundle } from './comic-chapters.js';
 
 export const BACKUP_LIMIT = 200 * 1024 * 1024;
 const MAX_MANIFEST = 16 * 1024 * 1024;
@@ -83,7 +85,7 @@ export function archiveTasks(rows) {
 }
 
 export async function createBackup({ state, sections, layout = null, kind = 'config', includeKeys = false, password = '',
-  identity = '', assets, drawings = [], chats = [], tasks = [], readKey, progress = () => {} }) {
+  identity = '', assets, drawings = [], chats = [], tasks = [], drafts = null, comicChapters = [], readKey, progress = () => {} }) {
   if (!['config', 'full', 'share'].includes(kind)) throw new Error('备份类型无效');
   if (kind === 'share' && includeKeys) throw new Error('分享包不能包含秘钥');
   if (includeKeys && (password.length < 8 || password.length > 1024)) throw new Error('备份密码需为 8 至 1024 个字符');
@@ -102,6 +104,8 @@ export async function createBackup({ state, sections, layout = null, kind = 'con
     sections, layout: kind === 'share' ? null : layout, config: scrubBackup(config, { sharing: kind === 'share' }), files: [], images: [],
     chats: kind === 'full' ? scrubBackup(chats, { refs: true }) : [],
     tasks: kind === 'full' ? archiveTasks(tasks) : [] };
+  if (config.comicLibrary) manifest.comicChapters = scrubBackup(normalizeComicChapterBundle(comicChapters, config.comicLibrary), { refs: true, sharing: kind === 'share' });
+  if (drafts && kind !== 'share') manifest.drafts = inspectRecovery(drafts);
   let total = 0, count = 0;
   const add = async (path, blob, metadata) => {
     total += blob.size;
@@ -117,7 +121,7 @@ export async function createBackup({ state, sections, layout = null, kind = 'con
     await add(file, blob, { kind: 'image', mime: blob.type });
     manifest.images.push({ ...scrubBackup(metadata, { refs: true }), file });
   }
-  const references = referencedAssets({ config: manifest.config, images: manifest.images, tasks: manifest.tasks });
+  const references = referencedAssets({ config: manifest.config, images: manifest.images, tasks: manifest.tasks, comicChapters: manifest.comicChapters });
   const used = new Set();
   for (const asset of references) {
     if (used.has(asset.id)) continue;
@@ -159,6 +163,11 @@ export async function inspectBackup(file, password = '') {
     || !Array.isArray(manifest.chats) || manifest.chats.length > 3000
     || !Array.isArray(manifest.tasks) || manifest.tasks.length > 500) throw new Error('备份格式、版本或数量不受支持');
   manifest.config = normalizeBackupConfig(manifest.config, manifest.sections);
+  if (manifest.config.comicLibrary) manifest.comicChapters = normalizeComicChapterBundle(manifest.comicChapters, manifest.config.comicLibrary);
+  if (manifest.drafts) {
+    if (manifest.kind === 'share') throw new Error('分享包不能包含个人草稿');
+    manifest.drafts = inspectRecovery(manifest.drafts);
+  }
   const contents = new Map(), seen = new Set();
   for (const item of manifest.files) {
     if (!item || !Number.isSafeInteger(item.size) || item.size < 1 || !/^[a-f0-9]{64}$/.test(item.sha256)
@@ -179,7 +188,7 @@ export async function inspectBackup(file, password = '') {
   }
   if (new Set(manifest.images.map((row) => row.id)).size !== manifest.images.length) throw new Error('图片记录 ID 重复');
   const assets = new Set(manifest.files.filter((item) => item.kind === 'asset').map((item) => item.asset.id));
-  if (referencedAssets({ config: manifest.config, images: manifest.images, tasks: manifest.tasks }).some((item) => !assets.has(item.id))) throw new Error('备份缺少配置引用的参考素材');
+  if (referencedAssets({ config: manifest.config, images: manifest.images, tasks: manifest.tasks, comicChapters: manifest.comicChapters }).some((item) => !assets.has(item.id))) throw new Error('备份缺少配置引用的参考素材');
   if (entries.some((item) => !['linghuashi-backup.json', 'secrets.json'].includes(item.name) && !seen.has(item.name))) throw new Error('备份有未列入清单的文件');
   const secretEntry = zip.file('secrets.json');
   if (secretEntry && (!encrypted || manifest.kind === 'share' || secretEntry._data?.uncompressedSize > 1024 * 1024)) throw new Error('秘钥必须位于个人加密备份中');

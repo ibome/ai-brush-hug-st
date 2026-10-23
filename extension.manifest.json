@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.25.0&build=20261019-tauritavern-r1",
+  "js": "dist/index.js?ver=0.26.0&build=20261024-comic-assistant-release",
   "author": "小波",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

@@ -18,8 +18,8 @@ const SELECT_LIBRARIES = [['novelaiPresets', 'NovelAI 预设'], ['openaiPresets'
   ['comfyPresets', 'ComfyUI 工作流'], ['sdwebuiPresets', 'SDWebUI 预设'], ['artistLibrary', '画师串'], ['profiles', '角色档案']];
 
 export class BackupPanel {
-  constructor({ getState, applyState, getLayout, applyLayout, importParameters, assets, library, ready, flush, active, reload, render, notify, tasks }) {
-    Object.assign(this, { getState, applyState, getLayout, applyLayout, importParameters, assets, library, ready, flush, active, reload, rerender: render, notify, tasks });
+  constructor({ getState, applyState, getLayout, applyLayout, importParameters, assets, library, ready, flush, active, reload, render, notify, tasks, exportDrafts, importDrafts, exportComicChapters, restoreComicChapters }) {
+    Object.assign(this, { getState, applyState, getLayout, applyLayout, importParameters, assets, library, ready, flush, active, reload, rerender: render, notify, tasks, exportDrafts, importDrafts, exportComicChapters, restoreComicChapters });
     this.journal = new BackupStore();
     this.ui = { open: false, busy: false, restoring: false, kind: 'config', keys: false, password: '',
       mode: 'merge', location: '', preserveChat: false, importKeys: true, importImages: true, importTasks: true,
@@ -39,7 +39,7 @@ export class BackupPanel {
           ${ui.kind === 'full' ? input('图片来源', `<select data-backup-field="location">${options([['', '当前存储位置'], ['browser', '浏览器'], ...(isInstalled() ? [['server', '酒馆服务器']] : [])], ui.location)}</select>`) : ''}</div>
         <div class="backup-sections">${BACKUP_SECTIONS.filter(([id]) => !share || ['parameters', 'artists', 'tags', 'characters'].includes(id)).map(([id, title]) =>
           check(`section:${id}`, title, ui.sections.has(id))).join('')}</div>
-        ${share ? this.shareHTML(state) : `<div class="backup-secrets">${check('keys', '包含秘钥并加密整个备份', ui.keys)}
+        ${share ? this.shareHTML(state) : `<div class="backup-secrets">${this.exportDrafts ? check('drafts', '包含“草稿与恢复”中勾选的记录（含剧情正文）', ui.drafts) : ''}${check('keys', '包含秘钥并加密整个备份', ui.keys)}
           ${ui.keys ? input('备份密码', `<input type="password" data-backup-field="password" value="${esc(ui.password)}" autocomplete="new-password" minlength="8" maxlength="1024" placeholder="至少 8 个字符" />`) : ''}</div>`}
         <div class="backup-actions">${command('download', '导出备份', 'export')}${command('upload', '选择备份文件', 'choose')}
           ${command('rotate-ccw', '撤回上次配置恢复', 'rollback', !ui.rollback)}</div>
@@ -73,6 +73,7 @@ export class BackupPanel {
       <div class="backup-sections">${m.sections.map((id) => check(`restore:${id}`, BACKUP_SECTIONS.find(([key]) => key === id)[1], ui.restoreSections.has(id))).join('')}
         ${m.images.length ? check('importImages', '恢复图片与历史版本', ui.importImages) : ''}
         ${m.tasks.length ? check('importTasks', '归档任务记录（不执行）', ui.importTasks) : ''}
+        ${m.drafts?.rows.length ? check('importDrafts', `导入 ${m.drafts.rows.length} 项草稿到待恢复列表`, ui.importDrafts) : ''}
         ${secrets.length ? check('importKeys', `恢复 ${secrets.length} 份加密秘钥`, ui.importKeys) : ''}
         ${m.kind !== 'share' ? check('preserveChat', '恢复原聊天关联与聊天档案覆盖', ui.preserveChat, !ui.importImages && m.images.length > 0) : ''}</div>
       <div class="backup-controls">${input('配置恢复方式', `<select data-backup-field="mode">${options([['merge', '合并库项目'], ['replace', '覆盖所选配置']], ui.mode)}</select>`)}
@@ -149,7 +150,7 @@ export class BackupPanel {
         if (compareVersions(manifest.pluginVersion, RELEASE.version) > 0) throw new Error('备份来自较新版本，请更新插件后再恢复');
         ui.restoreSections = new Set(manifest.sections); ui.restoreLocation = this.getState().cacheLocation;
         ui.preserveChat = manifest.identity === await backupIdentity(currentAccount(), location.origin);
-        ui.mode = 'merge'; ui.importImages = true; ui.importTasks = true; ui.importKeys = true;
+        ui.mode = 'merge'; ui.importImages = true; ui.importTasks = true; ui.importKeys = true; ui.importDrafts = Boolean(manifest.drafts);
         ui.status = '备份校验通过，请选择恢复内容';
       }
       if (action === 'restore') await this.restore();
@@ -189,13 +190,15 @@ export class BackupPanel {
     }
     if (ui.kind === 'full' && this.active()) throw new Error('请等待当前任务完成后导出完整备份');
     const source = ui.location || this.getState().cacheLocation;
-    const rows = ui.kind === 'full' ? await this.library.list(source) : [];
+    const rows = ui.kind === 'full' ? await this.library.list(source, true) : [];
     const drawings = [];
     for (const row of rows) drawings.push(await this.library.materialize(row));
     const chats = ui.kind === 'full' ? await this.library.backupChats(source) : [];
     const tasks = ui.kind === 'full' ? [...new Map([...(await this.journal.get('taskArchive') || []), ...(await this.tasks()).rows]
       .map((row) => [row.id, row])).values()] : [];
     const blob = await createBackup({ state, sections, layout: normalizeConfig(this.getLayout()), kind: ui.kind, includeKeys: ui.keys, password: ui.password,
+      drafts: ui.kind !== 'share' && ui.drafts ? await this.exportDrafts?.() : null,
+      comicChapters: sections.includes('comics') ? await this.exportComicChapters?.() : [],
       identity: await backupIdentity(currentAccount(), location.origin), assets: this.assets, drawings, chats, tasks,
       readKey: (provider, ref) => credentialRequest('read', provider, { ref }),
       progress: (message) => { ui.status = message; const status = document.querySelector('.backup-status'); if (status) status.textContent = message; } });
@@ -208,7 +211,7 @@ export class BackupPanel {
     if (!pack) throw new Error('请先读取备份文件');
     await this.assertIdle();
     const sections = [...ui.restoreSections];
-    if (!sections.length && !(ui.importImages && pack.manifest.images.length) && !(ui.importTasks && pack.manifest.tasks.length)) throw new Error('请至少选择一项恢复内容');
+    if (!sections.length && !(ui.importImages && pack.manifest.images.length) && !(ui.importTasks && pack.manifest.tasks.length) && !(ui.importDrafts && pack.manifest.drafts?.rows.length)) throw new Error('请至少选择一项恢复内容');
     const before = { state: cloneBackup(this.getState()), layout: this.getLayout() };
     const destination = ui.restoreLocation || before.state.cacheLocation;
     if (destination === 'server') {
@@ -227,7 +230,7 @@ export class BackupPanel {
     const images = [];
     if (ui.importImages) for (const entry of pack.manifest.images) images.push(await makeDrawing(pack.contents.get(entry.file), entry));
     const neededAssets = new Set(referencedAssets({ config: imported, images: ui.importImages ? pack.manifest.images : [],
-      tasks: ui.importTasks ? pack.manifest.tasks : [] }).map((row) => row.id));
+      tasks: ui.importTasks ? pack.manifest.tasks : [], comicChapters: sections.includes('comics') ? pack.manifest.comicChapters : [] }).map((row) => row.id));
     const selectedAssets = pack.manifest.files.filter((row) => row.kind === 'asset' && neededAssets.has(row.asset.id));
     for (const item of selectedAssets) if (item.asset.mime.startsWith('image/')) {
       const bitmap = await createImageBitmap(pack.contents.get(item.path));
@@ -291,7 +294,11 @@ export class BackupPanel {
       await this.journal.put('taskArchive', ui.taskArchive);
     }
     if (images.length) next.cacheLocation = destination;
+    if (sections.includes('comics') && this.restoreComicChapters) {
+      next.comicLibrary = await this.restoreComicChapters(next.comicLibrary, rewriteBackupAssets(pack.manifest.comicChapters || [], locations), imageIds, destination);
+    }
     await this.applyState(next);
+    if (ui.importDrafts && pack.manifest.drafts) await this.importDrafts?.(pack.manifest.drafts);
     if (sections.includes('general') && ui.mode === 'replace' && pack.manifest.layout) await this.applyLayout(normalizeConfig(pack.manifest.layout));
     await this.reload();
     ui.status = `恢复完成：${ordered.length} 张新图片，配置${ui.mode === 'merge' ? '已合并' : '已覆盖'}；任务记录仅归档`;

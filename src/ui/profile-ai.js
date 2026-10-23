@@ -223,7 +223,7 @@ export class ProfileAIPanel {
           : (await this.readSources([...ui.selected], controller.signal)).sources;
         valid();
         const contextKey = this.chatKey(), baseline = structuredClone(this.library().profiles);
-        const messages = buildProfileMessages(sources);
+        const messages = buildProfileMessages(sources, this.settings());
         const raw = await this.generate(messages, controller.signal);
         valid();
         if (this.chatKey() !== contextKey) throw new Error('聊天已切换，请重新生成草稿');

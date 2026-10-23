@@ -36,3 +36,15 @@ test('cross-page tasks show static sync status without suggesting local progress
   assert.equal(status.progress, null);
   assert.equal(status.title, '等待任务状态同步');
 });
+
+test('chat preparation distinguishes a local window wait from model analysis', () => {
+  const blocked = generationTransitionState({ status: 'preparing', phase: 'window' });
+  assert.equal(blocked.title, '等待关闭编辑窗口');
+  assert.match(blocked.detail, /尚未提交生图/);
+  assert.equal(blocked.cancellable, true);
+  const analysis = generationTransitionState({ status: 'preparing', phase: 'analysis' });
+  assert.equal(analysis.title, '正在分析画面');
+  assert.match(analysis.detail, /文字模型/);
+  assert.equal(analysis.progress, null);
+  assert.equal(generationTransitionState({ status: 'preparing', phase: 'unknown' }).title, '准备生图');
+});

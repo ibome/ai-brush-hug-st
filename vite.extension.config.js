@@ -1,12 +1,14 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { protectBuild } from './scripts/protect-build.mjs';
+import { localToolsPackagePlugin } from './scripts/local-tools-package.mjs';
 
 export default defineConfig({
   base: './',
-  plugins: [protectBuild()],
+  plugins: [localToolsPackagePlugin(), protectBuild()],
   build: {
     outDir: 'extension-dist',
+    cssTarget: ['safari15', 'chrome90', 'firefox90'],
     sourcemap: false,
     assetsInlineLimit: 0,
     rollupOptions: {

@@ -94,6 +94,28 @@ test('unsupported scheduling, alternation, mixed outer brackets and reset scopes
   }
   assert.equal(parsePrompt(String.raw`[a\:b]`).items[0].syntax, 'novelai');
 });
+test('legacy-compatible assertions preserve escaped pipes, colons and brackets in weighted prompts', () => {
+  for (const [source, syntax, kind] of [
+    [String.raw`1.2::cat\|dog::`, 'novelai', 'tag'],
+    [String.raw`{cat\|dog}`, 'novelai', 'tag'],
+    [String.raw`[cat\:dog]`, 'novelai', 'tag'],
+    [String.raw`{cat\|dog, smile}`, 'novelai', 'group'],
+    [String.raw`1.2::cat\|dog, smile::`, 'novelai', 'group'],
+    [String.raw`(cat\|dog, smile:1.2)`, 'sd', 'group'],
+    [String.raw`literal \{brace\}`, 'plain', 'tag'],
+    [String.raw`literal \[bracket\]`, 'plain', 'tag'],
+    ['literal {brace}', 'opaque', 'opaque'],
+    ['[cat|dog]', 'opaque', 'opaque'],
+    ['{|cat}', 'opaque', 'opaque'],
+    ['[:cat]', 'opaque', 'opaque'],
+    ['1.2::|cat::', 'opaque', 'opaque'],
+  ]) {
+    const result = parsePrompt(source);
+    assert.equal(result.items[0].syntax, syntax, source);
+    assert.equal(result.items[0].kind, kind, source);
+    assert.equal(serializePrompt(result.items), source);
+  }
+});
 test('editing and reordering nested children rebuilds all ancestor scopes without mutating the original', () => {
   const before = parsePrompt('1.2::smile, {rain, fog}::, moon').items;
   const child = before[0].children[1].children[0];

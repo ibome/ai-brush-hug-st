@@ -78,7 +78,7 @@ export function renderSDWebUIParameters(state, probe, expanded = false) {
     ${field('负面提示词', `<textarea rows="2" data-sdwebui="negative" maxlength="12000" spellcheck="false">${esc(p.negative)}</textarea>`)}
     <div class="nai-dimensions">${numeric('width', '宽度 (px)')}<button type="button" class="ui-icon-button" data-action="sdwebui-swap-size" title="交换宽高" aria-label="交换宽高">${icon('arrow-left-right')}</button>${numeric('height', '高度 (px)')}</div>
     ${numeric('steps', '步数')}
-    <details class="advanced-options sdwebui-advanced" ${expanded ? 'open' : ''}><summary>${icon('settings-2')}其他参数设置${icon('chevron-down')}</summary>
+    <details class="advanced-options sdwebui-advanced" data-experience-fold="sdwebui-parameters" ${expanded || state.experience?.level === 'full' ? 'open' : ''}><summary>${icon('settings-2')}其他参数设置${icon('chevron-down')}</summary>
       <div class="two-field-row">${numeric('cfg', '提示词引导 (CFG)')}${choice('vae', 'VAE', ['Automatic', 'None', ...(probe?.vaes || [])])}
       ${choice('sampler', '采样器', probe?.samplers, ['Euler', 'Euler a', 'DPM++ 2M'])}${choice('scheduler', '调度器', ['Automatic', ...(probe?.schedulers || [])])}
       ${numeric('seed', '随机种子 · -1 随机')}${numeric('batch', '每次生成张数')}${numeric('clipSkip', 'CLIP Skip')}</div>

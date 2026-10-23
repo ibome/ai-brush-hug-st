@@ -937,5 +937,6 @@ export function attachPromptTagButtons(container, open) {
     visual.innerHTML = `${icon('panels-top-left')}<span>可视化编辑</span>`;
     visual.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); open(target, input, true); });
     actions.append(visual); label.append(actions);
+    paintIcons(actions);
   });
 }

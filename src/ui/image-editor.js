@@ -21,7 +21,7 @@ export function renderImageEditor(item, ui, advancedHTML = '') {
   else parameters = renderComfyParameters(local, null, ui.advanced);
   const version = normalizeVersion(item.version, item.id);
   const roles = snapshot.characterScene?.characterPrompts || [];
-  return `<dialog class="image-editor" aria-labelledby="image-editor-title">
+  return `<dialog class="image-editor" data-image-id="${esc(item.id)}" aria-labelledby="image-editor-title">
     <header><div><h2 id="image-editor-title">单图编辑</h2><span>版本 ${version.number} · ${esc(({ novelai: 'NovelAI', openai: 'OpenAI兼容', comfyui: 'ComfyUI', sdwebui: 'SDWebUI' })[snapshot.provider])}</span></div>
     ${command('x', '关闭', 'image-edit-close')}</header>
     <div class="image-editor-body"><aside><img src="${item.src}" alt="${esc(item.title)}" /><p>${esc(item.title)}</p>

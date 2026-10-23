@@ -6,6 +6,7 @@ import { createTaskLedger, TASK_ACTIONS } from './task-ledger.mjs';
 import { createReferenceAssets, REFERENCE_ACTIONS } from './reference-assets.mjs';
 import { currentDrawing, insertVersion, selectVersion, removeVersions, normalizeVersion, protectedVersionGroups, versionGroupId } from './image-versions.mjs';
 import { BACKUP_ACTIONS, STORAGE_VERSION, STORAGE_PROTOCOL, normalizeBackupChats } from './backup-records.mjs';
+import { storedAssistantPlan } from './assistant-plan.mjs';
 
 export const info = { id: 'linghuashi-storage', name: 'Linghuashi Image Storage', description: 'Account isolated image, parameter and chat storage.' };
 const MAX_IMAGE = 20 * 1024 * 1024;
@@ -366,10 +367,9 @@ export function createStorageService({ allowedAccounts = null, now = Date.now } 
         const row = { ...previous, status: value.status, phase: text(value.phase, 30), error: text(value.error, 500),
           recoverable: value.recoverable === true, savedIds: [...new Set([...previous.savedIds, ...savedIds])], updatedAt: now() };
         if (value.assistant && object(value.assistant)) {
-          row.assistant = { shouldDraw: value.assistant.shouldDraw === true, scene: text(value.assistant.scene, 2000),
-            reason: text(value.assistant.reason, 500), positive: text(value.assistant.positive, 32000),
-            negative: text(value.assistant.negative, 32000),
-            aspect: ['portrait', 'landscape', 'square'].includes(value.assistant.aspect) ? value.assistant.aspect : 'square' };
+          try { row.assistant = storedAssistantPlan(value.assistant,
+            (scene) => safeSnapshot({ provider: 'novelai', characterScene: scene }).characterScene); }
+          catch (error) { throw fail(error.message); }
         }
         entry.index.chats[body.id] = row;
         try { await save(entry); } catch (error) { entry.index = before; throw error; }

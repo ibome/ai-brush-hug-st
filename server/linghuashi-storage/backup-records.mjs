@@ -1,4 +1,5 @@
 import { validImageId } from './image-versions.mjs';
+import { storedAssistantPlan } from './assistant-plan.mjs';
 
 export const BACKUP_ACTIONS = ['backup/status', 'backup/chats', 'backup/chats-merge'];
 export const STORAGE_VERSION = '0.21.0';
@@ -23,6 +24,7 @@ export function normalizeBackupChats(values, imageIds) {
       status: savedIds.length ? 'completed' : 'failed', savedIds: [...new Set(savedIds)],
       updatedAt: Number.isFinite(row.updatedAt) && row.updatedAt > 0 ? row.updatedAt : Date.now(),
       error: savedIds.length ? '' : '备份记录已恢复，未自动提交生图', recoverable: false,
+      ...(row.assistant ? { assistant: storedAssistantPlan(row.assistant) } : {}),
     };
   });
 }

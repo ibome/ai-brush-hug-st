@@ -22,9 +22,52 @@ const exportFixture = (options = {}) => createBackup({ state: fixture(), section
 
 test('configuration export excludes transient UI, raw keys, drafts and unknown fields', () => {
   const source = { ...fixture(), key: 'private', assistantInput: 'private scene', assistantDraft: { positive: 'private' },
-    history: ['private'], unknown: 'private', api_key: 'private' };
+    assistantHistory: [{ plan: { positive: 'private historical prompt' } }], history: ['private'], unknown: 'private', api_key: 'private' };
   const config = normalizeBackupConfig(source);
-  for (const key of ['key', 'assistantInput', 'assistantDraft', 'history', 'unknown', 'api_key']) assert.ok(!Object.hasOwn(config, key));
+  for (const key of ['key', 'assistantInput', 'assistantDraft', 'assistantHistory', 'history', 'unknown', 'api_key']) assert.ok(!Object.hasOwn(config, key));
+});
+test('local component token follows encrypted credential slots and is omitted from ordinary settings', async () => {
+  const keyRef = 'browser:44444444-4444-4444-8444-444444444444';
+  const original = normalizeBackupConfig({ localTools: { endpoint: 'https://tools.example/proxy', keyRef, key: 'private-value' } });
+  assert.equal(original.localTools.key, undefined);
+  const exported = structuredClone(original);
+  const secrets = await portableCredentials(exported, async (provider) => {
+    assert.equal(provider, 'localtools'); return 'fixture-component-token';
+  }, true);
+  assert.equal(secrets[0].provider, 'localtools');
+  assert.notEqual(exported.localTools.keyRef, keyRef);
+  const restored = await restoreBackupCredentials(exported, fixture(), secrets, async (provider, key) => {
+    assert.equal(provider, 'localtools'); assert.equal(key, 'fixture-component-token'); return keyRef;
+  });
+  assert.equal(restored.localTools.keyRef, keyRef);
+  const ordinary = structuredClone(original);
+  assert.deepEqual(await portableCredentials(ordinary, async () => { throw new Error('Should not read token'); }, false), []);
+  assert.notEqual(ordinary.localTools.keyRef, keyRef);
+  const withoutKey = await restoreBackupCredentials(ordinary, fixture(), [], async () => {
+    throw new Error('Should not write a token');
+  });
+  assert.equal(withoutKey.localTools.keyRef, '');
+});
+test('assistant schemes participate in credential backup, restoration and conflict-safe merge', async () => {
+  const source = fixture(), keyRef = 'browser:33333333-3333-4333-8333-333333333333';
+  source.assistantSchemes = [{ id: 'scheme-a', name: '剧情', settings: { source: 'api', endpoint: 'https://assistant.example.test', model: 'model', keyRef } }];
+  source.assistantSchemeId = 'scheme-a';
+  const config = normalizeBackupConfig(source);
+  const secrets = await portableCredentials(config, async () => 'fixture-secret', true);
+  assert.ok(secrets.some((row) => row.provider === 'assistant'));
+  assert.notEqual(config.assistantSchemes[0].settings.keyRef, keyRef);
+  const restored = await restoreBackupCredentials(config, fixture(), secrets, async () => keyRef);
+  assert.equal(restored.assistantSchemes[0].settings.keyRef, keyRef);
+  const incoming = normalizeBackupConfig(source);
+  incoming.assistantSchemes[0].settings.model = 'changed-model';
+  const merged = mergeBackupConfig(normalizeBackupConfig(source), incoming, ['assistant']);
+  assert.equal(merged.assistantSchemes.length, 2);
+  assert.notEqual(merged.assistantSchemes[0].id, merged.assistantSchemes[1].id);
+  assert.equal(merged.assistantSchemeId, 'scheme-a');
+  assert.throws(() => normalizeBackupConfig({ assistantSchemes: [source.assistantSchemes[0], source.assistantSchemes[0]] }), /重复/);
+  const shared = await inspectBackup(file(await exportFixture({ state: source, sections: ['assistant'], kind: 'share' })));
+  assert.equal(shared.secrets.length, 0);
+  assert.ok(!JSON.stringify(shared.manifest.config).includes(keyRef));
 });
 test('workbench, scoped reviews and reusable Vibe assets round trip through backup; share excludes reviews', () => {
   const asset = { id: 'a'.repeat(64), location: 'server', mime: 'image/png', width: 64, height: 64 };

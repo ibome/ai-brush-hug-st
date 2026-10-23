@@ -20,7 +20,8 @@ async function boot() {
   });
 
   window.__LINGHUASHI_ENV__ = {
-    mode: 'extension', account: initial.account, ui: initial.ui, chat: initial.chat, releaseState: initial.releaseState, host: initial.host,
+    mode: 'extension', account: initial.account, ui: initial.ui, assistantArchive: initial.assistantArchive,
+    chat: initial.chat, releaseState: initial.releaseState, host: initial.host,
   };
   const [{ normalizeConfig }, plugin] = await Promise.all([
     import('./config.js'), import('./ui/plugin.js'),
@@ -42,7 +43,7 @@ async function boot() {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || document.getElementById('overlay-root').childElementCount
-      || document.querySelector('.tag-picker[open], .profile-ai-dialog[open], .novelai-processing-dialog[open], .network-diagnostic-dialog[open]')) return;
+      || document.querySelector('.tag-picker[open], .profile-ai-dialog[open], .novelai-processing-dialog[open], .network-diagnostic-dialog[open], .reader-image-dialog[open]')) return;
     event.preventDefault();
     postWindowMessage(window.parent, { type: 'linghuashi:close' });
   }, true);

@@ -43,15 +43,10 @@ export function prepareImageEdit(draft) {
 export function imageEditMessages(draft, instruction, settings) {
   if (!instruction.trim()) throw new Error('请填写希望修改的内容');
   const params = draft.params || draft.config.params;
-  const messages = buildAssistantMessages({ settings, operation: 'polish',
+  const messages = buildAssistantMessages({ settings, operation: 'polish', ruleTask: 'edit',
     input: JSON.stringify({ CHANGE_REQUEST: instruction, ORIGINAL_POSITIVE: params.positive,
       ORIGINAL_NEGATIVE: params.negative, ORIGINAL_CHARACTERS: draft.characterScene?.characterPrompts || [] }),
     context: { characterScene: draft.characterScene }, target: { provider: draft.provider, model: params.model } });
-  messages[0].content += '\nThis is a single image revision. Apply CHANGE_REQUEST and keep unrelated details unchanged. '
-    + 'Explicit requested changes take priority over the original outfit and appearance locks for this revision only. '
-    + 'Return the complete revised prompts, not an append-only fragment. Do not refer to the original image as an input image. '
-    + 'For each supplied character ID return its complete appearance, outfit, action, expression and negative tags; '
-    + 'positive and negative contain only shared scene details when separate characters are provided. shouldDraw must be true.';
   return messages;
 }
 

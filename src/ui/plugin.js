@@ -1,13 +1,16 @@
 import { randomUUID } from '../crypto-compat.js';
 import { postWindowMessage } from '../host-compat.js';
 import { escapeHtml, downloadJson } from '../config.js';
-import { assistantHostRequest, credentialRequest, currentAccount, currentChat, extensionChatRequest, isInstalled, persistUIState, readUIState, storageKey, storageRequest } from '../runtime.js';
+import { assistantHostRequest, credentialRequest, currentAccount, currentChat, extensionChatRequest, isInstalled, persistUIState, readUIState, storageKey, storageRequest,
+  readAssistantArchive, persistAssistantArchive, registerUIStateFlush, getUIStateSync, subscribeUIStateSync } from '../runtime.js';
+import { createCoalescedSave } from '../coalesced-save.js';
 import { readBrowserCache, writeBrowserCache } from '../browser-cache.js';
 import { apiError, publicExtensionTask } from '../extension-api.js';
 import { createExtensionTaskService } from '../extension-tasks.js';
 import { extensionCapabilities, extensionPresets, prepareExtensionSnapshot, publicImageParameters } from './extension-generation.js';
 import { imageEditDraft, prepareImageEdit, imageEditMessages, applyImageRewrite, drawingSeed } from '../image-edit.js';
 import { applyChatImageEdit, chatImageBelongsTo } from '../chat-image-actions.js';
+import { blockingChatWindow, waitForChatWindow } from '../chat-preparation.js';
 import { renderImageEditor } from './image-editor.js';
 import { NovelAIProcessingPanel } from './novelai-processing.js';
 import { processingSnapshot, prepareProcessingSource, validateProcessingDraft, buildProcessingRequest,
@@ -15,23 +18,57 @@ import { processingSnapshot, prepareProcessingSource, validateProcessingDraft, b
 import '../styles/novelai-processing.css';
 import { AdvancedPanel } from './advanced.js';
 import { BackupPanel } from './backup.js';
+import { BackupStore } from '../backup-store.js';
+import { ComicChapterStore } from '../comic-chapters.js';
+import { RecoveryDraftPanel } from './recovery-drafts.js';
+import { recoveryBundle, copyComicRecovery } from '../recovery-drafts.js';
+import { ASSISTANT_OPERATIONS } from '../assistant-workflow.js';
 import { RELEASE } from '../release.js';
 import { ChangelogPanel } from './changelog.js';
 import { ComponentsPanel } from './components.js';
+import { LocalToolsPanel } from './local-tools.js';
+import { normalizeLocalTools } from '../local-tools.js';
 import { ReleasePanel } from './release-panel.js';
 import { NetworkDiagnosticPanel } from './network-diagnostics.js';
 import { DebugToolsPanel } from './debug-tools.js';
+import { ReaderPanel } from './reader.js';
+import { ComicPanel } from './comic.js';
+import { normalizeComicLibrary, validateComicLibrary, saveComicProject, comicStoryboardMessages, parseComicStoryboard,
+  comicPanelSnapshot, comicPanelBusy, reconcileComicJobs, comicAssistantOptions, comicPlanPromptPreview } from '../comic.js';
+import { comicGenerationSignature } from '../comic-workspace.js';
+import { comicPanelRewriteMessages, parseComicPanelRewrite } from '../comic-editing.js';
+import { normalizeReaderSettings } from '../chat-reader.js';
 import { recentGenerationFailures } from '../debug-errors.js';
 import '../styles/network-diagnostics.css';
 import { ReferenceAssets, normalizeReferenceImage, assetBase64 } from '../reference-assets.js';
-import { advancedOf, validateAdvanced, encodeVibe } from '../advanced-generation.js';
+import { advancedOf, validateAdvanced, encodeVibe, modelCapabilities } from '../advanced-generation.js';
 import { prepareAdvancedPayload, finishAdvancedImages } from '../advanced-payload.js';
 import { watchComfyProgress } from '../comfy-advanced.js';
 import '../styles/advanced.css';
 import { groupVersions, currentDrawing, versionGroupId, editRelation, drawingGroups, validImageId } from '../../server/linghuashi-storage/image-versions.mjs';
 import '../styles/image-editor.css';
-import { normalizeAssistant, assistantConnectionSync, assistantModelNames, requestAssistantModels, buildAssistantMessages, parseAssistantResult, requestAssistantAPI, applyAssistantPlan } from '../prompt-assistant.js';
+import { normalizeAssistant, assistantConnectionSync, assistantModelNames, requestAssistantModels, buildAssistantMessages, parseAssistantResult, applyAssistantPlan } from '../prompt-assistant.js';
 import { renderAssistant, assistantModelChoices } from './assistant.js';
+import { AssistantPresetPanel } from './assistant-presets.js';
+import { composeAssistantPresetMessages, selectedAssistantPresetEntries } from '../assistant-presets.js';
+import { composeTaskMessages, illustrationPlans, selectedIllustration, freezeIllustrationCharacters,
+  syncPrimaryIllustration, evidencedCharacterStates } from '../assistant-workflow.js';
+import { AssistantWorkflowPanel } from './assistant-workflow.js';
+import { TaskPromptPanel } from './assistant-rules.js';
+import { START_GOALS, normalizeExperience, imageReadiness, assistantReadiness, storageReadiness, failureActions, guideSteps, guideStepComplete } from '../start-guide.js';
+import { renderStartGuide, renderReadiness, renderFailureActions, readinessBadge, guideCommand } from './start-guide.js';
+import { experienceFold } from './experience.js';
+import { buildProfileMessages, manualProfileSource } from '../profile-ai.js';
+import { AssistantDiagnosticPanel, AssistantSchemePanel, AssistantLintPanel } from './assistant-tools.js';
+import { normalizeAssistantSchemes, resolveAssistantScheme, validateSchemeSettings } from '../assistant-schemes.js';
+import { normalizeAssistantHistory, rememberAssistantDraft, ASSISTANT_HISTORY_BYTES } from '../assistant-history.js';
+import { AssistantHistoryPanel, AssistantRecoveryPanel } from './assistant-history.js';
+import { AssistantContextPanel } from './assistant-context.js';
+import { AssistantScenePanel } from './assistant-scene.js';
+import { assistantUsage } from '../assistant-context.js';
+import { compatibilityIdentity, compatibilityFor, resolveAssistantCompatibility, saveCompatibility, assistantBudget } from '../assistant-compatibility.js';
+import { renderAssistantCompatibility, renderAssistantBudget } from './assistant-compatibility.js';
+import { replaceSelectedScene, sceneReanalysisMessages } from '../assistant-scene.js';
 import '../styles/assistant.css';
 import { migrateProfileLibrary, normalizeProfileLibrary, normalizeProfile, effectiveProfiles, saveProfile, deleteProfile,
   updateProfileChat, resolveCharacterScene, applyCharacterScene, normalizeCharacterScene, restoreSceneProfiles } from '../character-profiles.js';
@@ -119,7 +156,7 @@ import { COMFY_FIELDS, parseWorkflow, newComfyConfig, autoMapWorkflow, mappingCa
 import { SDWEBUI_DEFAULTS, normalizeSDWebUI, sdwebuiBase, sdwebuiHeaders, probeSDWebUI, buildSDWebUIRequest, loraPrompt } from '../sdwebui.js';
 import { normalizeSDWebUIState, selectedSDWebUIPreset, sdwebuiPresetDirty, loadSDWebUIPreset, saveSDWebUIPreset,
   renderSDWebUIConnection, renderSDWebUIParameters, renderSDWebUIPresets } from './sdwebui.js';
-import { DrawingLibrary, normalizeSnapshot, captureSnapshot, restoreSnapshot, makeDrawing, hydrateDrawings, revokeDrawings, filterDrawings, drawingPage, renderDrawingManager, renderDrawingViewer, exportDrawings, importArchive, drawingFilename, saveBlob, formatBytes } from './drawings.js';
+import { DrawingLibrary, normalizeSnapshot, captureSnapshot, restoreSnapshot, makeDrawing, hydrateDrawings, revokeDrawings, filterDrawings, drawingPage, renderDrawingManager, renderDrawingViewer, exportDrawings, importArchive, drawingFilename, saveBlob, formatBytes, galleryIndexStatus } from './drawings.js';
 import '../styles/drawings.css';
 
 const UI_STORAGE_NAME = 'tavern-draw-preview-ui-v1';
@@ -155,6 +192,7 @@ try {
   state = { ...initial };
 }
 Object.assign(state, normalizeSettings(state));
+state.experience = normalizeExperience(state.experience, Boolean(savedUI.settingsVersion));
 normalizeNovelAIState(state);
 normalizeComfyState(state);
 normalizeOpenAIState(state);
@@ -167,16 +205,32 @@ state.tagLibrary = normalizeTagLibrary(state.tagLibrary);
 state.workbench = normalizeWorkbench(state.workbench);
 state.drawingReviews = normalizeReviews(state.drawingReviews);
 state.vibeLibrary = normalizeVibeLibrary(state.vibeLibrary);
+state.readerSettings = normalizeReaderSettings(state.readerSettings);
+state.comicLibrary = normalizeComicLibrary(state.comicLibrary);
+state.localTools = normalizeLocalTools(state.localTools);
 if (!state.assistantDefaultsVersion) {
   if (state.assistant?.maxTokens === 1600) state.assistant.maxTokens = 4000;
   state.assistantDefaultsVersion = 1;
 }
 state.assistant = normalizeAssistant(state.assistant);
+state.assistantSchemes = normalizeAssistantSchemes(state.assistantSchemes);
+state.assistantSchemeId = typeof state.assistantSchemeId === 'string' ? state.assistantSchemeId : '';
 state.characterProfiles = migrateProfileLibrary(savedUI);
 state.characterSceneOverride = normalizeCharacterScene(state.characterSceneOverride);
 state.assistantInput = typeof state.assistantInput === 'string' ? state.assistantInput.slice(0, 32000) : '';
-try { state.assistantDraft = state.assistantDraft ? parseAssistantResult(JSON.stringify(state.assistantDraft), { stored: true }) : null; }
+try { state.assistantDraft = state.assistantDraft ? parseAssistantResult(JSON.stringify(state.assistantDraft), { stored: true, editable: true }) : null; }
 catch { state.assistantDraft = null; }
+state.assistantHistory = readAssistantArchive(UI_STORAGE_NAME, state.assistantHistory, state.updatedAt);
+let persistedAssistantHistory = null;
+let configSaveState = 'saved';
+let refreshComicSave = () => {};
+const pendingSave = createCoalescedSave(() => persist(), {
+  onPending: () => { configSaveState = 'pending'; refreshSaveStatus(); },
+  onError: (error) => { configSaveState = 'error'; refreshSaveStatus(); toast(error.message); },
+});
+registerUIStateFlush(() => pendingSave.flush());
+window.addEventListener('pagehide', () => pendingSave.flush());
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') pendingSave.flush(); });
 state.history = Array.isArray(state.history) ? state.history.filter((id) => samples.some((sample) => sample.id === id)) : [...initial.history];
 state.favorites = Array.isArray(state.favorites) ? state.favorites.filter((id) => samples.some((sample) => sample.id === id)) : [];
 if (!state.settingsVersion) {
@@ -202,9 +256,14 @@ const drawingUI = {
   exportOptions: { naming: 'index-title', metadata: 'keep' },
 };
 const viewerUI = { ids: [], index: 0, details: true, zoom: false, imageId: '', compare: false, compareId: '', review: false, reviewHistory: [] };
+let chatImageOpenRevision = 0;
 let imageEditorUI = null;
 let activeJobId = null;
 let generationVerified = null;
+const verifiedImages = new Set(), verifiedAssistant = new Set();
+const pageScrolls = new Map();
+let workflowReturn = null, generationIssue = '';
+let setupExpanded = false;
 let libraryReady;
 let libraryReload;
 let cleanupBusy = false;
@@ -349,11 +408,14 @@ let keyVisible = false;
 let connectionStatus = { message: '等待输入秘钥', tone: 'neutral' };
 const networkDiagnosticPanel = new NetworkDiagnosticPanel({
   context: () => networkContext(state.provider),
+  relayProbe: (context, { signal }) => assistantRelayRequest('probe', {
+    settings: { source: 'api', apiTransport: 'tavern', endpoint: context.endpoint }, key: context.key,
+  }, { signal, timeout: 10 }),
   onClose: () => debugToolsPanel.refresh(),
 });
 function networkContext(provider) {
   if (provider === 'assistant') return {
-    provider, endpoint: state.assistant.endpoint, key: assistantUI.key,
+    provider, endpoint: state.assistant.endpoint, key: assistantUI.key, apiTransport: state.assistant.apiTransport,
     error: assistantUI.error || assistantUI.modelsError,
   };
   return {
@@ -380,8 +442,153 @@ const assistantUI = { busy: false, error: '', controller: null, key: '', keyVisi
   keyDirty: false, keyRevision: 0, keyTimer: null, keyWriting: Promise.resolve(),
   models: [], modelsBusy: false, modelsStatus: '', modelsError: '', modelsOpen: false, modelsQuery: '',
   modelsController: null, tavernCurrent: '', modelSource: '', summary: null,
+  failureResponse: (readBrowserCache(storageKey('linghuashi-assistant-failure-v1')) || '').slice(0, 100000),
   binding: validBinding(state.assistantBinding) ? state.assistantBinding : null,
   requestId: typeof state.assistantRequestId === 'string' ? state.assistantRequestId : null };
+window.addEventListener('pagehide', () => {
+  writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), assistantUI.failureResponse || '');
+});
+const assistantPresetPanel = new AssistantPresetPanel({
+  settings: () => state.assistant,
+  available: isInstalled,
+  update: (patch) => { state.assistant = normalizeAssistant({ ...state.assistant, ...patch }); persist(); },
+  request: (action, value) => assistantHostRequest(action, value, { timeout: 20 }),
+  preview: async () => {
+    const options = normalizeAssistant(state.assistant), snapshot = captureSnapshot(state);
+    const context = await assistantHostRequest('context', { binding: assistantUI.binding,
+      contextSelection: assistantContextPanel.selection }, { timeout: 20 });
+    context.characterScene = state.characterSceneOverride ? snapshot.characterScene
+      : resolveCharacterScene(state.characterProfiles, context.chatKey, context.characterAvatars);
+    const messages = await prepareAssistantMessages({ options, operation: state.assistantInput.trim() ? 'generate' : 'illustrate',
+      input: state.assistantInput.trim(), context, snapshot });
+    assistantContextPanel.show(context, assistantUsage(messages, context, options.maxTokens));
+    return messages;
+  },
+});
+const taskPromptPanel = new TaskPromptPanel({
+  draftKey: storageKey('linghuashi-task-prompt-drafts-v1'),
+  settings: () => state.assistant,
+  update: (patch) => {
+    const previous = state.assistant;
+    state.assistant = normalizeAssistant({ ...previous, ...patch });
+    try { persist(); } catch (error) { state.assistant = previous; throw error; }
+    render(true);
+  },
+  preview: async (operation, taskPrompts) => {
+    pendingSave.flush();
+    let options = normalizeAssistant({ ...state.assistant, taskPrompts }), base, note = '使用当前助手配置';
+    const snapshot = captureSnapshot(state), params = snapshot.params || snapshot.config.params;
+    if (operation === 'comic') {
+      const project = comicPanel.project;
+      if (!project) throw new Error('请先在漫画工坊创建或选择项目');
+      options = comicAssistantOptions(options, project);
+      base = comicStoryboardMessages({ ...project, source: project.source.trim() || '剧情将在创建分镜时填入。' }, options);
+      note = `当前漫画项目 · ${project.panelCount} 格${project.source.trim() ? '' : ' · 剧情为占位内容'}`;
+    } else if (operation === 'profile') {
+      base = buildProfileMessages([manualProfileSource('预览角色', '角色资料将在创建档案时填入。')], options);
+      note = '角色资料为占位内容';
+    } else if (operation === 'edit') {
+      base = imageEditMessages(snapshot, '在此填入单图修改要求', options);
+      note = '当前生图参数 · 修改要求为占位内容';
+    } else {
+      const context = await assistantHostRequest('context', { binding: assistantUI.binding,
+        contextSelection: assistantContextPanel.selection }, { timeout: 20 });
+      context.characterScene = state.characterSceneOverride ? snapshot.characterScene
+        : resolveCharacterScene(state.characterProfiles, context.chatKey, context.characterAvatars);
+      base = buildAssistantMessages({ settings: options, operation, input: state.assistantInput.trim(), context,
+        target: { provider: snapshot.provider, model: params.model } });
+    }
+    return { messages: await prepareUtilityMessages(base, operation, options), note };
+  },
+});
+const assistantWorkflowPanel = new AssistantWorkflowPanel({
+  settings: () => state.assistant,
+  update: (patch, continuous) => {
+    state.assistant = normalizeAssistant({ ...state.assistant, ...patch });
+    if (continuous) pendingSave.schedule(); else persist();
+  },
+  isBusy: () => assistantUI.busy || profileAI.busy || imageEditorUI?.busy,
+  editRules: (operation) => taskPromptPanel.open(operation),
+  request: (action, value) => assistantHostRequest(action, value, { timeout: 20 }),
+});
+const assistantDiagnosticPanel = new AssistantDiagnosticPanel({
+  release: RELEASE, settings: () => state.assistant,
+  hasFailure: () => Boolean(assistantUI.failureResponse),
+  preview: () => assistantPresetPanel.click('preview'),
+  failure: () => {
+    const details = host?.querySelector('[data-assistant-failure]');
+    if (details) { details.open = true; details.scrollIntoView({ block: 'nearest' }); }
+  },
+  network: () => networkDiagnosticPanel.open(networkContext('assistant')),
+});
+const assistantSchemePanel = new AssistantSchemePanel({
+  library: () => state.assistantSchemes, active: () => state.assistantSchemeId,
+  updateLibrary: (library, id) => {
+    const previous = state.assistantSchemes, active = state.assistantSchemeId;
+    state.assistantSchemes = library; state.assistantSchemeId = id;
+    try { persist(); } catch (error) { state.assistantSchemes = previous; state.assistantSchemeId = active; throw error; }
+  },
+  capture: captureAssistantScheme, load: loadAssistantScheme,
+});
+const assistantLintPanel = new AssistantLintPanel({
+  current: () => ({ plan: state.assistantDraft, index: assistantUI.illustrationIndex || 0 }),
+  target: async () => {
+    if (!assistantUI.binding) return assistantUI.lintTarget ?? null;
+    const context = await assistantHostRequest('context', { binding: assistantUI.binding }, { timeout: 20 });
+    return context.target;
+  },
+  apply: (plan) => {
+    const previous = state.assistantDraft; state.assistantDraft = plan;
+    try { persist(); } catch (error) { state.assistantDraft = previous; throw error; }
+    render(true);
+  },
+});
+const assistantHistoryPanel = new AssistantHistoryPanel({
+  library: () => state.assistantHistory, current: assistantWorkspace,
+  disabled: () => assistantUI.busy || Boolean(profileAI.ui?.busy) || Boolean(imageEditorUI?.busy),
+  notice: () => assistantUI.historyWarning || '',
+  save: (label) => {
+    updateAssistantHistory(rememberAssistantDraft(state.assistantHistory, {
+      ...assistantWorkspace(), label, operation: 'manual',
+    }, { budget: assistantHistoryBudget(state.assistantDraft) }));
+    assistantUI.historyWarning = '';
+  },
+  restore: (row) => {
+    replaceAssistantDraft(structuredClone(row.plan), { input: row.input, index: row.index, record: false });
+    assistantUI.error = ''; assistantUI.lintTarget = null;
+    render(true);
+  },
+  update: updateAssistantHistory,
+});
+const assistantRecoveryPanel = new AssistantRecoveryPanel({
+  current: assistantWorkspace, original: () => assistantUI.failureResponse,
+  disabled: () => assistantUI.busy || Boolean(profileAI.ui?.busy) || Boolean(imageEditorUI?.busy),
+  apply: (plan, context) => {
+    replaceAssistantDraft(plan, { operation: 'recovered', input: context.input || '' });
+    assistantUI.failureResponse = ''; assistantUI.error = ''; assistantUI.lintTarget = null;
+    render(true); toast('已采用修复草稿，请核对后生成');
+  },
+});
+const assistantContextPanel = new AssistantContextPanel({
+  disabled: () => assistantUI.busy,
+  read: (contextSelection) => assistantHostRequest('context', { binding: assistantUI.binding, contextSelection }, { timeout: 20 }),
+  preview: () => assistantPresetPanel.click('preview'),
+});
+const assistantScenePanel = new AssistantScenePanel({
+  current: assistantWorkspace,
+  disabled: () => assistantUI.busy || Boolean(profileAI.ui?.busy) || Boolean(imageEditorUI?.busy),
+  revision: () => JSON.stringify([assistantWorkspace(), normalizeAssistant(state.assistant), currentChat().key,
+    assistantContextPanel.selection, assistantScenePanel.instruction, assistantScenePanel.locks,
+    state.provider, state.novelai?.model, state.openai?.model, state.sdwebui?.model, state.model]),
+  analyze: reanalyzeSelectedScene,
+  adopt: async (proposal) => {
+    await validateAssistantContext(proposal.context);
+    if (proposal.revision !== assistantScenePanel.revision()) throw new Error('草稿或设置已变化，请重新分析此画面');
+    replaceAssistantDraft(proposal.plan, { operation: 'reanalyze', index: assistantUI.illustrationIndex || 0,
+      binding: assistantUI.binding, requestId: assistantUI.requestId });
+    render(true); toast('当前画面已更新');
+  },
+});
 const profileUI = { scope: 'global', draft: structuredClone(state.characterProfiles.profiles[0] || null),
   characters: [], dirty: false, busy: false, error: '' };
 const profileAI = new ProfileAIPanel({
@@ -394,12 +601,14 @@ const profileAI = new ProfileAIPanel({
     if (assistantUI.busy || imageEditorUI?.busy) throw new Error('文字助手正在处理其他任务，请稍后重试');
     await saveAssistantKey(); signal.throwIfAborted();
     const options = normalizeAssistant(state.assistant), identity = JSON.stringify(options);
-    const raw = options.source === 'api'
-      ? await requestAssistantText(options, assistantUI.key, messages, { signal })
-      : await assistantHostRequest('text', { messages }, { signal, timeout: options.timeout });
-    signal.throwIfAborted();
-    if (identity !== JSON.stringify(normalizeAssistant(state.assistant))) throw new Error('文字模型配置已改变，请重新生成草稿');
-    return raw;
+    const trace = assistantDiagnosticPanel.start('profile', options);
+    try {
+      const prepared = await prepareUtilityMessages(messages, 'profile', options, signal, trace);
+      const raw = await executeAssistantText(prepared, options, signal, trace);
+      signal.throwIfAborted();
+      if (identity !== JSON.stringify(normalizeAssistant(state.assistant))) throw new Error('文字模型配置已改变，请重新生成草稿');
+      trace.finish(); return raw;
+    } catch (error) { trace.finish(error); throw error; }
   },
   promptTools: (picker) => tagPanel.open(picker),
   save: ({ library, profiles }) => {
@@ -433,6 +642,15 @@ const taskQueue = new GenerationQueue({
     if (job) runtimeState = ({ queued: 'queued', running: 'generating', completed: 'success', failed: 'error', cancelled: 'ready', paused: 'ready', uncertain: 'error' })[job.status] || 'ready';
     for (const item of taskQueue.jobs) reportChatTask(item);
     externalTaskService.report(chatPost);
+    try {
+      const comicUpdate = reconcileComicJobs(state.comicLibrary, taskQueue.jobs);
+      if (comicUpdate) {
+        state.comicLibrary = comicUpdate; pendingSave.schedule();
+        if (state.page === 'comic') void comicPanel.refreshAssets();
+      }
+    } catch (error) {
+      comicPanel.fail(new Error(`图片已保留在绘图管理，漫画关联暂未更新：${error.message}`));
+    }
     if (host) render();
   },
   cancel: cancelComfyPending,
@@ -490,6 +708,7 @@ const workbenchPanel = new WorkbenchPanel({
   },
   render: () => render(true),
 });
+const comicChapterStore = new ComicChapterStore({ request: isInstalled() ? storageRequest : null, local: new BackupStore() });
 const backupPanel = new BackupPanel({
   getState: () => state, getLayout: () => config,
   assets: referenceAssets, library: drawingLibrary,
@@ -499,8 +718,28 @@ const backupPanel = new BackupPanel({
     await saveAssistantKey(); persist();
   },
   active: () => taskQueue.jobs.some((job) => ['running', 'queued'].includes(job.status))
-    || assistantUI.busy || imageEditorUI?.busy || imageEditorUI?.submitting || processingPanel.busy || presetBusy || workbenchPanel.ui.busy,
+    || assistantUI.busy || imageEditorUI?.busy || imageEditorUI?.submitting || processingPanel.busy || presetBusy || workbenchPanel.ui.busy
+    || comicPanel.busy || comicPanel.submitting || localToolsPanel.busy,
   tasks: () => taskPersistence.list(),
+  exportDrafts: async () => { await recoveryPanel.ready; return recoveryBundle(recoveryPanel.selectedRows()); },
+  importDrafts: (bundle) => recoveryPanel.receive(bundle),
+  exportComicChapters: () => comicChapterStore.bundle(state.comicLibrary),
+  restoreComicChapters: async (library, bundle, imageIds, destination) => {
+    const next = structuredClone(library);
+    const store = destination === 'browser' ? new ComicChapterStore({ local: comicChapterStore.local, location: 'browser' }) : comicChapterStore;
+    for (const [index, row] of next.shelved.entries()) {
+      const record = bundle.find((entry) => entry.key === row.key)?.record;
+      if (!record) continue;
+      const project = structuredClone(record.project);
+      Object.assign(project, { id: row.id, seriesId: row.seriesId, chapter: row.chapter, archived: row.archived });
+      for (const panel of project.panels) {
+        const rewrite = (ref) => ref && imageIds.has(ref.id) ? { ...ref, id: imageIds.get(ref.id), location: destination } : ref;
+        panel.image = rewrite(panel.image); panel.versions = panel.versions.map(rewrite); panel.jobs = [];
+      }
+      next.shelved[index] = await store.put(project);
+    }
+    return validateComicLibrary(next);
+  },
   applyState: async (next) => {
     const previous = state;
     state = { ...next, page: 'settings' };
@@ -515,6 +754,7 @@ const backupPanel = new BackupPanel({
     artistUI.draft = structuredClone(state.artistLibrary[0] || null); artistUI.dirty = false;
     profileUI.draft = structuredClone(state.characterProfiles.profiles[0] || null); profileUI.dirty = false;
     generationVerified = null; resetConnection(); advancedPanel.resetMask();
+    comicPanel.leave(); comicPanel.candidate = null; comicPanel.confirm = null;
     assistantUI.binding = null; assistantUI.requestId = null;
     delete state.assistantBinding; delete state.assistantRequestId;
   },
@@ -529,6 +769,173 @@ const backupPanel = new BackupPanel({
   render: () => render(true), notify: toast,
 });
 
+const readerPanel = new ReaderPanel({
+  chat: currentChat,
+  settings: () => state.readerSettings,
+  update: (value) => { state.readerSettings = value; pendingSave.schedule(); },
+  request: (action, value, signal) => assistantHostRequest(action, value, { signal, timeout: 300 }),
+  palette: () => {
+    const css = getComputedStyle(document.documentElement);
+    return Object.fromEntries(['bg', 'text', 'muted', 'border', 'accent'].map((key) => [key, css.getPropertyValue(`--${key}`).trim()]));
+  },
+  save: saveBlob,
+});
+
+let preparedComicGeneration = null;
+function comicGenerationIdentity() {
+  const provider = state.provider, { keyRef, ...connection } = state.connections[provider] || {};
+  return JSON.stringify([captureSnapshot(state), connection, credentialState[provider].revision,
+    credentials[provider].endpoint, credentials[provider].auth, state.openaiEndpoint, state.openaiPath,
+    state.openaiTimeout, state.cacheLocation, state.enabled]);
+}
+const comicPanel = new ComicPanel({
+  chapterStore: comicChapterStore,
+  flushLibrary: () => pendingSave.flush(),
+  saveStatus: () => configSaveInfo(),
+  retrySave: () => persist(),
+  workspaceKey: storageKey('linghuashi-comic-workspace-v1'),
+  experience: () => state.experience,
+  getLibrary: () => state.comicLibrary,
+  update: (value) => {
+    const previous = state.comicLibrary;
+    state.comicLibrary = validateComicLibrary(value);
+    if (JSON.stringify(state).length > 2000000) {
+      state.comicLibrary = previous; throw new Error('配置空间已满，请先备份并精简漫画项目或其他配置');
+    }
+    pendingSave.schedule();
+  },
+  currentScene: () => captureSnapshot(state).characterScene,
+  getProfiles: () => effectiveProfiles(state.characterProfiles, currentChat().key),
+  assistantIdentity: () => {
+    const { keyRef, ...settings } = normalizeAssistant(state.assistant);
+    return JSON.stringify([settings, assistantUI.keyRevision, assistantUI.tavernCurrent]);
+  },
+  referenceCapability: () => {
+    const snapshot = captureSnapshot(state), params = snapshot.params || snapshot.config.params;
+    const cap = modelCapabilities(snapshot.provider, params.model, advancedOf(snapshot));
+    return snapshot.provider === 'novelai' && cap.character ? '当前 NovelAI V4.5 支持项目人物参考图'
+      : snapshot.provider === 'openai' && cap.image ? '当前 OpenAI 兼容接口已启用图片编辑参考'
+      : '当前接口或模型未启用人物参考图能力';
+  },
+  storeReference: async (file, signal) => {
+    const prepared = await normalizeReferenceImage(file);
+    signal.throwIfAborted();
+    const asset = await referenceAssets.put(prepared.blob, { ...prepared, name: file.name });
+    signal.throwIfAborted(); return asset;
+  },
+  providerTitle: () => GENERATION_MODES.find((mode) => mode.id === state.provider)?.title || state.provider,
+  setup: () => {
+    const snapshot = captureSnapshot(state), params = snapshot.params || snapshot.config.params;
+    const connection = state.connectionProfiles[state.provider]?.find((row) => row.id === state.connectionProfileIds[state.provider]);
+    return { assistant: state.assistant, currentModel: assistantUI.tavernCurrent,
+      budget: assistantUI.budget?.operation === 'comic' ? assistantUI.budget : null,
+      image: { connection: connection?.name || '当前配置', model: params.model || state.model,
+        size: state.provider === 'openai' ? openAISize(params) : params.width && params.height ? `${params.width} × ${params.height}` : '',
+        steps: params.steps, location: state.cacheLocation, storage: state.cacheLocation === 'server' ? '酒馆服务器' : '当前浏览器' } };
+  },
+  navigate: (page) => openWorkflowPage(page, 'comic'),
+  editRules: () => taskPromptPanel.open('comic'),
+  diagnostic: () => assistantDiagnosticPanel.traces.find((trace) => trace.record.operation === 'comic')?.report(),
+  inspectModel: async () => {
+    const result = await assistantHostRequest('models', { refresh: false }, { timeout: 20 });
+    assistantUI.tavernCurrent = result.current || '';
+    assistantUI.tavernIdentity = result.signature || result.source || '';
+  },
+  jobs: () => taskQueue.jobs, cancelTask: (id) => taskQueue.cancel(id),
+  source: (range, signal) => assistantHostRequest('comic-source', { range }, { signal, timeout: 30 }),
+  storyboard: async (project, signal) => {
+    if (!state.enabled) throw new Error('请先在插件设置中启用灵画师');
+    if (assistantUI.busy || profileAI.busy || imageEditorUI?.busy) throw new Error('提示词助手正在处理其他任务，请稍后重试');
+    await saveAssistantKey();
+    const options = comicAssistantOptions(state.assistant, project), trace = assistantDiagnosticPanel.start('comic', options);
+    assistantUI.busy = true;
+    try {
+      const messages = await prepareUtilityMessages(comicStoryboardMessages(project, options), 'comic', options, signal, trace);
+      const raw = await executeAssistantText(messages, options, signal, trace);
+      signal.throwIfAborted(); trace.step('parse');
+      const result = parseComicStoryboard(raw, project);
+      trace.finish(null, result.panels.length); return result;
+    } catch (error) { trace.finish(error); throw error; }
+    finally { assistantUI.busy = false; }
+  },
+  previewBudget: async (project) => {
+    const options = comicAssistantOptions(state.assistant, project);
+    const messages = await prepareUtilityMessages(comicStoryboardMessages(project, options), 'comic', options);
+    return updateAssistantBudget(messages, options, 'comic', project.panelCount);
+  },
+  rewritePanel: async (project, panelId, instruction, locks, signal) => {
+    if (!state.enabled) throw new Error('请先在插件设置中启用灵画师');
+    if (assistantUI.busy || profileAI.busy || imageEditorUI?.busy) throw new Error('提示词助手正在处理其他任务，请稍后重试');
+    await saveAssistantKey();
+    const options = comicAssistantOptions(state.assistant, project), trace = assistantDiagnosticPanel.start('comic', options);
+    assistantUI.busy = true;
+    try {
+      const messages = await prepareUtilityMessages(comicPanelRewriteMessages(project, panelId, instruction, locks, options), 'comic', options, signal, trace);
+      const raw = await executeAssistantText(messages, options, signal, trace);
+      signal.throwIfAborted(); trace.step('parse');
+      const result = parseComicPanelRewrite(raw, project, panelId, locks);
+      trace.finish(null, 1); return result;
+    } catch (error) { trace.finish(error); throw error; }
+    finally { assistantUI.busy = false; }
+  },
+  submit: enqueueComicPanels,
+  identity: comicGenerationIdentity,
+  preflight: async (project, ids) => {
+    if (!state.enabled) throw new Error('插件尚未启用，请在插件设置中启用');
+    await libraryReady; await tasksReady;
+    if (!drawingLibrary.db || drawingUI.loading) throw new Error('图片存储尚未准备好，请稍候或前往调试工具检测存储');
+    preparedComicGeneration = null;
+    const identity = comicGenerationIdentity(), signature = comicGenerationSignature(project, ids, identity);
+    const provider = state.provider, credential = { ...credentials[provider] }, storageLocation = state.cacheLocation;
+    const connection = provider === 'sdwebui' ? structuredClone(state.connections.sdwebui)
+      : { endpoint: state.openaiEndpoint, path: state.openaiPath, timeout: state.openaiTimeout };
+    const base = captureSnapshot(state), rows = [];
+    for (const id of ids) {
+      const panel = project.panels.find((row) => row.id === id);
+      if (!panel) throw new Error('画格已变化，请重新选择');
+      const snapshot = comicPanelSnapshot(base, project, panel);
+      const advanced = advancedOf(snapshot);
+      if (advanced.mode === 'reference') {
+        for (const ref of advanced.referenceKind === 'character' ? [advanced.character] : advanced.references) {
+          try { await referenceAssets.get(ref); }
+          catch { throw new Error(`第 ${project.panels.indexOf(panel) + 1} 格人物参考图无法读取，请重新上传或取消项目参考图`); }
+        }
+      }
+      rows.push({ panelId: id, plan: await prepareGenerationPlan(snapshot, credential, connection) });
+    }
+    if (identity !== comicGenerationIdentity()) throw new Error('生图接口配置已变化，请重新选择并确认');
+    const token = randomUUID();
+    preparedComicGeneration = { token, signature, provider, storageLocation, credential, rows };
+    return { token, preview: rows.map(({ panelId, plan }) => comicPlanPromptPreview(plan, panelId)) };
+  },
+  listImages: async (location) => { await libraryReady; return drawingLibrary.list(location); },
+  favoriteImage: async (id, location) => {
+    await libraryReady;
+    await drawingLibrary.setFavorite(id, true, location);
+    if (location === state.cacheLocation) await reloadDrawings();
+  },
+  importImages: async (project, blobs, signal) => {
+    await libraryReady;
+    const location = state.cacheLocation, rows = [], refs = new Map(), shared = new Map();
+    for (const [key, blob] of blobs) {
+      signal.throwIfAborted();
+      if (shared.has(blob)) { refs.set(key, shared.get(blob)); continue; }
+      const row = await makeDrawing(blob, { title: `${project.title} · 导入配图`, favorite: true, snapshot: null });
+      const ref = { id: row.id, location };
+      rows.push(row); refs.set(key, ref); shared.set(blob, ref);
+    }
+    signal.throwIfAborted();
+    if (location !== state.cacheLocation) throw new Error('存储位置已变化，请重新导入漫画');
+    await drawingLibrary.add(rows, location);
+    await reloadDrawings();
+    return refs;
+  },
+  materialize: (row, signal) => drawingLibrary.materialize(row, signal), save: saveBlob,
+  showQueue: () => showPage('generate'),
+});
+refreshComicSave = () => comicPanel.refreshSaveStatus();
+subscribeUIStateSync(() => refreshSaveStatus());
+
 const esc = escapeHtml;
 const button = (name, label, action, classes = '', attrs = '') => `<button type="button" class="ui-button ${classes}" data-action="${action}" ${attrs}>${icon(name)}<span>${label}</span></button>`;
 const iconButton = (name, title, action, attrs = '') => `<button type="button" class="ui-icon-button" data-action="${action}" title="${title}" aria-label="${title}" ${attrs}>${icon(name)}</button>`;
@@ -542,6 +949,7 @@ const statusData = () => ({
   error: { label: '生成失败', icon: 'circle-alert', class: 'danger' },
 })[runtimeState];
 const statusBadge = () => {
+  if (runtimeState === 'ready') return readinessBadge(setupReadiness().image);
   const item = statusData();
   return `<span class="ui-status ${item.class}">${icon(item.icon, runtimeState === 'generating' ? 'spin' : '')}${item.label}</span>`;
 };
@@ -572,13 +980,258 @@ function decoratePageHeading() {
   group.append(title);
 }
 
+const recoveryPanel = new RecoveryDraftPanel({
+  collect: () => {
+    const rows = [], entries = taskPromptPanel.draftStore?.value.entries || {};
+    for (const [task, entry] of Object.entries(entries)) rows.push({ id: `rules:${task}`, kind: 'rules',
+      title: ASSISTANT_OPERATIONS.find(([id]) => id === task)?.[1] || task, updatedAt: entry.updatedAt, data: { task, entry } });
+    if (state.assistantDraft || state.assistantInput?.trim()) rows.push({ id: 'assistant:current', kind: 'assistant',
+      title: '助手当前画面', updatedAt: state.updatedAt, data: { plan: state.assistantDraft, input: state.assistantInput || '' } });
+    for (const entry of state.assistantHistory || []) rows.push({ id: `assistant:${entry.id}`, kind: 'assistant',
+      title: entry.label || '助手历史画面', updatedAt: entry.createdAt, data: { plan: entry.plan, input: entry.input } });
+    if (assistantUI.failureResponse) rows.push({ id: 'response:assistant', kind: 'response', title: '助手最近失败回复',
+      updatedAt: state.updatedAt, data: { response: assistantUI.failureResponse } });
+    for (const project of state.comicLibrary.projects) {
+      const workspace = comicPanel.workspace.get(project.id);
+      if (workspace && (workspace.draft.candidate || workspace.draft.rewrite || workspace.draft.failureResponse || workspace.past.length)) {
+        rows.push({ id: `comic:${project.id}`, kind: 'comic', title: project.title, updatedAt: workspace.updatedAt, data: { project, workspace } });
+      }
+    }
+    return rows;
+  },
+  flush: async () => { taskPromptPanel.draftStore?.flush(); comicPanel.stashDraft(); comicPanel.workspace.flush(); pendingSave.flush(); },
+  active: () => assistantUI.busy || comicPanel.busy || comicPanel.submitting || taskQueue.jobs.some((row) => ['running', 'queued'].includes(row.status)),
+  restore: async (row) => {
+    if (row.kind === 'rules') {
+      const { task, entry } = row.data;
+      if (!row.local) {
+        taskPromptPanel.draftStore.set(task, entry.draft, entry.baseline); taskPromptPanel.draftStore.flush();
+        taskPromptPanel.drafts.delete(task); taskPromptPanel.baselines.delete(task);
+      }
+      taskPromptPanel.open(task);
+    } else if (row.kind === 'assistant') {
+      if (state.assistantDraft) state.assistantHistory = rememberAssistantDraft(state.assistantHistory,
+        { plan: state.assistantDraft, input: state.assistantInput, operation: 'checkpoint' });
+      state.assistantDraft = structuredClone(row.data.plan); state.assistantInput = row.data.input;
+      assistantUI.binding = null; assistantUI.illustrationIndex = 0; assistantUI.requestId = null;
+      delete state.assistantBinding; delete state.assistantRequestId; persist(); showPage('assistant');
+    } else if (row.kind === 'response') {
+      assistantUI.failureResponse = row.data.response; assistantUI.failureOpen = true; showPage('assistant');
+    } else {
+      if (row.local) { comicPanel.stashDraft(); state.comicLibrary.activeId = row.data.project.id; }
+      else {
+        const { project, workspace } = copyComicRecovery(row);
+        const library = saveComicProject(state.comicLibrary, project);
+        if (JSON.stringify({ ...state, comicLibrary: library }).length > 2000000) throw new Error('配置空间不足，请先备份并整理漫画项目');
+        comicPanel.stashDraft(); state.comicLibrary = library;
+        comicPanel.workspace.value.projects.push(workspace); comicPanel.workspace.flush();
+      }
+      comicPanel.loadDraft(); comicPanel.clearPreviews(); persist(); showPage('comic');
+    }
+  },
+  render: () => render(true),
+});
+
 function persist() {
+  pendingSave.cancel();
   for (const provider of CONNECTION_PROVIDERS) syncConnection(provider);
   state.updatedAt = Date.now();
-  const { storageUsage, storageStatus, ...saved } = state;
+  const { storageUsage, storageStatus, assistantHistory, ...saved } = state;
   const serialized = JSON.stringify(saved);
   if (serialized.length > 2000000) throw new Error('配置空间已满，请导出并精简预设或画师串库');
+  if (persistedAssistantHistory !== assistantHistory) {
+    persistAssistantArchive(UI_STORAGE_NAME, assistantHistory);
+    persistedAssistantHistory = assistantHistory;
+  }
   configCacheAvailable = persistUIState(UI_STORAGE_NAME, saved, serialized);
+  configSaveState = configCacheAvailable ? 'saved' : isInstalled() ? 'syncing' : 'error';
+  refreshSaveStatus();
+  refreshSetupSummary();
+}
+
+function configSaveInfo() {
+  const sync = getUIStateSync();
+  const local = configCacheAvailable;
+  if (configSaveState === 'pending') return { state: 'pending', message: '有修改待保存', retry: false };
+  if (configSaveState === 'error') return { state: 'error', message: '保存未完成，请重试或导出项目', retry: true };
+  if (!isInstalled()) return { state: local ? 'saved' : 'error', message: local ? '已保存本设备' : '本设备未能保存，请重试或导出项目', retry: !local };
+  const prefix = local ? '本设备已保存' : '本设备缓存不可用';
+  if (['error', 'unconfirmed'].includes(sync.status)) return { state: 'error', message: `${prefix} · 酒馆同步待重试`, retry: true };
+  if (sync.status === 'received') return { state: local ? 'saved' : 'syncing', message: `${prefix} · 酒馆已接收`, retry: !local };
+  return { state: 'syncing', message: `${prefix} · 等待酒馆接收`, retry: false };
+}
+function refreshSaveStatus() {
+  const info = configSaveInfo();
+  host?.querySelectorAll('[data-workspace-save]').forEach((node) => {
+    node.textContent = info.message; node.dataset.saveState = info.state;
+  });
+  refreshComicSave();
+}
+
+function assistantReadyIdentity(options = state.assistant) {
+  return JSON.stringify([options.source, options.endpoint.trim(), options.apiTransport,
+    options.source === 'api' ? options.model.trim() : options.tavernModel.trim() || assistantUI.tavernCurrent,
+    options.source === 'api' ? assistantUI.key : 'tavern', options.responseMode]);
+}
+
+function currentImageReceipt() {
+  try {
+    const provider = state.provider, snapshot = provider === 'comfyui' ? { provider, config: state.comfyui } : { provider, params: state[provider] };
+    const params = snapshot.params || snapshot.config.params;
+    const current = credentials[provider], connection = state.connections[provider];
+    let url, authorization = '';
+    if (provider === 'novelai') {
+      const route = resolvedService || resolveNovelAIService(current.key, current.endpoint);
+      if (!route.endpoint) return '';
+      url = `${route.endpoint}/ai/generate-image`; authorization = `Bearer ${current.key.trim()}`;
+    } else if (provider === 'openai') {
+      const advanced = advancedOf(snapshot);
+      url = openAIURLs(state.openaiEndpoint, advanced.mode === 'text' ? state.openaiPath : advanced.editPath).generation;
+      authorization = current.key.trim() ? `Bearer ${current.key.trim()}` : '';
+    } else if (provider === 'sdwebui') {
+      url = `${sdwebuiBase(current.endpoint)}${buildSDWebUIRequest(snapshot).path}`;
+      authorization = sdwebuiHeaders(connection, current.key).Authorization || '';
+    } else {
+      url = `${normalizeComfyEndpoint(current.endpoint)}/prompt`;
+      authorization = current.auth === 'bearer' ? `Bearer ${current.key.trim()}` : '';
+    }
+    return JSON.stringify([provider, url, params.model || params.checkpoint || snapshot.config?.name || 'SDWebUI 当前模型', authorization]);
+  } catch { return ''; }
+}
+
+function setupReadiness() {
+  const provider = state.provider, current = credentials[provider], cs = credentialState[provider];
+  const params = provider === 'comfyui' ? state.comfyui.params : state[provider];
+  const route = provider === 'novelai' ? resolveNovelAIService(current.key, current.endpoint) : null;
+  return {
+    image: imageReadiness({ provider, endpoint: provider === 'openai' ? state.openaiEndpoint : current.endpoint,
+      hasKey: Boolean(current.key.trim()), auth: current.auth, enabled: state.enabled, model: params.model || '',
+      credentialError: cs.error ? cs.message : cs.dirty ? '秘钥正在保存，请稍候' : '',
+      route: resolvedService ? 'resolved' : route?.kind, workflowReady: Boolean(state.comfyui?.graph && state.comfyui?.mapping?.positive),
+      probe: connectionStatus, generated: verifiedImages.has(currentImageReceipt()) || provider === 'openai' && openAIGenerationVerified() }),
+    assistant: assistantReadiness({ ...state.assistant, hasKey: Boolean(assistantUI.key.trim()),
+      model: state.assistant.source === 'api' ? state.assistant.model : state.assistant.tavernModel,
+      tavernCurrent: assistantUI.tavernCurrent, installed: isInstalled(), enabled: state.enabled,
+      modelSource: assistantUI.models.length ? assistantUI.modelSource : '', modelsError: assistantUI.modelsError,
+      busy: assistantUI.busy, succeeded: verifiedAssistant.has(assistantReadyIdentity()),
+      credentialError: /失败|无法读取/.test(assistantUI.keyStatus) ? assistantUI.keyStatus : '' }),
+    storage: storageReadiness({ location: state.cacheLocation, installed: isInstalled(), loading: drawingUI.loading,
+      error: drawingUI.error }),
+  };
+}
+
+function setupSummary() {
+  const provider = state.provider, params = provider === 'comfyui' ? state.comfyui.params : state[provider];
+  const connection = state.connectionProfiles[provider]?.find((row) => row.id === state.connectionProfileIds[provider]);
+  const presets = state[{ novelai: 'novelaiPresets', openai: 'openaiPresets', comfyui: 'comfyPresets', sdwebui: 'sdwebuiPresets' }[provider]] || [];
+  const presetId = state[{ novelai: 'novelaiPresetId', openai: 'openaiPresetId', comfyui: 'comfyPresetId', sdwebui: 'sdwebuiPresetId' }[provider]];
+  const assistant = state.page === 'comic' && comicPanel.project ? comicAssistantOptions(state.assistant, comicPanel.project) : state.assistant;
+  return {
+    image: `${GENERATION_MODES.find((mode) => mode.id === provider)?.title || provider}${connection ? ` · ${connection.name}` : ''}`,
+    model: params.model || params.checkpoint || (provider === 'comfyui' ? state.comfyui.name : '') || '跟随服务当前模型',
+    preset: presets.find((row) => row.id === presetId)?.name || '当前参数',
+    text: assistant.source === 'tavern' ? '跟随酒馆接口' : `独立 API · ${assistant.apiTransport === 'tavern' ? '酒馆转发' : '设备直连'}`,
+    textModel: assistant.source === 'api' ? assistant.model || '尚未选择' : assistant.tavernModel || assistantUI.tavernCurrent || '酒馆当前模型 · 待读取',
+    textPreset: assistant.presetMode === 'none' ? '仅任务规则与前置要求' : assistant.presetMode === 'current'
+      ? '当前酒馆已开启条目 + 任务规则' : '指定酒馆预设 + 任务规则',
+    storage: state.cacheLocation === 'server' ? '酒馆服务器 · 当前账号' : '浏览器 · 仅当前设备与站点',
+  };
+}
+
+function refreshSetupSummary() {
+  const node = host?.querySelector('[data-setup-root]');
+  if (!node) return;
+  const readiness = setupReadiness(), summary = setupSummary(), signature = JSON.stringify([readiness, summary]);
+  if (node.dataset.signature === signature) return;
+  setupExpanded = node.querySelector('details')?.open ?? setupExpanded;
+  node.dataset.signature = signature; node.innerHTML = renderReadiness(readiness, summary, setupExpanded);
+  paintIcons(node);
+}
+
+function experienceToolbar() {
+  return `<div class="experience-toolbar"><div class="experience-level" role="group" aria-label="设置显示范围">
+    ${[['common', '常用设置', 'list-filter'], ['full', '完整设置', 'sliders-horizontal']].map(([id, label, symbol]) =>
+      `<button type="button" data-guide-level="${id}" aria-pressed="${state.experience.level === id}">${icon(symbol)}${label}</button>`).join('')}</div>
+    <span class="workspace-save-state" data-workspace-save data-save-state="${configSaveState}" role="status"></span></div>`;
+}
+
+function primaryPageAction() {
+  if (state.page === 'generate') return button('sparkles', !state.enabled ? '插件已关闭'
+    : ['queued', 'generating'].includes(runtimeState) ? '加入队列' : '生成图像', 'generate', 'primary', !state.enabled ? 'disabled' : '');
+  if (state.page === 'assistant') {
+    if (assistantUI.busy) return button('square', '取消', 'assistant-cancel', 'secondary');
+    return button(currentAssistantPlan()?.positive.trim() ? 'image-plus' : 'sparkles',
+      currentAssistantPlan()?.positive.trim() ? '生成图片' : '生成提示词',
+      currentAssistantPlan()?.positive.trim() ? 'assistant-draw' : 'assistant-generate', 'primary',
+      `aria-label="${currentAssistantPlan()?.positive.trim() ? '快捷生成图片' : '快捷生成提示词'}" ${!state.enabled ? 'disabled' : ''}`);
+  }
+  if (state.page === 'comic') return guideCommand('comic-next', '继续当前步骤', 'arrow-right',
+    comicPanel.busy || comicPanel.submitting ? 'disabled' : '');
+  if (state.page === 'connection') return guideCommand('image-test', '测试连接', 'plug', `aria-label="快捷测试连接" ${connectionController ? 'disabled' : ''}`);
+  return '';
+}
+
+function openWorkflowPage(page, from = state.page) {
+  if (page !== from) workflowReturn = { page: from, label: from === 'comic' ? '返回漫画工坊' : from === 'assistant' ? '返回助手结果' : '返回上一步' };
+  showPage(page);
+}
+
+function revealSetting(selector) {
+  const node = host?.querySelector(selector);
+  if (!node) return;
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
+  node.scrollIntoView({ block: 'start' });
+}
+
+async function guideAction(action, buttonNode) {
+  pendingSave.flush();
+  if (action === 'open') { state.experience.dismissed = false; state.experience.completed = false; persist(); showPage('settings'); return; }
+  if (action === 'dismiss') { state.experience.dismissed = true; persist(); render(true); return; }
+  if (action === 'complete') {
+    if (!state.experience.goal || !guideSteps(state.experience, { ...setupReadiness(), chat: state }).every(guideStepComplete)) {
+      toast('仍有必需配置需要核对'); return;
+    }
+    state.experience.completed = true; persist(); render(true); return;
+  }
+  if (action === 'return') {
+    const target = workflowReturn?.page; workflowReturn = null;
+    if (target) showPage(target); return;
+  }
+  if (['settings', 'connection', 'generate', 'comic', 'gallery'].includes(action)) {
+    openWorkflowPage(action); return;
+  }
+  if (action === 'assistant') { openWorkflowPage('assistant'); revealSetting('.assistant-configuration'); return; }
+  if (action === 'assistant-config') { if (state.page !== 'assistant') openWorkflowPage('assistant'); revealSetting('.assistant-configuration'); return; }
+  if (action === 'assistant-models') { await fetchAssistantModels(false); refreshSetupSummary(); return; }
+  if (action === 'image-test') { await checkConnection(true); return; }
+  if (action === 'storage-settings' || action === 'chat-settings' || action === 'backup-settings') {
+    if (state.page !== 'settings') openWorkflowPage('settings');
+    revealSetting(action === 'storage-settings' ? '[aria-labelledby="cache-heading"]'
+      : action === 'chat-settings' ? '[aria-labelledby="display-heading"]' : '[data-backup-fold]');
+    return;
+  }
+  if (action === 'storage-check') { openWorkflowPage('debug'); await debugToolsPanel.runStorage(); return; }
+  if (action === 'image-network' || action === 'assistant-network') {
+    networkDiagnosticPanel.open(networkContext(action === 'image-network' ? state.provider : 'assistant')); return;
+  }
+  if (action === 'task-records') { if (state.page !== 'generate') openWorkflowPage('generate'); revealSetting('.generation-tasks'); return; }
+  if (action === 'task-retry') {
+    const job = taskQueue.jobs.find((row) => row.id === buttonNode?.dataset.guideTask);
+    if (!job || !failureActions({ ...job, phase: job.failurePhase || job.phase }).includes('task-retry')) {
+      toast('请在任务记录核对当前状态'); return;
+    }
+    await libraryReady; activeJobId = job.id; generationIssue = ''; taskQueue.retry(job.id); return;
+  }
+  if (action === 'assistant-response') {
+    const node = host?.querySelector('[data-assistant-failure]');
+    if (node) { node.open = true; assistantUI.failureOpen = true; node.scrollIntoView({ block: 'nearest' }); }
+    return;
+  }
+  if (action === 'assistant-diagnostic') {
+    assistantDiagnosticPanel.open = true; assistantDiagnosticPanel.render();
+    revealSetting('[data-assistant-diagnostic-root]'); return;
+  }
+  if (action === 'comic-next') await comicPanel.action(comicPanel.project ? 'next' : 'new');
 }
 
 function syncConnection(provider) {
@@ -615,6 +1268,7 @@ export async function restoreCredentials() {
     assistantUI.key = await credentialRequest('read', 'assistant', { ref: state.assistant.keyRef });
     assistantUI.keyStatus = state.assistant.keyRef ? '秘钥已保存' : '';
   } catch { assistantUI.keyStatus = '助手秘钥无法读取，请重新填写'; }
+  await localToolsPanel.restore();
   await syncAssistantConnection();
 }
 
@@ -646,18 +1300,28 @@ function refreshAssistantStatus() {
   updateText('[data-assistant-model-error]', assistantUI.modelsError, true);
   updateText('[data-assistant-error]', assistantUI.error, true);
   const status = host.querySelector('[data-assistant-state]');
-  if (status && status.dataset.assistantState !== String(assistantUI.busy)) {
-    status.dataset.assistantState = String(assistantUI.busy);
-    status.className = `ui-status ${assistantUI.busy ? 'warning' : 'neutral'}`;
-    status.innerHTML = `${icon(assistantUI.busy ? 'loader-circle' : 'sparkles', assistantUI.busy ? 'spin' : '')}${assistantUI.busy ? '正在处理' : '就绪'}`;
-    paintIcons(status);
+  const readiness = setupReadiness().assistant;
+  if (status && status.dataset.readiness !== JSON.stringify(readiness)) {
+    status.outerHTML = readinessBadge(readiness, `data-assistant-state="${assistantUI.busy}" data-readiness="${esc(JSON.stringify(readiness))}"`);
+    paintIcons(host.querySelector('[data-assistant-state]'));
+  }
+  const repairs = host.querySelector('[data-assistant-error-actions]');
+  if (repairs) {
+    const html = assistantUI.error ? renderFailureActions(failureActions({ scope: 'assistant', message: assistantUI.error })
+      .filter((action) => action !== 'assistant-response' || assistantUI.failureResponse)) : '';
+    if (repairs.innerHTML !== html) { repairs.innerHTML = html; paintIcons(repairs); }
+  }
+  refreshSetupSummary();
+  const primary = host.querySelector('[data-page-primary]');
+  if (primary && primary.dataset.busy !== String(assistantUI.busy)) {
+    primary.dataset.busy = String(assistantUI.busy); primary.innerHTML = primaryPageAction(); paintIcons(primary);
   }
   for (const action of ['generate', 'translate', 'polish', 'illustrate', 'use-current', 'apply', 'draw', 'copy', 'save-draft']) {
     const button = root.querySelector(`[data-action="assistant-${action}"]`);
     if (!button) continue;
-    button.disabled = action === 'copy' ? !state.assistantDraft?.positive
+    button.disabled = action === 'copy' ? !currentAssistantPlan()?.positive
       : assistantUI.busy || (['generate', 'translate', 'polish', 'illustrate', 'draw'].includes(action) && !state.enabled)
-        || (['apply', 'draw'].includes(action) && !state.assistantDraft?.positive);
+        || (['apply', 'draw'].includes(action) && !currentAssistantPlan()?.positive);
   }
   const cancel = root.querySelector('[data-action="assistant-cancel"]');
   if (cancel) cancel.hidden = !assistantUI.busy;
@@ -767,48 +1431,294 @@ function saveAssistantKey() {
   return operation.then(() => syncAssistantConnection('assistant'));
 }
 
+async function captureAssistantScheme() {
+  if (assistantUI.busy || profileAI.ui?.busy || imageEditorUI?.busy) throw new Error('文字任务进行中，请稍后保存方案');
+  await saveAssistantKey();
+  // Vault IDs are immutable; later key edits create a new ID and preserve saved schemes.
+  return validateSchemeSettings(state.assistant);
+}
+
+async function loadAssistantScheme(id) {
+  if (assistantUI.busy || profileAI.ui?.busy || imageEditorUI?.busy) throw new Error('文字任务进行中，请稍后载入方案');
+  await saveAssistantKey();
+  await apiSyncWork;
+  const options = resolveAssistantScheme(state.assistantSchemes, id, state.assistant);
+  const builtin = id.startsWith('builtin-'), revision = apiEditRevision, identity = JSON.stringify(state.assistant);
+  let key = assistantUI.key;
+  if (!builtin) {
+    key = options.keyRef ? await credentialRequest('read', 'assistant', { ref: options.keyRef }) : '';
+    if (options.keyRef && !key) throw new Error('方案秘钥无法读取，请先重新填写并更新方案');
+  }
+  if (revision !== apiEditRevision || identity !== JSON.stringify(state.assistant)) throw new Error('接口配置已改变，请重新载入方案');
+  const previous = state.assistant, active = state.assistantSchemeId;
+  state.assistant = options; state.assistantSchemeId = id;
+  try { persist(); } catch (error) { state.assistant = previous; state.assistantSchemeId = active; throw error; }
+  apiEditRevision++; assistantUI.keyRevision++; assistantUI.keyDirty = false; assistantUI.key = key;
+  assistantUI.keyStatus = options.keyRef ? '秘钥已保存 · 已载入方案' : '当前方案未保存独立 API 秘钥';
+  assistantUI.keyVisible = false;
+  resetAssistantModels();
+  render(true);
+  if (isInstalled()) {
+    if (assistantPresetPanel.ui.loaded) void assistantPresetPanel.refresh();
+    if (options.source === 'tavern') void fetchAssistantModels(false);
+  }
+}
+
+async function prepareAssistantMessages({ options, operation, input, context, snapshot, signal, trace }) {
+  const params = snapshot.params || snapshot.config.params;
+  return prepareUtilityMessages(buildAssistantMessages({ settings: options, operation, input, context,
+    target: { provider: snapshot.provider, model: params.model } }), operation, options, signal, trace);
+}
+
+async function validateAssistantContext(context, signal) {
+  if (!isInstalled() || !context.contextSelection) return;
+  await assistantHostRequest('context-validate', { contextSelection: context.contextSelection, binding: context.targetBinding },
+    { signal, timeout: 20 });
+}
+
+async function reanalyzeSelectedScene(instruction, locks) {
+  if (!state.enabled) throw new Error('插件已关闭');
+  if (!instruction.trim()) throw new Error('请填写这次希望怎样修改当前画面');
+  pendingSave.flush();
+  const workspace = structuredClone(assistantWorkspace()), revision = assistantScenePanel.revision();
+  const snapshot = captureSnapshot(state), controller = new AbortController();
+  const options = normalizeAssistant(state.assistant), trace = assistantDiagnosticPanel.start('polish', options);
+  assistantUI.busy = true; assistantUI.error = ''; assistantUI.controller = controller;
+  render(true);
+  try {
+    await saveAssistantKey();
+    const context = await assistantHostRequest('context', { binding: workspace.binding,
+      contextSelection: assistantContextPanel.selection }, { signal: controller.signal, timeout: options.timeout });
+    context.characterScene = structuredClone(workspace.plan.characterScene || { version: 1, chatKey: '', entries: [] });
+    const params = snapshot.params || snapshot.config.params;
+    const selected = selectedIllustration(workspace.plan, workspace.index);
+    const base = sceneReanalysisMessages(buildAssistantMessages({ settings: options, operation: 'polish',
+      input: instruction, context, target: { provider: snapshot.provider, model: params.model } }), selected, instruction, locks);
+    const messages = await prepareUtilityMessages(base, 'polish', options, controller.signal, trace);
+    assistantContextPanel.show(context, assistantUsage(messages, context, options.maxTokens));
+    await validateAssistantContext(context, controller.signal);
+    const raw = await executeAssistantText(messages, options, controller.signal, trace);
+    controller.signal.throwIfAborted();
+    const result = parseAssistantResult(raw);
+    await validateAssistantContext(context, controller.signal);
+    if (revision !== assistantScenePanel.revision()) throw new Error('草稿或设置已变化，请重新分析此画面');
+    const plan = replaceSelectedScene(workspace.plan, workspace.index, result, locks);
+    trace.finish(null, 1);
+    return { plan, context };
+  } catch (error) { trace.finish(error); throw error; }
+  finally { assistantUI.busy = false; assistantUI.controller = null; render(true); }
+}
+
+async function prepareUtilityMessages(base, operation, options, signal, trace) {
+  trace?.step('preset');
+  const preset = options.presetMode === 'none' ? null
+    : await assistantHostRequest('preset', { settings: options }, { signal, timeout: 20 });
+  const messages = composeAssistantPresetMessages(composeTaskMessages(base, operation, options), preset, options);
+  trace?.request(messages, selectedAssistantPresetEntries(preset, options));
+  updateAssistantBudget(messages, options, operation);
+  return messages;
+}
+
+function updateAssistantBudget(messages, options, operation, units) {
+  if (compatibilityIdentity(options, assistantCompatibilityTarget()) !== compatibilityIdentity(state.assistant, assistantCompatibilityTarget())) {
+    options = resolveAssistantCompatibility(options, assistantCompatibilityTarget());
+  }
+  units ||= operation === 'comic' ? state.comicLibrary.projects.find((row) => row.id === state.comicLibrary.activeId)?.panelCount || 1
+    : options.illustrationCount;
+  assistantUI.budget = { ...assistantBudget(messages, options, { operation, units }), operation };
+  const node = host?.querySelector('[data-assistant-budget]');
+  if (node) node.innerHTML = renderAssistantBudget(assistantUI.budget);
+  return assistantUI.budget;
+}
+async function executeAssistantText(messages, options, signal, trace) {
+  if (options.source === 'tavern') {
+    const info = await assistantHostRequest('models', { refresh: false }, { signal, timeout: 20 }).catch(() => null);
+    if (info) {
+      assistantUI.tavernCurrent = info.current || ''; assistantUI.tavernIdentity = info.signature || info.source || '';
+      if (refreshAssistantCompatibility()) {
+        for (const key of ['responseMode', 'outputParameter', 'omitTemperature', 'contextWindow', 'outputLimit']) options[key] = state.assistant[key];
+        if (options.responseModeOverride) options.responseMode = options.responseModeOverride;
+      }
+    }
+  }
+  if (compatibilityIdentity(options, assistantCompatibilityTarget()) !== compatibilityIdentity(state.assistant, assistantCompatibilityTarget())) {
+    options = resolveAssistantCompatibility(options, assistantCompatibilityTarget());
+  }
+  assistantUI.truncated = false;
+  const operation = trace.record.operation;
+  updateAssistantBudget(messages, options, operation);
+  trace.record.maxTokens = options.maxTokens; trace.record.responseMode = options.responseMode;
+  if (assistantUI.budget.error) throw new Error(assistantUI.budget.error);
+  trace.step('request');
+  const identity = assistantReadyIdentity(options);
+  try {
+    let raw;
+    if (options.source === 'api') raw = await requestAssistantText(options, assistantUI.key, messages, {
+        signal, relay: assistantRelayRequest, onExecution: (value) => trace.execution(value),
+      });
+    else {
+      const result = await assistantHostRequest('text', { messages, diagnostics: true,
+        taskOptions: { maxTokens: options.maxTokens, responseMode: options.responseMode, tavernModel: options.tavernModel } },
+      { signal, timeout: options.timeout });
+      trace.execution(result.execution); raw = result.text;
+    }
+    verifiedAssistant.add(identity); refreshSetupSummary();
+    return raw;
+  } catch (error) {
+    if (error.assistantTruncated) assistantUI.truncated = true;
+    if (typeof error.assistantResponse === 'string') writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), error.assistantResponse);
+    if (error.assistantExecution) trace.execution(error.assistantExecution);
+    throw error;
+  }
+}
+
+function assistantCompatibilityTarget() {
+  return { currentModel: assistantUI.tavernCurrent, tavernIdentity: assistantUI.tavernIdentity };
+}
+function loadAssistantCompatibility() {
+  const profile = compatibilityFor(state.assistant, assistantCompatibilityTarget());
+  for (const key of ['responseMode', 'outputParameter', 'omitTemperature', 'contextWindow', 'outputLimit']) {
+    state.assistant[key] = profile?.[key] ?? ({ responseMode: 'text', outputParameter: 'max_tokens', omitTemperature: false,
+      contextWindow: 0, outputLimit: 0 })[key];
+  }
+  assistantUI.compatibilityIdentity = compatibilityIdentity(state.assistant, assistantCompatibilityTarget());
+  persist();
+}
+function refreshAssistantCompatibility() {
+  const identity = compatibilityIdentity(state.assistant, assistantCompatibilityTarget());
+  if (!identity || identity === assistantUI.compatibilityIdentity) return false;
+  if (assistantUI.compatibilityIdentity || compatibilityFor(state.assistant, assistantCompatibilityTarget())) {
+    loadAssistantCompatibility(); return true;
+  }
+  assistantUI.compatibilityIdentity = identity;
+  return false;
+}
+
+function assistantRelayRequest(action, value, options) {
+  return assistantHostRequest(`relay-${action}`, value, options);
+}
+
+function currentAssistantPlan() {
+  return state.assistantDraft ? selectedIllustration(state.assistantDraft,
+    Math.min(assistantUI.illustrationIndex || 0, illustrationPlans(state.assistantDraft).length - 1)) : null;
+}
+
+function assistantWorkspace() {
+  return { plan: state.assistantDraft, input: state.assistantInput,
+    index: assistantUI.illustrationIndex || 0, binding: assistantUI.binding };
+}
+
+function assistantHistoryBudget() { return ASSISTANT_HISTORY_BYTES; }
+
+function updateAssistantHistory(rows) {
+  const previous = state.assistantHistory; state.assistantHistory = rows;
+  try { persist(); } catch (error) { state.assistantHistory = previous; throw error; }
+}
+
+function replaceAssistantDraft(plan, { operation = 'manual', input = state.assistantInput, index = 0,
+  record = true, binding = null, requestId = null } = {}) {
+  const previous = { assistantDraft: state.assistantDraft, assistantHistory: state.assistantHistory,
+    assistantInput: state.assistantInput, assistantBinding: state.assistantBinding, assistantRequestId: state.assistantRequestId };
+  const budget = assistantHistoryBudget(plan, input), before = assistantWorkspace();
+  let rows = normalizeAssistantHistory(state.assistantHistory, budget), warning = '';
+  if (before.plan) {
+    try { rows = rememberAssistantDraft(rows, { ...before, operation: 'checkpoint' }, { budget }); }
+    catch (error) { warning = error.message; }
+  }
+  if (record) {
+    try { rows = rememberAssistantDraft(rows, { plan, input, index, operation }, { budget }); }
+    catch (error) { warning = error.message; }
+  }
+  Object.assign(state, { assistantDraft: plan, assistantHistory: rows, assistantInput: input });
+  if (binding) { state.assistantBinding = binding; state.assistantRequestId = requestId; }
+  else { delete state.assistantBinding; delete state.assistantRequestId; }
+  try { persist(); } catch (error) { Object.assign(state, previous); throw error; }
+  assistantUI.binding = binding; assistantUI.requestId = requestId;
+  assistantUI.illustrationIndex = index; assistantUI.historyWarning = warning;
+}
+
 async function runPromptAssistant(operation, request) {
+  pendingSave.flush();
   if (assistantUI.busy) throw new Error('提示词助手正在处理，请稍候');
   if (!state.enabled) throw new Error('插件已关闭');
   const input = state.assistantInput.trim();
   if (operation !== 'illustrate' && !input) throw new Error('请先填写画面描述或提示词');
   const snapshot = captureSnapshot(state);
-  const params = snapshot.params || snapshot.config.params;
   const profileLibrary = structuredClone(state.characterProfiles);
   const frozenScene = state.characterSceneOverride ? structuredClone(snapshot.characterScene) : null;
   const controller = request?.controller || new AbortController();
-  assistantUI.busy = true; assistantUI.error = ''; assistantUI.controller = controller;
-  render();
+  const trace = assistantDiagnosticPanel.start(operation, normalizeAssistant(state.assistant));
+  let recoveryContext;
+  assistantUI.busy = true; assistantUI.error = ''; assistantUI.failureResponse = ''; assistantUI.stateWarning = ''; assistantUI.controller = controller;
+  writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), '');
+  assistantRecoveryPanel.clear();
+  render(true);
   try {
     await saveAssistantKey();
     const options = normalizeAssistant(state.assistant);
-    const context = await assistantHostRequest('context', { binding: request?.binding, previous: request?.previous },
+    const settingsIdentity = JSON.stringify(options);
+    if (request?.binding?.slot > 0) options.illustrationCount = 1;
+    trace.step('context');
+    reportChatPreparation(request, 'context');
+    const context = await assistantHostRequest('context', { binding: request?.binding, previous: request?.previous,
+      contextSelection: request?.automatic ? null : assistantContextPanel.selection },
       { signal: controller.signal, timeout: options.timeout });
     if (operation === 'illustrate' && !context.target.trim()) throw new Error('请先打开包含角色回复的聊天');
     assistantUI.summary = context.summary;
+    trace.context(context.summary);
     context.characterScene = frozenScene || resolveCharacterScene(profileLibrary,
       context.chatKey, context.characterAvatars);
     snapshot.characterScene = structuredClone(context.characterScene);
-    const messages = buildAssistantMessages({ settings: options, operation, input, context,
-      target: { provider: snapshot.provider, model: params.model } });
-    const plan = options.source === 'api'
-      ? await requestAssistantAPI(options, assistantUI.key, messages, { signal: controller.signal })
-      : parseAssistantResult(await assistantHostRequest('text', { messages }, { signal: controller.signal, timeout: options.timeout }));
-    if (context.characterScene?.entries.length) {
-      // Freeze the saved profile data, never accept model-supplied profile snapshots.
-      plan.characterScene = structuredClone(context.characterScene);
-      plan.characters = context.characterScene.entries.map((entry) => ({
-        profileId: entry.profileId, action: '', expression: '', appearance: '', outfit: '', negative: '',
-        ...(plan.characters || []).find((item) => item.profileId === entry.profileId),
-        ...(entry.action ? { action: entry.action } : {}),
-        ...(entry.expression ? { expression: entry.expression } : {}),
-      }));
-    } else { delete plan.characterScene; delete plan.characters; }
+    reportChatPreparation(request, 'preset');
+    const messages = await prepareAssistantMessages({ options, operation, input, context, snapshot, signal: controller.signal, trace });
+    assistantContextPanel.show(context, assistantUsage(messages, context, options.maxTokens));
+    await validateAssistantContext(context, controller.signal);
+    reportChatPreparation(request, 'analysis');
+    const raw = await executeAssistantText(messages, options, controller.signal, trace);
+    trace.step('parse');
+    reportChatPreparation(request, 'parse');
+    recoveryContext = { input, scene: structuredClone(context.characterScene),
+      states: options.rememberState ? structuredClone(context.drawingState || []) : [],
+      maxShots: operation === 'illustrate' ? options.illustrationCount : 4 };
+    const plan = parseAssistantResult(raw);
+    await validateAssistantContext(context, controller.signal);
+    trace.step('validate');
+    reportChatPreparation(request, 'validate');
+    if (settingsIdentity !== JSON.stringify(normalizeAssistant(state.assistant))) throw new Error('文字模型配置已改变，请重新分析');
+    if (operation === 'illustrate' && illustrationPlans(plan).length > options.illustrationCount) {
+      throw new Error('模型返回的画面数量超过设置，请减少配图数量后重新分析');
+    }
+    // Profile snapshots always come from the local library, never model output.
+    freezeIllustrationCharacters(plan, context.characterScene, options.rememberState ? context.drawingState : []);
     if (request && !await validateChatRequest(request)) throw new Error('原消息或自动配图设置已变化，操作已取消');
     controller.signal.throwIfAborted();
-    state.assistantDraft = plan; persist();
+    if (operation === 'illustrate' && options.rememberState && context.targetBinding) {
+      trace.step('save');
+      const states = evidencedCharacterStates(plan.characterStates, context.target, context.characterScene, context.characters);
+      if (states.length) {
+        try {
+          await assistantHostRequest('state-save', { binding: context.targetBinding, states,
+            scene: context.characterScene, characters: context.characters }, { signal: controller.signal, timeout: 20 });
+        } catch (error) {
+          controller.signal.throwIfAborted();
+          assistantUI.stateWarning = error.message;
+        }
+      }
+    }
+    controller.signal.throwIfAborted();
+    trace.step('save');
+    reportChatPreparation(request, 'draft');
+    replaceAssistantDraft(plan, { operation, input: operation === 'illustrate' ? plan.scene : input,
+      binding: request?.binding || null, requestId: request?.requestId || null });
+    assistantUI.lintTarget = operation === 'illustrate' ? context.target : null;
+    trace.finish(null, illustrationPlans(plan).length);
     return { plan, options, snapshot };
   } catch (error) {
+    trace.finish(controller.signal.aborted ? new Error('操作已取消') : error);
+    if (!controller.signal.aborted && typeof error.assistantResponse === 'string') {
+      assistantUI.failureResponse = error.assistantResponse;
+      assistantRecoveryPanel.setFailure(error.assistantResponse, recoveryContext || {});
+    }
     assistantUI.error = controller.signal.aborted ? '操作已取消'
       : error.name === 'TimeoutError' ? '文字接口处理超时，请手动重试'
         : error instanceof TypeError ? '文字接口连接失败，请检查地址和跨域设置' : error.message;
@@ -824,12 +1734,13 @@ async function analyzeChat(request) {
     request.assistantSnapshot = result.snapshot;
     const generating = result.plan.shouldDraw && !request.openEditor && normalizeAssistant(state.assistant).autoImage;
     if (request.openEditor) {
+      if (document.querySelector('#overlay-root .drawing-viewer')) closeDrawingViewer();
       assistantUI.binding = request.binding; assistantUI.requestId = request.requestId;
       state.assistantBinding = request.binding; state.assistantRequestId = request.requestId;
       state.assistantInput = result.plan.scene; persist(); showPage('assistant');
       chatPost('linghuashi:attention', { page: 'assistant' });
     }
-    chatPost('linghuashi:chat-draft', { requestId: request.requestId, binding: request.binding, plan: result.plan, generating });
+    chatPost('linghuashi:chat-draft', { requestId: request.requestId, binding: request.binding, plan: result.plan, generating, analysis: true });
     if (generating) await enqueueGeneration(request);
   } catch (error) {
     chatPost('linghuashi:chat-task', { requestId: request.requestId, binding: request.binding,
@@ -851,17 +1762,19 @@ async function fetchAssistantModels(refresh = true) {
       models = assistantModelNames(data.models);
       current = data.current;
       message = data.message;
+      assistantUI.tavernIdentity = data.signature || data.source || '';
     } else {
       await saveAssistantKey();
       controller.signal.throwIfAborted();
       const revision = apiEditRevision;
-      models = await requestAssistantModels(state.assistant, assistantUI.key, { signal: controller.signal });
+      models = await requestAssistantModels(state.assistant, assistantUI.key, { signal: controller.signal, relay: assistantRelayRequest });
       if (revision !== apiEditRevision) return;
     }
     if (controller.signal.aborted || assistantUI.modelsController !== controller || source !== state.assistant.source) return;
     assistantUI.models = models;
     assistantUI.tavernCurrent = current;
     assistantUI.modelSource = source;
+    refreshAssistantCompatibility();
     assistantUI.modelsStatus = [models.length ? `已读取 ${models.length} 个模型` : '', message].filter(Boolean).join(' · ');
     if (refresh) assistantUI.modelsOpen = true;
     if (refresh && models.length) toast(`已读取 ${models.length} 个模型`);
@@ -878,7 +1791,7 @@ async function fetchAssistantModels(refresh = true) {
 }
 
 function applyAssistantToParameters() {
-  const plan = state.assistantDraft;
+  const plan = currentAssistantPlan();
   if (!plan?.positive) throw new Error('请先准备提示词');
   const snapshot = captureSnapshot(state);
   const params = snapshot.params || snapshot.config.params;
@@ -900,6 +1813,7 @@ function updateCredentialStatus() {
     updateComfyDirty();
     updateSDWebUIDirty();
   }
+  refreshSetupSummary();
 }
 
 function saveConnection(provider) {
@@ -1000,7 +1914,8 @@ function updateTriggerFormat() {
 
 function resultMedia(chat = false) {
   const job = taskQueue.jobs.find((item) => item.id === activeJobId);
-  if (runtimeState === 'error') return `<div class="result-placeholder result-error">${chibi('sad', 'status-mascot')}<strong>生成失败</strong><span>${esc(job?.error || '服务暂时没有响应')}</span>${job?.execution ? button('download', '继续取图 / 保存', 'task-retry', 'secondary', `data-task="${job.id}"`) : button('refresh-cw', '重新生成', 'generate', 'secondary')}${button('scan', '打开调试工具', 'debug-tools', 'secondary')}</div>`;
+  if (runtimeState === 'error') return `<div class="result-placeholder result-error">${chibi('sad', 'status-mascot')}<strong>${job?.saved ? '图片已保存，图库刷新失败' : job?.execution ? '图片任务需要继续处理' : '生成未完成'}</strong><span>${esc(job?.error || '服务暂时没有响应')}</span>${renderFailureActions(failureActions({ ...job,
+    message: job?.error, phase: job?.failurePhase || job?.phase }), job?.id)}</div>`;
   if (runtimeState === 'queued' || runtimeState === 'generating') {
     const previous = activeDrawing();
     const task = job || { status: runtimeState === 'queued' ? 'queued' : 'running', phase: 'submitting' };
@@ -1017,13 +1932,14 @@ function renderGenerate() {
   const openai = state.provider === 'openai';
   const session = isInstalled() ? `${esc(currentChat().name)} <span> / </span> ${currentChat().count} 条消息` : '林间的旅人 <span> / </span> 当前会话';
   return `<div class="page-heading"><div><h1>生图工坊</h1><p>${session}</p></div><div class="heading-actions">${iconButton('plug', '接口配置', 'connection', 'data-page="connection"')}</div></div>
+    ${generationIssue ? `<section class="generation-issue" role="alert"><p>${esc(generationIssue)}</p>${renderFailureActions(failureActions({ message: generationIssue }))}</section>` : ''}
     <div class="generation-workspace">
       <section class="prompt-area">
         ${renderPresets(`<button type="button" class="ui-button secondary" data-page="batch">${icon('grid-2x2')}组合生图</button>`)}
         ${field('生图接口', `<select data-setting="provider">${GENERATION_MODES.map((mode) => `<option value="${mode.id}" ${state.provider === mode.id ? 'selected' : ''}>${mode.title}</option>`).join('')}</select>`)}
         ${renderNamedConnections(state)}
         ${renderArtistQuickPick(state)}
-        ${advancedPanel.html()}
+        ${experienceFold(state, 'generation-modes', '图生图、局部重绘与参考图', advancedPanel.html(), advancedOf(captureSnapshot(state)).mode !== 'text')}
         ${novelai ? renderNovelAIParameters(state, novelaiAdvancedOpen) : openai ? renderOpenAIParameters(state, openaiModels, openaiAdvancedOpen, { ...openaiModelUI, loading: connectionStatus.tone === 'pending' }) : state.provider === 'sdwebui' ? renderSDWebUIParameters(state, sdwebuiProbe, sdwebuiAdvancedOpen) : renderComfyWorkflow(state, comfyProbe, comfyExpanded)}
         ${renderCharacterSelection(state, currentChat(), { frozen: Boolean(state.characterSceneOverride?.entries?.length) })}
       </section>
@@ -1083,6 +1999,12 @@ function renderConnection() {
   const current = credentials[state.provider];
   return `<div class="page-heading"><div><h1>接口配置</h1><p>生图服务与模型配置</p></div>${statusBadge()}</div>
     <section class="settings-content">
+      <details class="config-glossary"><summary>接口、参数预设和助手方案分别保存什么？</summary><dl>
+        <dt>接口配置</dt><dd>服务地址与认证信息，可命名保存多个接口。</dd>
+        <dt>参数预设</dt><dd>生图模型、尺寸、提示词等出图参数，可选择关联接口。</dd>
+        <dt>助手方案</dt><dd>文字接口、任务规则、上下文与配图习惯。</dd>
+        <dt>酒馆预设</dt><dd>酒馆聊天使用的提示词条目，按选定来源加入文字请求。</dd>
+      </dl></details>
       ${renderPresets()}
       <div class="provider-options">${GENERATION_MODES.map((mode) => `<button type="button" data-provider="${mode.id}" class="${state.provider === mode.id ? 'selected' : ''}" aria-pressed="${state.provider === mode.id}">${icon(mode.icon)}<span><strong>${mode.title}</strong><small>${mode.subtitle}</small></span>${icon('check')}</button>`).join('')}</div>
       ${renderNamedConnections(state, true)}
@@ -1093,7 +2015,7 @@ function renderConnection() {
       <details class="advanced-options endpoint-options" ${addressExpanded ? 'open' : ''}><summary>${icon('link')}第三方接口地址(可选)${icon('chevron-down')}</summary><div>${field('第三方接口地址(可选)', `<input type="url" autocomplete="off" data-transient="endpoint" placeholder="https://第三方域名" value="${esc(current.endpoint)}" />`)}<p class="endpoint-help">留空自动识别；填写后优先用于第三方秘钥。pst- 秘钥始终使用官方接口。</p></div></details>` : ''}
       <div class="connection-actions" ${openai ? 'data-openai-connection-actions' : ''}><span id="connection-status" data-connection-status role="status" aria-live="polite"></span><div class="connection-buttons">${button('scan', '打开调试工具', 'network-diagnostics', 'secondary', 'hidden')}${button('plug', '测试连接', 'test-connection', 'secondary')}</div></div>
       <p class="resolved-endpoint" data-resolved-endpoint></p>
-      ${advancedPanel.html()}
+      ${experienceFold(state, 'connection-modes', '图生图、局部重绘与参考图', advancedPanel.html(), advancedOf(captureSnapshot(state)).mode !== 'text')}
       ${novelai ? `<div class="section-rule"></div>${renderNovelAIParameters(state, novelaiAdvancedOpen)}` : ''}
       ${openai ? `<div class="section-rule"></div>${renderOpenAIParameters(state, openaiModels, openaiAdvancedOpen, { ...openaiModelUI, loading: connectionStatus.tone === 'pending' })}` : state.provider === 'sdwebui' ? `<div class="section-rule"></div>${renderSDWebUIParameters(state, sdwebuiProbe, sdwebuiAdvancedOpen)}` : !novelai ? `${renderComfyService(comfyProbe)}<div class="section-rule"></div>${renderComfyWorkflow(state, comfyProbe, comfyExpanded)}` : ''}
     </section>`;
@@ -1102,7 +2024,7 @@ function renderConnection() {
 function renderOpenAIConnection() {
   return `${field('接口地址', `<input type="url" data-openai-connection="endpoint" autocomplete="off" spellcheck="false" maxlength="512" placeholder="https://api.openai.com/v1" value="${esc(state.openaiEndpoint)}" />`)}
     ${field('API Key', renderKeyInput('sk-...'))}
-    <details class="advanced-options openai-transport" ${openaiTransportOpen ? 'open' : ''}><summary>${icon('sliders-horizontal')}连接选项${icon('chevron-down')}</summary>
+    <details class="advanced-options openai-transport" data-experience-fold="openai-transport" ${openaiTransportOpen || state.experience.level === 'full' ? 'open' : ''}><summary>${icon('sliders-horizontal')}连接选项${icon('chevron-down')}</summary>
       <div class="two-field-row">${field('生图路径', `<input data-openai-connection="path" value="${esc(state.openaiPath)}" maxlength="200" spellcheck="false" />`)}${field('请求超时 (秒)', `<input type="number" data-openai-connection="timeout" min="5" max="600" step="1" value="${state.openaiTimeout}" />`)}</div>
       ${button('file-json', '查看生图请求', 'openai-request-preview', 'secondary')}
     </details>`;
@@ -1422,6 +2344,7 @@ function exportComfyWorkflow() {
 }
 
 function updateConnectionStatus() {
+  refreshSetupSummary();
   updateOpenAIModelStatus();
   const status = host.querySelector('[data-connection-status]');
   if (!status) return;
@@ -1433,6 +2356,8 @@ function updateConnectionStatus() {
   endpoint.textContent = resolvedService ? `${resolvedService.title} · ${resolvedService.endpoint}` : '';
   endpoint.hidden = !resolvedService;
   host.querySelector('[data-action="test-connection"]').disabled = connectionStatus.tone === 'pending';
+  const quickTest = host.querySelector('[data-guide-action="image-test"]');
+  if (quickTest) quickTest.disabled = connectionStatus.tone === 'pending';
   const diagnostics = host.querySelector('[data-action="network-diagnostics"]');
   if (diagnostics) diagnostics.hidden = connectionStatus.tone !== 'error';
   const fetchModels = host.querySelector('[data-action="openai-fetch-models"]');
@@ -1870,7 +2795,24 @@ const releasePanel = new ReleasePanel({
   },
 });
 const changelogPanel = new ChangelogPanel(releasePanel);
-const componentsPanel = new ComponentsPanel();
+const localToolsPanel = new LocalToolsPanel({
+  getSettings: () => state.localTools,
+  setSettings: (value) => {
+    const previous = state.localTools; state.localTools = value;
+    try { persist(); } catch (error) { state.localTools = previous; throw error; }
+  },
+  gallery: () => drawingGroups(drawings), storageLocation: () => state.cacheLocation,
+  materialize: (item) => drawingLibrary.materialize(item),
+  applyTags: (tags, append) => {
+    if (!tags.trim()) throw new Error('请先检查并填写反推标签');
+    const { params } = globalTagContext();
+    const positive = append ? [params.positive?.trim(), tags.trim()].filter(Boolean).join(', ') : tags.trim();
+    if (positive.length > 12000) throw new Error('合并后超过 12000 字符，请精简标签');
+    insertGlobalTags({ ...params, positive });
+  },
+  store: saveLocalToolsResult,
+});
+const componentsPanel = new ComponentsPanel(localToolsPanel);
 const debugToolsPanel = new DebugToolsPanel({
   provider: state.provider, network: networkDiagnosticPanel, networkContext, failures: recentGenerationFailures,
   storageContext: () => {
@@ -1905,15 +2847,22 @@ function refreshUpdateNavigation() {
 }
 
 function renderConsole() {
-  const renderer = { settings: () => renderSettings(state, backupPanel.html()), assistant: () => renderAssistant(state, assistantUI), generate: renderGenerate, batch: () => workbenchPanel.html() + renderTasks(), connection: renderConnection, characters: renderCharacters, styles: renderStyles, tags: () => tagPanel.html(), gallery: renderGallery, components: () => componentsPanel.html(), debug: () => debugToolsPanel.html(), changelog: () => changelogPanel.html() }[state.page] || (() => renderSettings(state, backupPanel.html()));
+  const readiness = setupReadiness();
+  const renderer = { settings: () => renderSettings(state, backupPanel.html() + recoveryPanel.html(), renderStartGuide(state, readiness)), assistant: () => renderAssistant(state, assistantUI, assistantPresetPanel.html(), assistantWorkflowPanel.html(),
+    { status: readinessBadge(readiness.assistant, `data-assistant-state="${assistantUI.busy}"`),
+      repairs: renderFailureActions(failureActions({ scope: 'assistant', message: assistantUI.error })
+        .filter((action) => action !== 'assistant-response' || assistantUI.failureResponse)),
+      prompts: taskPromptPanel.entry(), schemes: assistantSchemePanel.html(), diagnostics: assistantDiagnosticPanel.html(), lint: assistantLintPanel.html(),
+      history: assistantHistoryPanel.html(), recovery: assistantRecoveryPanel.html(), context: assistantContextPanel.html(),
+      scene: assistantScenePanel.html(), compatibility: renderAssistantCompatibility(state, assistantUI), budget: renderAssistantBudget(assistantUI.budget) }), comic: () => comicPanel.html(), reader: () => readerPanel.html(), generate: renderGenerate, batch: () => workbenchPanel.html() + renderTasks(), connection: renderConnection, characters: renderCharacters, styles: renderStyles, tags: () => tagPanel.html(), gallery: renderGallery, components: () => componentsPanel.html(), debug: () => debugToolsPanel.html(), changelog: () => changelogPanel.html() }[state.page] || (() => renderSettings(state, backupPanel.html()));
   const navigationPage = state.page === 'batch' ? 'generate' : state.page;
-  const busy = ['queued', 'generating'].includes(runtimeState);
+  const setupPage = ['settings', 'connection', 'generate', 'assistant', 'comic'].includes(state.page);
   const sessionName = isInstalled() ? esc(currentChat().name) : '林间的旅人';
   const sessionCount = isInstalled() ? currentChat().count : 12;
   return `<div class="plugin-shell">
-    <header class="plugin-header"><div class="plugin-brand"><span class="brand-mark">${pluginIcon(state.characterTheme)}</span><div class="brand-copy"><strong>${esc(config.name)}</strong><span class="brand-subtitle">一款对萌新友好的生图扩展插件，愿世间充满和平友爱~</span></div></div><div class="plugin-header-right"><span class="session-label">${icon('message-square')}${sessionName}</span>${iconButton('more-horizontal', '更多操作', 'more')}</div></header>
-    <div class="plugin-body"><nav class="plugin-nav" aria-label="插件导航"><span class="nav-caption">工作空间</span>${navigation.map((item) => `<button type="button" data-page="${item.id}" class="${navigationPage === item.id ? 'active' : ''}" aria-current="${navigationPage === item.id ? 'page' : 'false'}">${icon(item.icon)}<span>${item.title}</span>${item.id === 'gallery' ? `<small>${state.history.length}</small>` : item.id === 'changelog' ? '<span class="nav-update-alert" data-release-nav-badge aria-hidden="true" hidden>!</span>' : ''}</button>`).join('')}<div class="nav-bottom"><span class="connection-dot"></span><span>生图工坊</span><small>${RELEASE.version}</small></div></nav><main class="plugin-content">${configCacheAvailable ? '' : `<p class="configuration-cache-status" role="status">${icon('database')}<span>${isInstalled() ? '浏览器设置缓存不可用；配置将继续同步到当前酒馆账号。' : '浏览器设置缓存不可用；本次修改仅在当前页面保留，请导出备份。'}</span></p>`}${renderer()}</main></div>
-    <footer class="plugin-bottom"><span>${icon(state.enabled ? 'circle-check' : 'circle')}${!state.enabled ? '插件已关闭' : state.page === 'generate' ? GENERATION_MODES.find((mode) => mode.id === state.provider)?.title || '自定义接口' : '配置已载入'}</span><div class="bottom-actions"><span>当前会话 · ${sessionCount} 条消息</span>${state.page === 'generate' ? button('sparkles', !state.enabled ? '插件已关闭' : busy ? '加入队列' : '生成图像', 'generate', 'primary', !state.enabled ? 'disabled' : '') : ''}</div></footer>
+    <header class="plugin-header"><div class="plugin-brand"><span class="brand-mark">${pluginIcon(state.characterTheme)}</span><div class="brand-copy"><strong>${esc(config.name)}</strong><span class="brand-subtitle">一款对萌新友好的生图扩展插件，愿世间充满和平友爱~</span></div></div><div class="plugin-header-right"><span class="session-label">${icon('message-square')}<span class="session-name" title="${sessionName}">${sessionName}</span></span>${iconButton('circle-help', '使用引导', 'start-guide')}${iconButton('more-horizontal', '更多操作', 'more')}</div></header>
+    <div class="plugin-body"><nav class="plugin-nav" aria-label="插件导航"><span class="nav-caption">工作空间</span>${navigation.map((item) => `<button type="button" data-page="${item.id}" class="${navigationPage === item.id ? 'active' : ''}" aria-current="${navigationPage === item.id ? 'page' : 'false'}">${icon(item.icon)}<span>${item.title}</span>${item.id === 'gallery' ? `<small>${state.history.length}</small>` : item.id === 'changelog' ? '<span class="nav-update-alert" data-release-nav-badge aria-hidden="true" hidden>!</span>' : ''}</button>`).join('')}<div class="nav-bottom"><span class="connection-dot"></span><span>生图工坊</span><small>${RELEASE.version}</small></div></nav><main class="plugin-content">${configCacheAvailable ? '' : `<p class="configuration-cache-status" role="status">${icon('database')}<span>${isInstalled() ? '浏览器设置缓存不可用；配置将继续同步到当前酒馆账号。' : '浏览器设置缓存不可用；本次修改仅在当前页面保留，请导出备份。'}</span></p>`}${setupPage ? experienceToolbar() + `<div data-setup-root>${renderReadiness(readiness, setupSummary(), setupExpanded)}</div>` : ''}${renderer()}</main></div>
+    <footer class="plugin-bottom"><span>${icon(state.enabled ? 'circle-check' : 'circle')}${!state.enabled ? '插件已关闭' : state.page === 'generate' ? GENERATION_MODES.find((mode) => mode.id === state.provider)?.title || '自定义接口' : '配置已载入'}</span><div class="bottom-actions"><span>当前会话 · ${sessionCount} 条消息</span>${workflowReturn ? guideCommand('return', workflowReturn.label, 'arrow-left') : ''}<div data-page-primary>${primaryPageAction()}</div></div></footer>
   </div>`;
 }
 
@@ -1961,6 +2910,10 @@ function render(force = false) {
     refreshAssistantStatus();
     return;
   }
+  if (!force && samePage && state.page === 'reader' && config.surface === 'console') return;
+  if (!force && samePage && state.page === 'comic' && config.surface === 'console') {
+    comicPanel.refreshStatus(); return;
+  }
   if (!force && advancedPanel.ui.painting) return;
   const editing = document.activeElement;
   if (!force && host.dataset.renderedPage === state.page
@@ -1983,7 +2936,12 @@ function render(force = false) {
   floatingMenu = null;
   const content = host.querySelector('.plugin-content');
   const scrollTop = content?.scrollTop || 0;
-  const navScroll = host.querySelector('.plugin-nav')?.scrollLeft || 0;
+  if (host.dataset.renderedPage) pageScrolls.set(host.dataset.renderedPage, scrollTop);
+  const folds = samePage ? new Map([...host.querySelectorAll('[data-experience-fold]')].map((node) => [node.dataset.experienceFold, node.open])) : new Map();
+  setupExpanded = host.querySelector('[data-setup-readiness]')?.open ?? setupExpanded;
+  const navigation = host.querySelector('.plugin-nav');
+  const navScroll = { left: navigation?.scrollLeft || 0, top: navigation?.scrollTop || 0 };
+  assistantUI.failureOpen = host.querySelector('[data-assistant-failure]')?.open ?? assistantUI.failureOpen;
   changelogPanel.capture(host);
   applyTokens();
   host.innerHTML = config.surface === 'chat' ? renderChat() : renderConsole();
@@ -1992,7 +2950,10 @@ function render(force = false) {
   updateCredentialStatus();
   host.dataset.renderedPage = state.page;
   host.dataset.renderedSurface = config.surface;
-  if (samePage) host.querySelector('.plugin-content')?.scrollTo(0, scrollTop);
+  host.querySelector('.plugin-content')?.scrollTo(0, samePage ? scrollTop : pageScrolls.get(state.page) || 0);
+  for (const node of host.querySelectorAll('[data-experience-fold]')) if (folds.has(node.dataset.experienceFold)) node.open = folds.get(node.dataset.experienceFold);
+  refreshSaveStatus();
+  refreshSetupSummary();
   if (!state.enabled) {
     host.querySelectorAll('button[data-action="generate"]').forEach((button) => {
       button.disabled = true;
@@ -2009,15 +2970,31 @@ function render(force = false) {
     floatingMenu.update({ characterTheme: state.characterTheme, theme: config.theme });
   }
   paintIcons();
-  // Icon widths must be final before restoring a horizontally scrolled mobile nav.
-  host.querySelector('.plugin-nav')?.scrollTo({ left: navScroll, top: 0, behavior: 'instant' });
+  // Restore both navigation axes after icons establish the final button sizes.
+  const restoredNavigation = host.querySelector('.plugin-nav');
+  if (restoredNavigation) {
+    restoredNavigation.scrollLeft = navScroll.left;
+    restoredNavigation.scrollTop = navScroll.top;
+  }
   refreshUpdateNavigation();
   advancedPanel.objectInfo = comfyProbe?.objectInfo;
   advancedPanel.bind(host);
   backupPanel.bind(host);
+  recoveryPanel.bind(host);
   changelogPanel.bind(host);
   componentsPanel.bind(host);
   debugToolsPanel.bind(host);
+  readerPanel.bind(host);
+  comicPanel.bind(host);
+  assistantPresetPanel.bind(host);
+  assistantWorkflowPanel.bind(host);
+  assistantSchemePanel.bind(host);
+  assistantDiagnosticPanel.bind(host);
+  assistantLintPanel.bind(host);
+  assistantHistoryPanel.bind(host);
+  assistantRecoveryPanel.bind(host);
+  assistantContextPanel.bind(host);
+  assistantScenePanel.bind(host);
   tagPanel.bind(host);
   workbenchPanel.bind(host);
   attachPromptTagButtons(host, openPromptTools);
@@ -2051,6 +3028,8 @@ export function applyConfig(next) {
 }
 
 export function showSettings() {
+  if (state.page === 'reader') readerPanel.leave();
+  if (state.page === 'comic') comicPanel.leave();
   const changedSurface = config.surface !== 'console';
   config = { ...config, surface: 'console' };
   state.page = 'settings';
@@ -2068,12 +3047,16 @@ export function showPage(page) {
     host?.querySelector('[data-release-fold]')?.scrollIntoView({ block: 'start' });
     return;
   }
-  if (!['settings', 'generate', 'batch', 'gallery', 'assistant', 'characters', 'styles', 'tags', 'connection', 'components', 'debug', 'changelog'].includes(page)) return;
+  if (!['settings', 'generate', 'batch', 'gallery', 'assistant', 'comic', 'reader', 'characters', 'styles', 'tags', 'connection', 'components', 'debug', 'changelog'].includes(page)) return;
+  if (state.page === 'reader' && page !== 'reader') readerPanel.leave();
+  if (state.page === 'comic' && page !== 'comic') comicPanel.leave();
   if (page === 'changelog' && releasePanel.hasUpdate) releasePanel.open = true;
   state.page = page;
   persist(); render(page === 'assistant');
+  if (page === 'assistant' && assistantPresetPanel.ui.loaded && isInstalled()) void assistantPresetPanel.refresh();
   if (page === 'assistant' && state.assistant.source === 'tavern' && isInstalled()) void fetchAssistantModels(false);
   if (page === 'characters') void refreshProfileCards();
+  if (page === 'gallery') void Promise.resolve(libraryReady).then(() => reloadDrawings()).catch((error) => { drawingUI.error = error.message; render(); });
 }
 
 export function setFloatingBall(visible) {
@@ -2088,6 +3071,9 @@ export function applyHostContext(chat) {
   const changed = currentChat().key !== chat?.key;
   window.__LINGHUASHI_ENV__.chat = chat;
   if (changed) {
+    readerPanel.reset();
+    assistantContextPanel.reset();
+    assistantWorkflowPanel.resetState();
     profileAI.invalidate();
     useLiveCharacterScene();
     if (profileUI.scope === 'chat' && !profileUI.dirty) loadProfileDraft();
@@ -2104,15 +3090,17 @@ function toast(message) {
   toastTimer = setTimeout(() => root.replaceChildren(), 2200);
 }
 
-async function reloadDrawings() {
+let galleryIndexTimer;
+async function reloadDrawings(refresh = false) {
+  clearTimeout(galleryIndexTimer);
   const load = async () => {
     const location = state.cacheLocation;
-    const rows = await drawingLibrary.list(location);
+    const rows = await drawingLibrary.list(location, refresh);
     if (location !== state.cacheLocation) return;
     const existingIds = new Set(rows.map((row) => row.id));
     state.drawingReviews = normalizeReviews(Object.fromEntries(Object.entries(state.drawingReviews)
       .filter(([key]) => !key.startsWith(`${location}:`) || existingIds.has(key.slice(location.length + 1)))));
-    const next = hydrateDrawings(rows).map((row) => ({ ...row, rating: reviewValue(state.drawingReviews, location, row.id) })).sort((left, right) => right.createdAt - left.createdAt);
+    const next = hydrateDrawings(rows, drawings).map((row) => ({ ...row, rating: reviewValue(state.drawingReviews, location, row.id) })).sort((left, right) => right.createdAt - left.createdAt);
     const previous = drawings;
     const selectedGroups = new Set(previous.filter((row) => drawingUI.selection.has(row.id)).map(versionGroupId));
     drawings = next;
@@ -2120,6 +3108,7 @@ async function reloadDrawings() {
     state.favorites = drawings.filter((item) => item.favorite).map((item) => item.id);
     state.storageUsage = formatBytes(rows.reduce((sum, item) => sum + item.blob.size + item.thumbnail.size, 0));
     drawingUI.storageLocation = location;
+    drawingUI.index = location === 'server' ? drawingLibrary.server.stats?.index : null;
     state.storageStatus = location === 'server' ? drawingLibrary.server.stats?.enhanced
       ? '已连接 · 当前酒馆账号 · 服务器增强可用' : '已连接 · 当前酒馆账号 · 内置存储' : '';
     if (location === 'server' && drawingLibrary.server.stats?.pendingFiles) {
@@ -2131,14 +3120,26 @@ async function reloadDrawings() {
     persist();
     drawingUI.loading = false;
     drawingUI.error = '';
-    render();
+    const editingGallery = state.page === 'gallery' && document.activeElement?.closest('[data-drawing-filters]');
+    if (!editingGallery) render();
+    else {
+      const status = host.querySelector('[data-gallery-index-status]');
+      if (status) status.textContent = galleryIndexStatus(drawingUI.index);
+    }
     if (document.querySelector('.drawing-viewer')) {
       viewerUI.ids = viewerUI.ids.filter((id) => currentDrawing(drawings, id));
       viewerUI.index = Math.min(viewerUI.index, viewerUI.ids.length - 1);
       if (viewerUI.ids.length) showDrawingViewer();
       else closeDrawingViewer();
     }
-    revokeDrawings(previous);
+    revokeDrawings(previous, drawings);
+    if (state.page === 'gallery' && location === 'server' && drawingUI.index?.pending && !drawingUI.index.errors) {
+      galleryIndexTimer = setTimeout(() => {
+        if (state.page !== 'gallery' || state.cacheLocation !== 'server') return;
+        if (document.activeElement?.closest('[data-drawing-filters]') || drawingUI.busy) return;
+        void reloadDrawings().catch((error) => { drawingUI.error = error.message; render(); });
+      }, 2000);
+    }
   };
   libraryReload = (libraryReload || Promise.resolve()).catch(() => {}).then(load);
   return libraryReload;
@@ -2472,6 +3473,27 @@ async function materializeReferenceDrawing(id) {
   return normalized;
 }
 
+async function saveLocalToolsResult(result, source) {
+  if (!result?.blob || source.location !== state.cacheLocation) throw new Error('存储位置已变化，请重新选择原图');
+  if (backupPanel.ui.restoring) throw new Error('请等待备份恢复完成');
+  await libraryReady;
+  // Read the current version list so a parallel edit cannot reuse an old version number.
+  const rows = await drawingLibrary.list(source.location);
+  const parent = source.id ? rows.find((item) => item.id === source.id) : null;
+  if (source.id && !parent) throw new Error('来源图片已删除，请先下载结果再重新导入');
+  const note = `${result.model === 'fsrcnn-x4' ? 'FSRCNN 4×' : 'FSRCNN 2×'} 本地超分 · ${result.width} × ${result.height}`;
+  const relation = parent ? editRelation(parent, note) : null;
+  if (relation) relation.number = Math.max(...groupVersions(rows, parent.id).map((item) => item.version?.number || 1)) + 1;
+  const item = await makeDrawing(result.blob, {
+    title: `${source.title} · 本地超分`, snapshot: parent?.snapshot || null,
+    favorite: Boolean(parent?.favorite), chatBinding: parent?.chatBinding || null,
+    ...(relation ? { version: relation } : {}),
+  });
+  if (state.cacheLocation !== source.location) throw new Error('存储位置已变化，请重新选择原图');
+  await drawingLibrary.add([item], source.location);
+  activeDrawingId = item.id; await reloadDrawings(); notifyImagesChanged();
+}
+
 async function encodeCurrentVibe(entry, model) {
   const credential = credentials.novelai;
   if (!state.enabled || !credential.key.trim()) throw new Error('请启用插件并配置 NovelAI 秘钥');
@@ -2600,19 +3622,24 @@ async function rewriteImage() {
   ui.busy = true; ui.error = ''; ui.controller = controller;
   const draft = structuredClone(ui.draft), instruction = ui.instruction;
   showImageEditor();
+  const trace = assistantDiagnosticPanel.start('edit', normalizeAssistant(state.assistant));
   try {
     if (!state.enabled) throw new Error('插件已关闭');
     await saveAssistantKey();
-    const options = normalizeAssistant(state.assistant), messages = imageEditMessages(draft, instruction, options);
-    const plan = options.source === 'api'
-      ? await requestAssistantAPI(options, assistantUI.key, messages, { signal: controller.signal })
-      : parseAssistantResult(await assistantHostRequest('text', { messages }, { signal: controller.signal, timeout: options.timeout }));
+    const options = normalizeAssistant(state.assistant);
+    const identity = JSON.stringify(options);
+    const messages = await prepareUtilityMessages(imageEditMessages(draft, instruction, options), 'edit', options, controller.signal, trace);
+    const raw = await executeAssistantText(messages, options, controller.signal, trace);
+    trace.step('parse');
+    const plan = parseAssistantResult(raw);
     controller.signal.throwIfAborted();
+    if (identity !== JSON.stringify(normalizeAssistant(state.assistant))) throw new Error('文字模型配置已改变，请重新改写');
     if (imageEditorUI === ui) {
       ui.draft = applyImageRewrite(draft, plan);
       if (!ui.note) ui.note = instruction.slice(0, 1000);
     }
-  } catch (error) { ui.error = controller.signal.aborted ? '处理已取消，原参数已保留' : error.message; }
+    trace.finish(null, 1);
+  } catch (error) { trace.finish(controller.signal.aborted ? new Error('操作已取消') : error); ui.error = controller.signal.aborted ? '处理已取消，原参数已保留' : error.message; }
   finally { ui.busy = false; ui.controller = null; if (imageEditorUI === ui) showImageEditor(); }
 }
 
@@ -2736,7 +3763,10 @@ async function runGeneration(job) {
     const downloaded = await downloadResults(job);
     job.failurePhase = 'image-processing';
     const received = await finishAdvancedImages(job, downloaded, referenceAssets);
-    const results = job.plan.imageEdit && !job.plan.snapshot.novelaiProcessing ? received.slice(0, 1) : received;
+    verifiedImages.add(JSON.stringify([job.plan.provider, job.plan.url, job.plan.model, job.plan.headers.Authorization || '']));
+    const comicProject = state.comicLibrary.projects.find((project) => project.panels.some((panel) => panel.jobs.some((ref) => ref.id === job.id)));
+    const comicFrame = comicProject?.panels.findIndex((panel) => panel.jobs.some((ref) => ref.id === job.id));
+    const results = (job.plan.imageEdit || comicProject) && !job.plan.snapshot.novelaiProcessing ? received.slice(0, 1) : received;
     job.controller.signal.throwIfAborted();
     job.phase = 'saving'; job.notify();
     job.failurePhase = 'task-state';
@@ -2758,7 +3788,9 @@ async function runGeneration(job) {
         }
         const row = await makeDrawing(result.blob, {
           id: `${job.id}-${index}`, createdAt: job.createdAt,
-          title: processing ? `${processingTitle(processing)}${variant ? ` · ${variant}` : ''}`
+          favorite: Boolean(comicProject),
+          title: comicProject ? `${comicProject.title} · 第 ${comicFrame + 1} 格`
+            : processing ? `${processingTitle(processing)}${variant ? ` · ${variant}` : ''}`
             : `${params.positive.trim().slice(0, 40) || '绘图'}${results.length > 1 ? ` · ${index + 1}` : ''}`,
           snapshot, batchId: job.id, chatBinding: job.plan.chatBinding,
           ...(job.plan.imageEdit ? { version: { ...job.plan.imageEdit,
@@ -2791,6 +3823,12 @@ async function runGeneration(job) {
 
 function chatPost(type, value) {
   if (isInstalled()) postWindowMessage(window.parent, { type, ...value });
+}
+
+function reportChatPreparation(request, phase) {
+  if (!request || request.jobId || request.controller.signal.aborted) return;
+  chatPost('linghuashi:chat-task', { requestId: request.requestId, binding: request.binding,
+    status: 'preparing', phase, ...(request.quickImage ? { imageId: request.imageId } : {}) });
 }
 
 function reportChatTask(job) {
@@ -2836,7 +3874,7 @@ export function receiveChatCommand(data) {
     return;
   }
   if (data.type === 'linghuashi:chat-images-changed') {
-    void libraryReady.then(reloadDrawings).catch((error) => toast(error.message)); return;
+    void libraryReady.then(() => reloadDrawings()).catch((error) => toast(error.message)); return;
   }
   if (data.type === 'linghuashi:chat-image-open') {
     if (!validBinding(data.binding) || !validImageId(data.id)
@@ -2863,27 +3901,31 @@ export function receiveChatCommand(data) {
       chatPost('linghuashi:chat-task', { requestId: data.requestId, imageId: data.imageId, status: 'failed', error: '生图队列已满，请稍后重试' }); return;
     }
     const request = { ...data, quickImage: true, automatic: false, controller: new AbortController() };
-    chatRequests.set(request.requestId, request); chatInbox.push(request); void processChatInbox(); return;
+    chatRequests.set(request.requestId, request); chatInbox.push(request);
+    reportChatPreparation(request, 'inbox'); void processChatInbox(); return;
   }
   if (['linghuashi:chat-view', 'linghuashi:chat-edit'].includes(data.type) && typeof data.id === 'string') {
-    void libraryReady.then(async () => {
+    void (async () => {
+      const revision = beginChatImageOpen();
+      await libraryReady;
       await reloadDrawings();
+      if (revision !== chatImageOpenRevision) return;
+      assertChatImageWindowAvailable();
       showPage('gallery');
       if (data.type === 'linghuashi:chat-edit') {
         const item = drawings.find((row) => row.id === data.id) || currentDrawing(drawings, data.id);
         if (item) openImageEditor(item); else toast('图片已删除或位于其他存储位置');
       } else openViewer(data.id);
-    }).catch((error) => toast(error.message));
+    })().catch((error) => toast(error.message));
     return;
   }
   if (data.type === 'linghuashi:chat-assistant-open') {
     if (!validBinding(data.binding)) return;
     try {
-      state.assistantDraft = parseAssistantResult(JSON.stringify(data.plan), { stored: true });
-      assistantUI.binding = data.binding; assistantUI.requestId = data.requestId;
-      state.assistantBinding = data.binding; state.assistantRequestId = data.requestId;
-      state.assistantInput = state.assistantDraft.scene; assistantUI.error = '';
-      persist(); showPage('assistant');
+      const plan = parseAssistantResult(JSON.stringify(data.plan), { stored: true });
+      replaceAssistantDraft(plan, { operation: 'illustrate', input: plan.scene, binding: data.binding, requestId: data.requestId });
+      assistantUI.error = '';
+      showPage('assistant');
     } catch (error) { toast(error.message); }
     return;
   }
@@ -2903,6 +3945,7 @@ export function receiveChatCommand(data) {
       request.assistantOptions = normalizeAssistant(state.assistant);
     }
     chatRequests.set(request.requestId, request); chatInbox.push(request);
+    reportChatPreparation(request, 'inbox');
     void processChatInbox(); return;
   }
   if (data.type === 'linghuashi:chat-generate') {
@@ -2916,6 +3959,7 @@ export function receiveChatCommand(data) {
     const request = { ...data, automatic: data.automatic === true, controller: new AbortController() };
     chatRequests.set(request.requestId, request);
     chatInbox.push(request);
+    reportChatPreparation(request, 'inbox');
     void processChatInbox();
     return;
   }
@@ -2956,25 +4000,52 @@ async function processChatInbox() {
     while (chatInbox.length) {
       const request = chatInbox.shift();
       if (request.controller.signal.aborted) continue;
-      await libraryReady;
-      while (document.getElementById('overlay-root').childElementCount && !request.controller.signal.aborted) {
-        await new Promise((resolve) => setTimeout(resolve, 200));
+      try {
+        reportChatPreparation(request, 'storage');
+        await libraryReady;
+        await waitForChatWindow(document.getElementById('overlay-root'), {
+          signal: request.controller.signal,
+          onWait: () => reportChatPreparation(request, 'window'),
+        });
+        if (request.controller.signal.aborted) continue;
+        reportChatPreparation(request, '');
+        if (request.type === 'linghuashi:chat-assist') await analyzeChat(request);
+        else if (request.quickImage) await enqueueChatImage(request);
+        else await enqueueGeneration(request);
+      } catch (error) {
+        chatPost('linghuashi:chat-task', { requestId: request.requestId, binding: request.binding,
+          status: request.controller.signal.aborted ? 'cancelled' : 'failed', error: error.message,
+          ...(request.quickImage ? { imageId: request.imageId } : {}) });
       }
-      if (request.controller.signal.aborted) continue;
-      if (request.type === 'linghuashi:chat-assist') await analyzeChat(request);
-      else if (request.quickImage) await enqueueChatImage(request);
-      else await enqueueGeneration(request);
     }
   } finally { processingChat = false; }
 }
 
+function assertChatImageWindowAvailable() {
+  if (blockingChatWindow(document.getElementById('overlay-root')) || processingPanel.dialog) {
+    throw new Error('已有编辑窗口打开，请先保存或关闭；本次选中的图片尚未打开');
+  }
+}
+
+function beginChatImageOpen() {
+  assertChatImageWindowAvailable();
+  const revision = ++chatImageOpenRevision;
+  // A hidden console may still hold the previous read-only preview.
+  if (document.querySelector('#overlay-root .drawing-viewer')) closeDrawingViewer();
+  return revision;
+}
+
 async function openChatImage(data) {
+  const revision = beginChatImageOpen();
   await libraryReady;
+  if (revision !== chatImageOpenRevision) return;
   if (state.cacheLocation !== data.storageLocation) {
     throw new Error(`这张配图保存在${data.storageLocation === 'server' ? '酒馆服务器' : '浏览器'}，请先在插件设置切换图片缓存位置`);
   }
-  if (document.getElementById('overlay-root').childElementCount || processingPanel.dialog) throw new Error('请先完成或关闭当前编辑窗口');
   await reloadDrawings();
+  if (revision !== chatImageOpenRevision) return;
+  assertChatImageWindowAvailable();
+  if (state.cacheLocation !== data.storageLocation) throw new Error('图片存储位置已变化，请重新点击图片');
   const item = drawings.find((row) => row.id === data.id);
   if (!chatImageBelongsTo(item, data.binding)) throw new Error('图片已删除或配图关联已变化，请刷新聊天');
   if (data.action === 'restore') {
@@ -3108,7 +4179,12 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
     if (request) chatPost('linghuashi:chat-task', { requestId: request.requestId, status, error,
       ...(request.quickImage ? { imageId: request.imageId, binding: request.binding } : {}) });
     else if (error && imageEdit) throw new Error(error);
-    else if (error) toast(error);
+    else if (error) {
+      generationIssue = error;
+      if (state.page === 'assistant') openWorkflowPage('generate', 'assistant');
+      else render(true);
+      if (state.page === 'generate') revealSetting('.generation-issue');
+    }
   };
   if (workbenchPanel.ui.busy) { report('failed', '正在保存组合任务，请稍后提交'); return; }
   if (!state.enabled) { report('cancelled'); return; }
@@ -3237,9 +4313,62 @@ async function enqueueBatch(preview) {
   return { ids };
 }
 
+async function enqueueComicPanels(project, panelIds, token) {
+  if (!state.enabled || backupPanel.ui.restoring) throw new Error('请先启用插件并完成配置恢复');
+  const prepared = preparedComicGeneration;
+  preparedComicGeneration = null;
+  const signature = () => comicGenerationSignature(
+    state.comicLibrary.projects.find((row) => row.id === project.id) || project, panelIds, comicGenerationIdentity());
+  if (!prepared || prepared.token !== token || prepared.signature !== signature()) throw new Error('生图确认已失效，请重新选择画格并确认');
+  await libraryReady; await tasksReady;
+  if (!drawingLibrary.db || drawingUI.loading) throw new Error('图片存储尚未准备好');
+  if (!Array.isArray(panelIds) || !panelIds.length || panelIds.length > 12 || new Set(panelIds).size !== panelIds.length) throw new Error('请选择 1 至 12 个画格');
+  const live = state.comicLibrary.projects.find((row) => row.id === project.id);
+  if (!live) throw new Error('漫画项目已变化，请重新选择');
+  const panels = panelIds.map((id) => live.panels.find((panel) => panel.id === id));
+  if (panels.some((panel) => !panel || comicPanelBusy(panel, taskQueue.jobs))) throw new Error('画格不存在或已有待处理任务');
+  if (taskQueue.jobs.filter((job) => ['queued', 'running'].includes(job.status)).length + panels.length > 32) throw new Error('连同现有任务超过 32 个，请等待部分任务完成');
+  const { provider, storageLocation, credential, rows: plans } = prepared;
+  if (storageLocation === 'server') await drawingLibrary.list('server');
+  await saveConnection(provider);
+  const keyRef = credential.key.trim() ? await credentialRequest('write', provider, { key: credential.key, ref: state.connections[provider].keyRef }) : '';
+  if (prepared.signature !== signature()) throw new Error('生图配置或提示词已变化，尚未提交，请重新确认');
+  for (const { plan } of plans) { plan.keyRef = keyRef; plan.storageLocation = storageLocation; }
+  const created = [];
+  let failure;
+  try {
+    for (const row of plans) {
+      if (prepared.signature !== signature()) throw new Error('生图配置发生变化');
+      const record = await taskPersistence.create(row.plan);
+      created.push({ ...row, id: record.id });
+    }
+  } catch (error) { failure = error; }
+  if (!created.length) throw failure || new Error('任务未能保存');
+  const current = state.comicLibrary.projects.find((row) => row.id === project.id);
+  if (!current) throw new Error('漫画项目已变化；任务保留为暂停，请在任务记录中核对');
+  const next = structuredClone(current);
+  for (const row of created) {
+    const panel = next.panels.find((panel) => panel.id === row.panelId);
+    if (!panel) throw new Error('漫画画格已变化；任务保留为暂停，请在任务记录中核对');
+    panel.jobs = [...panel.jobs.slice(-23), { id: row.id, location: storageLocation, createdAt: Date.now() }];
+  }
+  const previous = state.comicLibrary;
+  state.comicLibrary = saveComicProject(previous, next);
+  try { persist(); } catch (error) { state.comicLibrary = previous; throw new Error(`画格关联保存失败，任务尚未提交：${error.message}`); }
+  if (failure || !state.enabled || prepared.signature !== signature()) {
+    for (const row of created) {
+      const job = taskQueue.add(row.plan, { id: row.id, defer: true }); job.status = 'paused';
+    }
+    return { ids: created.map((row) => row.id), error: `任务保存中断或配置发生变化，已保留 ${created.length} 个暂停任务，请在任务记录中核对后手动继续。${failure?.message || ''}` };
+  }
+  for (const row of created) taskQueue.add(row.plan, { id: row.id, defer: true });
+  activeJobId = created[0].id; taskQueue.pump(); render();
+  return { ids: created.map((row) => row.id) };
+}
+
 async function refreshTasks() {
   if (taskRefreshing) return taskRefreshWork;
-  if (workbenchPanel.ui.busy) return;
+  if (workbenchPanel.ui.busy || comicPanel.submitting) return;
   taskRefreshing = true;
   taskRefreshWork = (async () => {
   try {
@@ -3263,7 +4392,10 @@ async function refreshTasks() {
 
 function generate() {
   if (document.getElementById('overlay-root').childElementCount) { toast('请先处理当前窗口'); return; }
-  void advancedPanel.beforeGenerate().then(() => enqueueGeneration()).catch((error) => toast(error.message));
+  generationIssue = '';
+  void advancedPanel.beforeGenerate().then(() => enqueueGeneration()).catch((error) => {
+    generationIssue = error.message; render(true); revealSetting('.generation-issue');
+  });
 }
 
 function openViewer(imageId) {
@@ -3301,24 +4433,38 @@ export function mountPlugin(root, next) {
   config = next;
   runtimeState = next.state;
   persist();
+  libraryReady = Promise.resolve().then(initializeDrawings);
   render();
   if (state.page === 'assistant' && state.assistant.source === 'tavern' && isInstalled()) void fetchAssistantModels(false);
   if (state.page === 'characters') void refreshProfileCards();
-  libraryReady = initializeDrawings();
   tasksReady = refreshTasks();
   const taskSync = setInterval(() => { void refreshTasks(); }, 8000);
   window.addEventListener('pagehide', () => clearInterval(taskSync), { once: true });
   if (typeof BroadcastChannel !== 'undefined') {
     const imageSync = new BroadcastChannel(`linghuashi-chat:${currentAccount()}`);
     imageSync.onmessage = (event) => {
-      if (event.data?.type === 'images-changed') void libraryReady.then(reloadDrawings).catch((error) => toast(error.message));
+      if (event.data?.type === 'images-changed') void libraryReady.then(() => reloadDrawings()).catch((error) => toast(error.message));
     };
     window.addEventListener('pagehide', () => imageSync.close(), { once: true });
   }
   host.addEventListener('click', async (event) => {
     const target = event.target.closest('button');
     if (!target) return;
+    if (target.dataset.guideAction) {
+      try { await guideAction(target.dataset.guideAction, target); } catch (error) { toast(error.message); }
+      return;
+    }
+    if (START_GOALS.some(([id]) => id === target.dataset.guideGoal)) {
+      state.experience.goal = target.dataset.guideGoal; state.experience.completed = false;
+      persist(); render(true); return;
+    }
+    if (['common', 'full'].includes(target.dataset.guideLevel)) {
+      state.experience.level = target.dataset.guideLevel;
+      for (const fold of host.querySelectorAll('[data-experience-fold]')) fold.open = state.experience.level === 'full' || fold.hasAttribute('data-experience-active');
+      persist(); render(true); return;
+    }
     if (target.dataset.page) {
+      if (target.closest('.plugin-nav')) workflowReturn = null;
       if (state.page === 'styles' && artistUI.dirty && target.dataset.page !== 'styles' && !discardArtistChanges()) return;
       if (state.page === 'styles' && target.dataset.page !== 'styles' && artistUI.dirty) {
         artistDraft(state.artistLibrary.find((entry) => entry.id === artistUI.draft?.id) || state.artistLibrary[0] || null);
@@ -3350,6 +4496,7 @@ export function mountPlugin(root, next) {
     if (target.dataset.drawing) { activeDrawingId = target.dataset.drawing; activeJobId = null; runtimeState = 'success'; render(); return; }
     if (target.dataset.sample) { activeSample = samples.find((item) => item.id === target.dataset.sample); runtimeState = 'success'; render(); return; }
     switch (target.dataset.action) {
+      case 'start-guide': await guideAction('open'); revealSetting('.start-guide'); break;
       case 'connection-new': case 'connection-copy': case 'connection-rename': case 'connection-delete':
         connectionDialog(target.dataset.action.replace('connection-', '')); break;
       case 'connection-save':
@@ -3402,7 +4549,20 @@ export function mountPlugin(root, next) {
         state.assistantInput = (snapshot.params || snapshot.config.params).positive;
         persist(); render(true); break;
       }
+      case 'assistant-example':
+        if (!state.assistantInput.trim()) {
+          state.assistantInput = '一位穿着白色连衣裙的成年旅行者坐在花园树下读书，清晨的阳光透过树叶，画面温柔安静。';
+          persist(); render(true); revealSetting('[data-assistant-input]');
+        }
+        break;
       case 'assistant-cancel': assistantUI.controller?.abort(); break;
+      case 'assistant-select-shot': {
+        const index = Number(target.dataset.shotIndex);
+        if (Number.isInteger(index) && illustrationPlans(state.assistantDraft)[index]) {
+          assistantUI.illustrationIndex = index; render(true);
+        }
+        break;
+      }
       case 'assistant-toggle-key':
         assistantUI.keyVisible = !assistantUI.keyVisible; refreshAssistantStatus(); break;
       case 'assistant-toggle-models':
@@ -3411,16 +4571,45 @@ export function mountPlugin(root, next) {
         const model = assistantUI.models[Number(target.dataset.assistantModelIndex)];
         if (!model) break;
         const key = state.assistant.source === 'api' ? 'model' : 'tavernModel';
-        state.assistant[key] = model; persist();
-        host.querySelector('#assistant-model-input').value = model;
-        assistantUI.modelsOpen = false; refreshAssistantModels(); break;
+        state.assistant[key] = model; loadAssistantCompatibility();
+        assistantUI.modelsOpen = false; render(true); break;
       }
+      case 'assistant-compat-save':
+        try {
+          state.assistant.compatibilityProfiles = saveCompatibility(state.assistant, assistantCompatibilityTarget(), state.assistant);
+          persist(); render(true); toast('已保存当前接口与模型的兼容设置');
+        } catch (error) { toast(error.message); } break;
+      case 'assistant-compat-remove':
+        state.assistant.compatibilityProfiles = state.assistant.compatibilityProfiles.filter((row) =>
+          row.identity !== compatibilityIdentity(state.assistant, assistantCompatibilityTarget()));
+        loadAssistantCompatibility(); render(true); break;
+      case 'assistant-compat-text':
+        state.assistant.responseMode = 'text';
+        try { state.assistant.compatibilityProfiles = saveCompatibility(state.assistant, assistantCompatibilityTarget(), state.assistant); }
+        catch {}
+        persist(); render(true); toast('已切换普通 JSON 回复，可手动重新分析'); break;
+      case 'assistant-budget-increase':
+        state.assistant.maxTokens = Math.min(131072, state.assistant.outputLimit || 131072, Math.max(8000, state.assistant.maxTokens * 2));
+        persist(); render(true); toast('输出上限已调整，请核对模型限制后手动重试'); break;
       case 'assistant-models': await fetchAssistantModels(); break;
+      case 'assistant-budget-preview':
+        try { await assistantPresetPanel.preview(); render(true); toast('已按当前描述与预设估算，未调用模型'); }
+        catch (error) { toast(error.message); } break;
+      case 'assistant-task-prompts': taskPromptPanel.open(state.assistantInput.trim() ? 'generate' : 'illustrate'); break;
       case 'assistant-network': networkDiagnosticPanel.open(networkContext('assistant')); break;
       case 'assistant-apply':
         try { applyAssistantToParameters(); render(); } catch (error) { toast(error.message); } break;
+      case 'assistant-workshop':
+        try { applyAssistantToParameters(); openWorkflowPage('generate', 'assistant'); } catch (error) { toast(error.message); }
+        break;
+      case 'assistant-comic':
+        try {
+          await comicPanel.fromAssistant(state.assistantInput.trim() || currentAssistantPlan()?.scene || '');
+          openWorkflowPage('comic', 'assistant');
+        } catch (error) { toast(error.message); }
+        break;
       case 'assistant-copy':
-        try { await navigator.clipboard.writeText(state.assistantDraft?.positive || ''); toast('提示词已复制'); }
+        try { await navigator.clipboard.writeText(currentAssistantPlan()?.positive || ''); toast('提示词已复制'); }
         catch { toast('复制失败，请选择提示词后复制'); } break;
       case 'assistant-save-draft':
         if (assistantUI.binding) chatPost('linghuashi:chat-draft', {
@@ -3428,13 +4617,22 @@ export function mountPlugin(root, next) {
           plan: { ...state.assistantDraft, shouldDraw: Boolean(state.assistantDraft?.positive?.trim()) },
         }); break;
       case 'assistant-draw': {
-        const plan = state.assistantDraft;
+        const plan = currentAssistantPlan();
         if (!plan?.positive.trim()) { toast('请先准备提示词'); break; }
         if (assistantUI.binding) {
-          chatPost('linghuashi:chat-draft-submit', { requestId: assistantUI.requestId, binding: assistantUI.binding, plan: { ...plan, shouldDraw: true } });
-        } else await enqueueGeneration(undefined, { plan, options: normalizeAssistant(state.assistant) });
+          chatPost('linghuashi:chat-draft-submit', { requestId: assistantUI.requestId, binding: assistantUI.binding,
+            illustrationIndex: assistantUI.illustrationIndex || 0,
+            plan: { ...(assistantUI.illustrationIndex ? plan : state.assistantDraft), shouldDraw: true } });
+        } else try { await enqueueGeneration(undefined, { plan, options: normalizeAssistant(state.assistant) }); }
+        catch (error) { generationIssue = error.message; openWorkflowPage('generate', 'assistant'); revealSetting('.generation-issue'); }
         break;
       }
+      case 'assistant-draw-all':
+        if (assistantUI.binding?.slot === 0 && state.assistantDraft?.illustrations?.length > 1) {
+          chatPost('linghuashi:chat-draft-submit', { requestId: assistantUI.requestId, binding: assistantUI.binding,
+            plan: { ...state.assistantDraft, shouldDraw: true }, allIllustrations: true });
+        }
+        break;
       case 'sdwebui-fetch-models': void checkConnection(true); break;
       case 'sdwebui-load-preset':
         try { await loadCurrentPreset('sdwebui', state.sdwebuiPresetId); } catch (error) { toast(error.message); render(); } break;
@@ -3504,6 +4702,7 @@ export function mountPlugin(root, next) {
           toast(state.storageStatus);
         }); break;
       case 'drawing-refresh': drawingOperation(async () => { await reloadDrawings(); toast('图片列表已刷新'); }); break;
+      case 'drawing-reindex': drawingOperation(async () => { await reloadDrawings(true); toast('已重新核对图库参数'); }); break;
       case 'drawing-reset-filters':
         drawingUI.filters = { source: 'all', start: '', end: '', search: '', favoriteOnly: false };
         drawingUI.page = 1; drawingUI.error = ''; drawingUI.selection.clear(); render(); break;
@@ -3740,13 +4939,17 @@ export function mountPlugin(root, next) {
       return;
     }
     if (event.target.dataset.assistantCharacter && state.assistantDraft) {
-      const entry = state.assistantDraft.characters?.find((item) => item.profileId === event.target.dataset.assistantCharacter);
+      const shot = illustrationPlans(state.assistantDraft)[assistantUI.illustrationIndex || 0];
+      const entry = shot.characters?.find((item) => item.profileId === event.target.dataset.assistantCharacter);
       if (entry) {
         const key = event.target.dataset.characterResult;
         entry[key] = event.target.value;
         const sceneEntry = state.assistantDraft.characterScene?.entries.find((item) => item.profileId === entry.profileId);
-        if (sceneEntry && ['action', 'expression'].includes(key)) sceneEntry[key] = event.target.value;
-        persist();
+        if (sceneEntry && !state.assistantDraft.illustrations && ['action', 'expression'].includes(key)) sceneEntry[key] = event.target.value;
+        syncPrimaryIllustration(state.assistantDraft);
+        pendingSave.schedule();
+        assistantLintPanel.render();
+        assistantHistoryPanel.render();
       }
       return;
     }
@@ -3765,23 +4968,28 @@ export function mountPlugin(root, next) {
       return;
     }
     if (event.target.matches('[data-assistant-input]')) {
-      state.assistantInput = event.target.value; persist(); return;
+      state.assistantInput = event.target.value; pendingSave.schedule(); assistantHistoryPanel.render(); return;
     }
     if (event.target.dataset.assistantResult && state.assistantDraft) {
-      state.assistantDraft[event.target.dataset.assistantResult] = event.target.value; persist();
+      const shot = illustrationPlans(state.assistantDraft)[assistantUI.illustrationIndex || 0];
+      shot[event.target.dataset.assistantResult] = event.target.value;
+      syncPrimaryIllustration(state.assistantDraft); pendingSave.schedule();
+      assistantLintPanel.render();
+      assistantHistoryPanel.render();
+      assistantScenePanel.render();
       for (const action of ['assistant-draw', 'assistant-apply', 'assistant-copy']) {
         const command = host.querySelector(`[data-action="${action}"]`);
-        if (command) command.disabled = !state.assistantDraft.positive.trim() || assistantUI.busy || action === 'assistant-draw' && !state.enabled;
+        if (command) command.disabled = !currentAssistantPlan()?.positive.trim() || assistantUI.busy || action === 'assistant-draw' && !state.enabled;
       }
       return;
     }
     if (event.target.dataset.assistant) {
       const key = event.target.dataset.assistant;
-      if (key === 'endpoint') { apiEditRevision++; resetAssistantModels(); }
+      if (['endpoint', 'apiTransport'].includes(key)) { apiEditRevision++; resetAssistantModels(); }
       if (key === 'source') resetAssistantModels();
       state.assistant[key] = event.target.type === 'checkbox' ? event.target.checked
         : event.target.type === 'number' ? Number(event.target.value) : event.target.value;
-      state.assistant = normalizeAssistant(state.assistant); persist(); return;
+      state.assistant = normalizeAssistant(state.assistant); pendingSave.schedule(); return;
     }
     if (event.target.matches('[data-openai-model-search]')) {
       openaiModelUI.query = event.target.value;
@@ -3969,7 +5177,8 @@ export function mountPlugin(root, next) {
         try { await syncAssistantConnection(key === 'endpoint' ? 'assistant' : undefined); }
         catch { assistantUI.keyStatus = '接口同步失败，请重试'; }
       }
-      if (['source', 'template', 'frequency'].includes(key)) render(true);
+      if (['model', 'tavernModel', 'endpoint', 'source'].includes(key)) { loadAssistantCompatibility(); render(true); }
+      else if (['apiTransport', 'template', 'frequency'].includes(key)) render(true);
       else if (event.target.type === 'number') event.target.value = state.assistant[key];
       if (key === 'source' && state.assistant.source === 'tavern' && isInstalled()) void fetchAssistantModels(false);
       return;
@@ -4141,6 +5350,10 @@ export function mountPlugin(root, next) {
     if (action === 'viewer-restore') restoreViewerParameters();
     if (action === 'viewer-edit') openImageEditor(viewedDrawing());
     if (action === 'viewer-enhance') processingPanel.open(viewedDrawing());
+    if (action === 'viewer-local-tools') {
+      const item = viewedDrawing(); closeDrawingViewer(); showPage('components');
+      void localToolsPanel.useDrawing(item);
+    }
     if (action === 'viewer-source') void useViewerReference('source');
     if (action === 'viewer-reference') void useViewerReference('reference');
     if (action === 'version-view' || action === 'version-prev' || action === 'version-next') {

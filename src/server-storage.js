@@ -5,19 +5,41 @@ import { BACKUP_ACTIONS } from '../server/linghuashi-storage/backup-records.mjs'
 import { createNativeStorage } from './native-storage.js';
 import { createBrowserTaskRequest } from './task-persistence.js';
 export const STORAGE_ACTIONS = new Set(['list', 'image/get', 'version/select', 'policy', 'cleanup', 'add', 'favorite', 'remove', 'audit',
-  'chat/list', 'chat/get', 'chat/reserve', 'chat/update', 'components/status', 'diagnostics/status', ...TASK_ACTIONS, ...REFERENCE_ACTIONS, ...BACKUP_ACTIONS]);
+  'chat/list', 'chat/get', 'chat/reserve', 'chat/update', 'components/status', 'diagnostics/status',
+  'comic/chapter-get', 'comic/chapter-put', ...TASK_ACTIONS, ...REFERENCE_ACTIONS, ...BACKUP_ACTIONS]);
 
-export function createStorageRequest(getHeaders, { account = 'default-user', request = fetch, browserTasks, locks, now, enhancedSupported = true } = {}) {
+export function createStorageRequest(getHeaders, { account = 'default-user', request = fetch, browserTasks, locks, now, enhancedSupported = true, signal,
+  isActive = () => true } = {}) {
+  function assertActive() {
+    signal?.throwIfAborted();
+    if (!isActive()) throw new DOMException('页面正在离开，已停止发起存储请求', 'AbortError');
+  }
+  function requestSignal() {
+    assertActive();
+    const deadline = AbortSignal.timeout(120000);
+    if (!signal) return deadline;
+    if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, deadline]);
+    const controller = new AbortController();
+    const stop = () => {
+      controller.abort();
+      signal.removeEventListener('abort', stop); deadline.removeEventListener('abort', stop);
+    };
+    signal.addEventListener('abort', stop, { once: true });
+    deadline.addEventListener('abort', stop, { once: true });
+    return controller.signal;
+  }
   async function api(url, body, { missing = false } = {}) {
+    assertActive();
     const headers = getHeaders();
     if (!headers) throw new Error('酒馆请求验证尚未就绪');
     let response;
     try {
       response = await request(url, {
         method: 'POST', headers, body: JSON.stringify(body), credentials: 'same-origin',
-        cache: 'no-store', signal: AbortSignal.timeout(120000),
+        cache: 'no-store', signal: requestSignal(),
       });
     } catch (error) { error.scope = 'tavern-storage'; throw error; }
+    signal?.throwIfAborted();
     if (!response.ok) {
       if (missing && response.status === 404) return null;
       const result = await response.json().catch(() => ({}));
@@ -29,7 +51,7 @@ export function createStorageRequest(getHeaders, { account = 'default-user', req
   }
   const enhanced = (action, body = {}, options) => api(`${BASE}/${action}`, body, options);
   const native = createNativeStorage({ api, account, locks, now,
-    read: (path) => request(`/${path}?account=${encodeURIComponent(account)}`, { credentials: 'same-origin', cache: 'no-cache', signal: AbortSignal.timeout(120000) })
+    read: (path) => request(`/${path}?account=${encodeURIComponent(account)}`, { credentials: 'same-origin', cache: 'no-cache', signal: requestSignal() })
       .catch((error) => { error.scope = 'tavern-storage'; throw error; }) });
   let discovery, tasks;
   const localTasks = (action, body) => {
@@ -69,7 +91,9 @@ export function createStorageRequest(getHeaders, { account = 'default-user', req
       pendingFiles: (local.pendingFiles || 0) + (remote.pendingFiles || 0) };
   }
   return async (action, body = {}) => {
+    assertActive();
     if (!STORAGE_ACTIONS.has(action)) throw new Error('未知服务器存储操作');
+    if (action === 'comic/chapter-get' || action === 'comic/chapter-put') return native(action, body);
     if (action === 'components/status') {
       try {
         const status = await component(body.refresh === true);
@@ -197,8 +221,8 @@ async function base64(blob) {
 
 export class ServerDrawingLibrary {
   constructor(request, account) { this.request = request; this.account = account; }
-  async list() {
-    const result = await this.request('list');
+  async list(refresh = false) {
+    const result = await this.request('list', { refresh });
     this.stats = result;
     return result.rows.map((row) => serverDrawing(row, this.account));
   }
@@ -218,10 +242,10 @@ export class ServerDrawingLibrary {
       cleanupMode: settings.cleanupMode, cleanupInterval: settings.cleanupInterval, cleanupUnit: settings.cleanupUnit,
       cleanupMaxImages: settings.cleanupMaxImages, cleanupOlderThanDays: settings.cleanupOlderThanDays });
   }
-  async materialize(row) {
+  async materialize(row, signal) {
     if (row.blob instanceof Blob) return row;
     const load = async (url) => {
-      const response = await fetch(url, { credentials: 'same-origin' });
+      const response = await fetch(url, { credentials: 'same-origin', signal });
       if (!response.ok) throw new Error(response.status === 404 ? '服务器图片已删除或文件缺失' : '服务器原图下载失败，请重试');
       return response.blob();
     };

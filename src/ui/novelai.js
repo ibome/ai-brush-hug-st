@@ -187,7 +187,7 @@ export function renderNovelAIParameters(state, advancedOpen = false) {
     ${field('尺寸', `<select data-nai-size>${options([...NOVELAI_SIZES.map((size) => [size.id, size.title]), ['custom', '自定义尺寸']], sizes)}</select>`)}
     <div class="nai-dimensions">${numberField('width', '宽度 (px)')}<button type="button" class="ui-icon-button" data-action="nai-swap-size" title="交换宽高" aria-label="交换宽高">${icon('arrow-left-right')}</button>${numberField('height', '高度 (px)')}</div>
     ${numberField('steps', '步数')}
-    <details class="advanced-options nai-advanced" ${advancedOpen ? 'open' : ''}><summary>${icon('settings-2')}其他参数设置${icon('chevron-down')}</summary>
+    <details class="advanced-options nai-advanced" data-experience-fold="nai-parameters" ${advancedOpen || state.experience?.level === 'full' ? 'open' : ''}><summary>${icon('settings-2')}其他参数设置${icon('chevron-down')}</summary>
       <div class="two-field-row">
         ${numberField('scale', '提示词引导 (CFG)')}
         ${numberField('cfgRescale', 'CFG Rescale')}

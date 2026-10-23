@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import JavaScriptObfuscator from 'javascript-obfuscator';
 import { RELEASE } from '../src/release.js';
+import { assertBrowserRegex } from './browser-regexp.mjs';
 
 export const PROTECTION_PROFILE = 'light-identifiers-v1';
 export const protectionOptions = Object.freeze({
@@ -52,6 +53,7 @@ export function protectBuild() {
         }
         const before = Buffer.byteLength(file.code);
         file.code = releaseBanner(vendor) + (vendor ? file.code : protectCode(file.code, file.name));
+        assertBrowserRegex(file.code, file.fileName);
         file.map = null;
         files.push({ name: file.fileName, protected: !vendor, beforeBytes: before,
           bytes: Buffer.byteLength(file.code), sha256: codeDigest(file.code) });

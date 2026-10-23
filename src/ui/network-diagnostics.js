@@ -6,19 +6,21 @@ const command = (glyph, title, action, disabled = false) =>
   `<button type="button" class="ui-button secondary" data-network-action="${action}" ${disabled ? 'disabled' : ''}>${icon(glyph)}<span>${title}</span></button>`;
 const outcomeTitle = (row) => row.outcome === 'http' ? `HTTP ${row.httpStatus}` : ({
   opaque: '不透明响应', timeout: '超时', 'network-error': '请求失败', 'mixed-content': '协议冲突',
+  'relay-ok': '转发通过', 'relay-empty': '模型列表为空', 'relay-error': '转发未通过',
   csp: '策略拦截', 'invalid-header': '认证字符异常', cancelled: '已取消',
 })[row.outcome] || '待检测';
 
 export class NetworkDiagnosticPanel {
-  constructor({ context, onClose = () => {} }) { this.context = context; this.onClose = onClose; }
+  constructor({ context, relayProbe, onClose = () => {} }) { this.context = context; this.relayProbe = relayProbe; this.onClose = onClose; }
   open(source) {
     if (this.dialog?.isConnected) { this.dialog.focus(); return; }
     this.source = { ...(source || this.context()) };
     this.report = null; this.busy = false; this.message = '';
     const dialog = document.createElement('dialog');
+    const relay = this.source.provider === 'assistant' && this.source.apiTransport === 'tavern';
     dialog.className = 'network-diagnostic-dialog';
     dialog.setAttribute('aria-labelledby', 'network-diagnostic-title');
-    dialog.innerHTML = `<header><div><h2 id="network-diagnostic-title">当前设备网络检测</h2><p>当前浏览器 → 当前接口</p></div>
+    dialog.innerHTML = `<header><div><h2 id="network-diagnostic-title">${relay ? '酒馆转发网络检测' : '当前设备网络检测'}</h2><p>${relay ? '当前浏览器 → 酒馆 → 独立 API' : '当前浏览器 → 当前接口'}</p></div>
       <button type="button" class="ui-icon-button" data-network-action="close" title="关闭" aria-label="关闭网络检测">${icon('x')}</button></header>
       <div class="network-diagnostic-body"><p class="network-diagnostic-scope">只读检测，不提交生图或文字生成请求。日志已隐藏秘钥，不会自动发送。</p>
       <p class="network-diagnostic-progress" role="status" aria-live="polite"></p><ol class="network-diagnostic-results"></ol>
@@ -54,8 +56,8 @@ export class NetworkDiagnosticPanel {
       ? `正在检测：${report?.current || '准备检查'}`
       : report?.status === 'cancelled' ? '已取消，保留已完成的检查结果' : '检测完成';
     dialog.querySelector('.network-diagnostic-results').innerHTML = (report?.checks || []).map((row) => {
-      const tone = row.outcome === 'http' && (row.httpStatus < 400 || !row.authenticated && [401, 404, 405].includes(row.httpStatus))
-        ? 'success' : row.outcome === 'opaque' ? 'warning' : 'error';
+      const tone = row.outcome === 'relay-ok' || row.outcome === 'http' && (row.httpStatus < 400 || !row.authenticated && [401, 404, 405].includes(row.httpStatus))
+        ? 'success' : ['opaque', 'relay-empty'].includes(row.outcome) ? 'warning' : 'error';
       return `<li data-tone="${tone}"><div>${icon(tone === 'success' ? 'circle-check' : tone === 'warning' ? 'circle' : 'circle-alert')}
         <strong>${esc(row.label)}</strong><span>${esc(outcomeTitle(row))} · ${row.durationMs} ms</span></div>
         <small>${esc(row.url)}</small><p>${esc(row.detail)}</p></li>`;
@@ -75,7 +77,7 @@ export class NetworkDiagnosticPanel {
     this.controller = controller; this.busy = true; this.message = ''; this.report = null; this.refresh();
     try {
       const report = await runNetworkDiagnostics(this.source, {
-        signal: controller.signal,
+        signal: controller.signal, relayProbe: this.relayProbe,
         onProgress: (report) => { if (this.dialog === dialog) { this.report = report; this.refresh(); } },
       });
       if (this.dialog === dialog) this.report = report;

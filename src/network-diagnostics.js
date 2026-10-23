@@ -73,7 +73,9 @@ export function networkDiagnosticPlan(context) {
       const urls = assistantURLs(context.endpoint || '');
       add('assistant-public', '助手模型列表 · 普通请求', urls.models);
       add('assistant-auth', '助手模型列表 · 当前认证', urls.models, headers);
-      note = '独立 API 由当前浏览器直接连接，跟随酒馆由酒馆服务器连接，网络与跨域条件可能不同。仅检查助手模型列表，不调用文字或图片生成；模型列表通过不代表聊天补全可用。';
+      note = context.apiTransport === 'tavern'
+        ? '本次通过酒馆转发，只读取上游模型列表，不提交文字或图片生成。HTTP 状态码属于酒馆入口；宿主可能隐藏上游状态码。远程酒馆不会自动使用手机代理。'
+        : '独立 API 由当前浏览器直接连接，跟随酒馆由酒馆服务器连接，网络与跨域条件可能不同。仅检查助手模型列表，不调用文字或图片生成；模型列表通过不代表聊天补全可用。';
     } else if (context.provider === 'openai') {
       const urls = openAIURLs(context.endpoint, context.path);
       add('openai-public', '模型列表 · 普通请求', urls.models);
@@ -175,12 +177,13 @@ async function networkProbe(target, { fetcher, signal, timeout, environment, red
 
 export function diagnosticConclusions(report) {
   const checks = report.checks, findings = [];
+  const relay = report.scope === 'tavern-relay';
   if (!report.targetCount) findings.push('当前接口配置尚未准备好，未向外部接口发送检测请求，请先核对秘钥或地址。');
   if (report.environment.online === false) findings.push('浏览器报告设备离线，请先核对当前连接；此状态不是完整联网检测。');
   if (checks.some((row) => row.outcome === 'mixed-content')) findings.push('存在 HTTPS 页面访问远程 HTTP 的协议冲突，应先配置 HTTPS 服务地址。');
   if (checks.some((row) => row.outcome === 'csp')) findings.push('已捕获 connect-src 策略拦截，请由酒馆管理员核对页面安全策略。');
   if (checks.some((row) => row.outcome === 'invalid-header')) findings.push('认证内容存在无法放入 HTTP 请求头的字符，应先重新核对输入内容。');
-  if (checks.some((row) => row.authenticated && row.httpStatus === 401)) findings.push('带认证请求返回 401，优先核对秘钥、密码及认证方式。');
+  if (checks.some((row) => row.authenticated && row.httpStatus === 401 && row.transport !== 'tavern-relay')) findings.push('带认证请求返回 401，优先核对秘钥、密码及认证方式。');
   if (checks.some((row) => row.httpStatus === 403)) findings.push('接口返回 403，不能单凭此状态认定秘钥错误；需核对权限、出口 IP、区域与风控。');
   const authFailed = checks.filter((row) => row.authenticated && ['network-error', 'timeout'].includes(row.outcome));
   if (authFailed.some((row) => checks.some((other) => !other.authenticated && other.url === row.url && other.outcome === 'http'))) {
@@ -189,7 +192,7 @@ export function diagnosticConclusions(report) {
   if (checks.some((row) => row.outcome === 'opaque')) {
     findings.push('部分域名只返回不透明响应，不能确认跨域或鉴权通过；请结合浏览器控制台及代理分流记录定位。');
   }
-  if (checks.some((row) => ['network-error', 'timeout'].includes(row.outcome))) {
+  if (!relay && checks.some((row) => ['network-error', 'timeout'].includes(row.outcome))) {
     findings.push('至少一项未取得可读取响应。手机能打开其他外网不代表当前 API 域名已走代理；浏览器无法直接判定 DNS、TLS 或跨域的具体原因。');
   }
   if (report.provider === 'novelai' && checks.some((row) => row.id === 'nai-images' && row.outcome === 'http')
@@ -198,13 +201,19 @@ export function diagnosticConclusions(report) {
     findings.push('图片域名首页已响应，但订阅路径未取得可读取响应；请核对该路径的代理、跨域或访问限制，首页可达不等于订阅鉴权通过。');
   }
   if (report.provider === 'assistant') {
-    findings.push('本次检测的是提示词助手独立 API。模型列表可读不代表所选文字模型支持聊天补全；跟随酒馆成功也不代表当前浏览器能直接访问同一接口。');
+    findings.push(relay
+      ? '本次检测的是独立 API 的酒馆转发。接口由酒馆所在设备或服务器访问，使用助手单独填写的地址与秘钥；模型列表通过不代表聊天补全可用。'
+      : '本次检测的是提示词助手独立 API。模型列表可读不代表所选文字模型支持聊天补全；跟随酒馆成功也不代表当前浏览器能直接访问同一接口。');
+    if (relay && checks.some((row) => (row.authenticated || row.id === 'tavern-page' || !report.credential.present)
+      && ['relay-error', 'network-error', 'timeout'].includes(row.outcome))) {
+      findings.push('转发未通过。请核对酒馆连接、独立 API 的地址和秘钥，以及酒馆所在设备或服务器的代理与外网访问；浏览器日志不能确定上游的具体错误。');
+    }
   }
-  if (report.environment.host === 'tauritavern') {
+  if (!relay && report.environment.host === 'tauritavern') {
     findings.push('当前为 TauriTavern：生图与独立 API 使用 WebView 网络；跟随酒馆使用宿主文字接口。Request Proxy 配置不会自动应用到本次直连检测，请分别核对设备代理、跨域与接口地址。');
   }
   if (/Android|iPhone|iPad|Mobile/i.test(report.environment.userAgent)
-    && checks.some((row) => row.id !== 'tavern-page' && row.hostKind === 'loopback')) {
+    && !relay && checks.some((row) => row.id !== 'tavern-page' && row.hostKind === 'loopback')) {
     findings.push('手机访问 localhost 或 127.0.0.1 指向手机自身，请确认填写的是实际服务地址。');
   }
   if (!findings.length) findings.push(checks.some((row) => row.outcome === 'http')
@@ -213,16 +222,17 @@ export function diagnosticConclusions(report) {
   return findings;
 }
 
-export async function runNetworkDiagnostics(context, { fetcher = fetch, signal, timeout = 6000,
+export async function runNetworkDiagnostics(context, { fetcher = fetch, relayProbe, signal, timeout = 6000,
   environment = globalThis, onProgress = () => {} } = {}) {
   const plan = networkDiagnosticPlan(context);
   const secrets = [context.key, context.username, ...plan.targets.map((target) => target.headers.Authorization),
     ...plan.targets.map((target) => target.headers.Authorization?.split(' ')[1])];
   const redact = diagnosticRedactor(secrets);
   const authorization = plan.targets.find((target) => target.headers.Authorization)?.headers.Authorization;
+  const relay = context.provider === 'assistant' && context.apiTransport === 'tavern';
   const report = {
     type: 'linghuashi-network-diagnostics', formatVersion: 1, version: RELEASE.version, build: RELEASE.build,
-    createdAt: new Date().toISOString(), scope: 'current-browser', provider: context.provider, service: redact(plan.service),
+    createdAt: new Date().toISOString(), scope: relay ? 'tavern-relay' : 'current-browser', provider: context.provider, service: redact(plan.service),
     targetCount: plan.targets.length,
     environment: environmentInfo(environment, redact),
     credential: { present: Boolean(context.key?.trim()), format: /^(pst-|sk-|STD-)/.exec(context.key?.trim() || '')?.[1] || '其他或未填写',
@@ -231,6 +241,9 @@ export async function runNetworkDiagnostics(context, { fetcher = fetch, signal, 
     previousError: redact(context.error || ''), note: redact(plan.note), status: 'running', checks: [], conclusions: [],
     limits: '仅在当前浏览器执行 GET 只读检查，不提交生图或文字生成；不记录秘钥、认证头、响应正文、聊天或完整地址路径；日志不会自动发送。',
   };
+  if (relay) Object.assign(report.environment, { requestTransport: 'tavern-relay',
+    proxy: '由酒馆所在设备或服务器访问上游；不会自动使用当前浏览器或手机的代理' });
+  if (relay) report.limits = '通过酒馆只读查询上游模型列表，不提交文字或图片生成；HTTP 状态为酒馆入口状态，不记录秘钥、认证头、响应正文、聊天或完整接口路径；日志不会自动发送。';
   const policyEvents = [];
   const onPolicy = (event) => {
     if (event.effectiveDirective !== 'connect-src') return;
@@ -254,10 +267,28 @@ export async function runNetworkDiagnostics(context, { fetcher = fetch, signal, 
       if (signal?.aborted) break;
       publish(target.label);
       const options = { fetcher, signal, timeout, environment, redact, policyEvents };
-      const row = await networkProbe(target, options);
+      let row;
+      if (relay && !target.sameOrigin) {
+        const started = performance.now();
+        const base = { id: target.id, label: target.label, url: redact(target.url),
+          hostKind: diagnosticHostKind(new URL(target.url).hostname), method: 'POST', upstreamMethod: 'GET',
+          transport: 'tavern-relay', mode: 'same-origin', authenticated: Boolean(target.headers.Authorization) };
+        try {
+          if (!relayProbe) throw new Error('Unavailable');
+          const value = await relayProbe({ ...context, key: target.headers.Authorization ? context.key : '' }, { signal });
+          row = { ...base, outcome: ['relay-ok', 'relay-empty', 'relay-error'].includes(value?.outcome) ? value.outcome : 'relay-error',
+            detail: redact(value?.detail || '酒馆未返回有效检测结果'),
+            ...(Number.isInteger(value?.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? { httpStatus: value.httpStatus } : {}),
+            ...(Number.isInteger(value?.modelCount) && value.modelCount >= 0 ? { modelCount: Math.min(value.modelCount, 100000) } : {}) };
+        } catch (error) {
+          row = { ...base, outcome: signal?.aborted ? 'cancelled' : /超时|timeout/i.test(error?.message || '') ? 'timeout' : 'relay-error',
+            detail: signal?.aborted ? '检测已取消' : '酒馆转发检测未完成，请核对酒馆连接、宿主版本及服务器网络' };
+        }
+        row.durationMs = Math.round(performance.now() - started);
+      } else row = await networkProbe(target, options);
       report.checks.push(row); publish();
       const crossOrigin = new URL(target.url).origin !== environment.location?.origin;
-      if (!signal?.aborted && crossOrigin && !target.sameOrigin && !row.authenticated
+      if (!relay && !signal?.aborted && crossOrigin && !target.sameOrigin && !row.authenticated
         && ['network-error', 'timeout'].includes(row.outcome)) {
         publish(`${target.label} · 辅助检查`);
         report.checks.push(await networkProbe(target, { ...options, opaque: true, timeout: Math.min(timeout, 4000) }));

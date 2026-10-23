@@ -66,16 +66,16 @@ export async function bindImageSlots(context, message, prefix, suffix) {
   })));
 }
 
-export async function bindSmartSlot(context, message) {
+export async function bindSmartSlot(context, message, slot = 0) {
   const chatKey = chatIdentity(context);
-  if (!chatKey || !eligibleMessage(message)) return null;
+  if (!chatKey || !eligibleMessage(message) || !Number.isInteger(slot) || slot < 0 || slot > 3) return null;
   const branch = await digest(message.mes);
   const swipe = Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0;
   const identity = message.send_date ? [String(message.send_date), String(message.name || '')]
     : ['undated', context.chat.indexOf(message), String(message.name || '')];
-  return { index: 0, prompt: '', binding: {
-    id: await digest(JSON.stringify([chatKey, identity, swipe, branch, 'smart'])),
-    chatKey, branch, swipe, slot: 0, kind: 'smart',
+  return { index: slot, prompt: '', binding: {
+    id: await digest(JSON.stringify([chatKey, identity, swipe, branch, 'smart', ...(slot ? [slot] : [])])),
+    chatKey, branch, swipe, slot, kind: 'smart',
     characterName: String(context.name2 || message.name || '').slice(0, 120),
     chatName: String(context.getCurrentChatId?.() ?? context.chatId ?? '').slice(0, 120),
   } };

@@ -53,7 +53,7 @@ function outerWrapper(raw) {
 function unwrap(raw, depth, tags) {
   const numeric = /^([+-]?\d+(?:\.\d+)?)::([\s\S]+?)\s*::$/.exec(raw);
   const group = (body, format, extra) => {
-    if (depth >= 8 || /(?<!\\)[|]/.test(body) || splitPrompt(body).warnings.length) return null;
+    if (depth >= 8 || /(?:^|[^\\])[|]/.test(body) || splitPrompt(body).warnings.length) return null;
     const children = parseItems(body, tags, depth + 1);
     if (children.length < 2 && !children.some((row) => row.syntax !== 'plain')) return null;
     return { kind: 'group', en: body, syntax: format, children, ...extra };
@@ -62,7 +62,7 @@ function unwrap(raw, depth, tags) {
     const parsed = group(numeric[2].trim(), 'novelai', { weight: Number(numeric[1]), numeric: true });
     if (parsed) return parsed;
   }
-  if (numeric && Number(numeric[1]) !== 0 && splitPrompt(numeric[2]).parts.length === 1 && !/[{}[\]]|::|(?<!\\)[|]/.test(numeric[2])) {
+  if (numeric && Number(numeric[1]) !== 0 && splitPrompt(numeric[2]).parts.length === 1 && !/[{}[\]]|::|(?:^|[^\\])[|]/.test(numeric[2])) {
     return { en: numeric[2].trim(), syntax: 'novelai', weight: Number(numeric[1]), numeric: true };
   }
   const sd = /^\(([\s\S]+):([+-]?\d+(?:\.\d+)?)\)$/.exec(raw);
@@ -80,12 +80,12 @@ function unwrap(raw, depth, tags) {
       const parsed = group(en, 'novelai', { level, weight: 1.05 ** level });
       if (parsed) return parsed;
     }
-    if (level && !/[{}[\]]|::|(?<!\\)[:|]/.test(en) && splitPrompt(en).parts.length === 1) {
+    if (level && !/[{}[\]]|::|(?:^|[^\\])[:|]/.test(en) && splitPrompt(en).parts.length === 1) {
       return { en, syntax: 'novelai', level, weight: 1.05 ** level };
     }
   }
   const plain = splitPrompt(raw);
-  return { en: raw, syntax: /(?<!\\)[{}[\]]|::|^\(.*\)$/.test(raw) || plain.warnings.length ? 'opaque' : 'plain', weight: 1 };
+  return { en: raw, syntax: /(?:^|[^\\])[{}[\]]|::|^\(.*\)$/.test(raw) || plain.warnings.length ? 'opaque' : 'plain', weight: 1 };
 }
 
 function parseItems(value, tags, depth = 0) {

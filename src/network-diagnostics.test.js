@@ -14,6 +14,43 @@ const readable = (status = 200) => new Response('private response body must not 
   status, headers: { 'Content-Type': 'application/json' },
 });
 
+test('assistant relay diagnostics inspect the selected route without browser upstream fetches or generation', async () => {
+  const fetches = [], probes = [];
+  const report = await runNetworkDiagnostics({ provider: 'assistant', apiTransport: 'tavern',
+    endpoint: 'http://text.test/private-route/v1', key: 'sk-private-fixture' }, {
+    environment: environment(),
+    fetcher: async (url) => { fetches.push(url); return readable(); },
+    relayProbe: async (value) => {
+      probes.push(value);
+      return { outcome: value.key ? 'relay-ok' : 'relay-error', httpStatus: 200, modelCount: value.key ? 3 : 0,
+        detail: value.key ? '已读取模型列表' : '上游未通过' };
+    },
+  });
+  assert.equal(fetches.length, 1);
+  assert.ok(fetches[0].startsWith('https://tavern.test'));
+  assert.deepEqual(probes.map((value) => value.key), ['', 'sk-private-fixture']);
+  assert.equal(report.scope, 'tavern-relay');
+  assert.equal(report.environment.requestTransport, 'tavern-relay');
+  assert.deepEqual(report.checks.slice(1).map((row) => row.outcome), ['relay-error', 'relay-ok']);
+  assert.ok(report.checks.slice(1).every((row) => row.method === 'POST' && row.upstreamMethod === 'GET'));
+  assert.doesNotMatch(formatNetworkDiagnostics(report), /sk-private-fixture|private-route|mixed-content|当前浏览器能直接/);
+  assert.match(report.conclusions.join(' '), /服务器/);
+  assert.doesNotMatch(report.conclusions.join(' '), /转发未通过/);
+});
+
+test('relay diagnostic cancellation stops later probes and does not expose raw failures', async () => {
+  const controller = new AbortController();
+  const report = await runNetworkDiagnostics({ provider: 'assistant', apiTransport: 'tavern',
+    endpoint: 'https://text.test', key: 'sk-private-fixture' }, { signal: controller.signal,
+    environment: environment(), fetcher: async () => readable(),
+    relayProbe: async () => { controller.abort(); throw new Error('private upstream failure'); },
+  });
+  assert.equal(report.status, 'cancelled');
+  assert.equal(report.checks.length, 2);
+  assert.equal(report.checks[1].outcome, 'cancelled');
+  assert.doesNotMatch(formatNetworkDiagnostics(report), /private upstream failure/);
+});
+
 test('all providers use only known read-only routes and keep authentication off unrecognized services', () => {
   const contexts = [
     official,

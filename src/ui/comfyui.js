@@ -332,7 +332,7 @@ export function renderComfyWorkflow(state, probe, expanded = {}) {
     <p class="comfy-note">导入 ComfyUI 的“导出 (API)”JSON。基础文生图需选择服务上已有的 Checkpoint 模型。</p>
     <div class="comfy-warning" role="status" ${warnings.length ? '' : 'hidden'}>${warnings.map((item) => `<p>${esc(item)}</p>`).join('')}</div>
     ${renderComfyParameters(state, probe?.objectInfo, expanded.advanced)}
-    ${renderComfyMapping(value, probe?.objectInfo, expanded.mapping)}
+    ${renderComfyMapping(value, probe?.objectInfo, expanded.mapping || state.experience?.level === 'full' || !value.mapping.positive)}
   </section>`;
 }
 
@@ -366,7 +366,7 @@ export function renderComfyParameters(state, objectInfo, advancedOpen = false) {
     <div class="two-field-row">${input('steps')}${input('cfg')}</div>
     <div class="two-field-row">${input('sampler')}${input('scheduler')}</div>
     ${input('seed')}<p class="comfy-note">种子 -1 表示每次随机；参数只应用到已映射的节点。</p>
-    <details class="advanced-options comfy-advanced" ${advancedOpen ? 'open' : ''}><summary>${icon('sliders-horizontal')}其他参数设置${icon('chevron-down')}</summary>
+    <details class="advanced-options comfy-advanced" data-experience-fold="comfy-parameters" ${advancedOpen || state.experience?.level === 'full' ? 'open' : ''}><summary>${icon('sliders-horizontal')}其他参数设置${icon('chevron-down')}</summary>
       <div class="two-field-row">${input('denoise')}${input('batch')}</div>
       <p class="comfy-note">重绘强度通常文生图为 1，图生图使用较低数值。批量数量会增加显存占用。</p>
       ${input('checkpoint')}${input('vae')}${input('lora')}
@@ -379,7 +379,7 @@ export function renderComfyParameters(state, objectInfo, advancedOpen = false) {
 export function renderComfyMapping(config, objectInfo, mappingOpen = false) {
   const outputCandidates = Object.entries(config.graph).filter(([, node]) => ['SaveImage', 'PreviewImage'].includes(node.class_type) || objectInfo?.[node.class_type]?.output_node);
   const outputs = outputCandidates.length ? outputCandidates : Object.entries(config.graph);
-  return `<details class="advanced-options comfy-mapping" ${mappingOpen ? 'open' : ''}><summary>${icon('settings-2')}节点映射${icon('chevron-down')}</summary>
+  return `<details class="advanced-options comfy-mapping" data-experience-fold="comfy-mapping" ${!config.mapping.positive ? 'data-experience-active' : ''} ${mappingOpen ? 'open' : ''}><summary>${icon('settings-2')}节点映射${icon('chevron-down')}</summary>
     <div class="comfy-mapping-heading"><p class="comfy-note">同一输入只能对应一项参数；多采样分支请手动指定。</p>${command('refresh-cw', '自动识别', 'comfy-auto-map')}</div>
     <div class="comfy-mapping-grid">${Object.entries(COMFY_FIELDS).map(([key, meta]) => field(meta.label, `<div class="input-with-button"><select data-comfy-map="${key}">${options([['', '保留工作流原值'], ...mappingCandidates(config.graph, key).map((item) => [item.token, item.title])], config.mapping[key] ? token(config.mapping[key].node, config.mapping[key].input) : '')}</select><button type="button" class="ui-icon-button" data-action="comfy-locate-node" data-mapping-key="${key}" title="定位工作流节点" aria-label="定位 ${meta.label} 节点" ${config.mapping[key] ? '' : 'disabled'}>${icon('locate-fixed')}</button></div>`)).join('')}</div>
     ${field('结果输出节点', `<select data-comfy-output>${options([['', '所有图片输出'], ...outputs.map(([id, node]) => [id, `#${id} ${node._meta?.title || node.class_type}`])], config.outputNode)}</select>`)}
@@ -387,7 +387,7 @@ export function renderComfyMapping(config, objectInfo, mappingOpen = false) {
 }
 
 export function renderComfyConnectionOptions(state, credentials, open = false, keyVisible = false) {
-  return `<details class="advanced-options comfy-auth" ${open ? 'open' : ''}><summary>${icon('link')}访问认证与连接选项${icon('chevron-down')}</summary>
+  return `<details class="advanced-options comfy-auth" data-experience-fold="comfy-auth" ${open || state.experience?.level === 'full' || credentials.auth === 'bearer' ? 'open' : ''}><summary>${icon('link')}访问认证与连接选项${icon('chevron-down')}</summary>
     <div class="two-field-row">${field('认证方式', `<select data-comfy-auth>${options([['none', '无需认证'], ['bearer', 'Bearer 令牌']], credentials.auth || 'none')}</select>`)}
     ${field('连接超时 (秒)', `<input type="number" data-comfy-timeout min="5" max="120" step="1" value="${state.comfyTimeout}" />`)}</div>
     ${credentials.auth === 'bearer' ? field('访问令牌', `<div class="input-with-button credential-input"><input type="${keyVisible ? 'text' : 'password'}" data-transient="key" autocomplete="off" spellcheck="false" maxlength="4096" value="${esc(credentials.key)}" placeholder="反向代理要求的 Bearer 令牌" /><button type="button" class="ui-icon-button" data-action="toggle-key" title="${keyVisible ? '隐藏秘钥' : '显示秘钥'}" aria-label="${keyVisible ? '隐藏秘钥' : '显示秘钥'}" aria-pressed="${keyVisible}">${icon(keyVisible ? 'eye-off' : 'eye')}</button></div>`) : ''}

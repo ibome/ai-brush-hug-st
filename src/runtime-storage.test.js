@@ -9,7 +9,7 @@ globalThis.window = {
   parent: { postMessage(value) { messages.push(structuredClone(value)); } },
 };
 globalThis.location = { origin: 'https://fixture.example' };
-const { persistUIState, readUIState } = await import('./runtime.js');
+const { persistUIState, readUIState, readAssistantArchive, persistAssistantArchive } = await import('./runtime.js');
 const name = 'tavern-draw-preview-ui-v1';
 const storageName = `${name}:st:fixture-a`;
 const denied = () => { throw new DOMException('Fixture quota exceeded', 'QuotaExceededError'); };
@@ -33,7 +33,10 @@ test('a full settings cache still sends current configuration to the account and
   localStorage.setItem = denied;
   const next = { updatedAt: 2, novelai: { positive: 'new' }, connections: { novelai: { keyRef: 'fixture-ref' } } };
   assert.equal(persistUIState(name, next), false);
-  assert.deepEqual(messages, [{ type: 'linghuashi:state', ui: next }]);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, 'linghuashi:state');
+  assert.equal(typeof messages[0].requestId, 'string');
+  assert.deepEqual(messages[0].ui, next);
   assert.equal(values.get(storageName), previous);
   assert.equal(values.get('another-extension'), 'untouched');
   window.__LINGHUASHI_ENV__.ui = messages[0].ui;
@@ -91,4 +94,27 @@ test('preview cache failures report an unsaved result without claiming account p
   localStorage.setItem = denied;
   assert.equal(persistUIState(name, { updatedAt: 9 }), false);
   assert.deepEqual(messages, []);
+});
+
+test('history migrates independently, follows the account and tolerates cache quota failures', () => {
+  const values = fixture();
+  const rows = [{ id: 'one', createdAt: 100, input: '', plan: { shouldDraw: true, positive: 'old', negative: '', scene: '', aspect: 'square' } }];
+  assert.equal(readAssistantArchive(name, rows, 100)[0].plan.positive, 'old');
+  localStorage.setItem = denied;
+  assert.equal(persistAssistantArchive(name, rows), false);
+  assert.equal(messages[0].type, 'linghuashi:assistant-archive');
+  window.__LINGHUASHI_ENV__.assistantArchive = messages[0].value;
+  assert.equal(readAssistantArchive(name)[0].id, 'one');
+  assert.equal(values.size, 0);
+  window.__LINGHUASHI_ENV__ = { mode: 'extension', account: 'fixture-b', ui: {} };
+  assert.deepEqual(readAssistantArchive(name), []);
+});
+
+test('newer hot settings without legacy history cannot hide a valid separate history cache', () => {
+  const values = fixture();
+  const rows = [{ id: 'cached', createdAt: 10, plan: { shouldDraw: true, positive: 'cached prompt', negative: '', scene: '', aspect: 'square' } }];
+  values.set(`${name}:assistant-history:st:fixture-a`, JSON.stringify({ version: 1, updatedAt: 100, rows }));
+  assert.equal(readAssistantArchive(name, [], 200)[0]?.id, 'cached');
+  window.__LINGHUASHI_ENV__.assistantArchive = { version: 1, updatedAt: 300, rows: [] };
+  assert.deepEqual(readAssistantArchive(name, [], 400), []);
 });

@@ -1,0 +1,4 @@
+numpy>=1.26.4,<3
+Pillow>=10.4,<13
+onnxruntime>=1.17,<2
+opencv-contrib-python-headless>=4.10,<5

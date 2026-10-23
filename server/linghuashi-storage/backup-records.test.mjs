@@ -18,6 +18,21 @@ test('missing images remain failed records and are never queued automatically', 
   const rows = normalizeBackupChats([{ binding, status: 'queued', savedIds: [] }], new Set());
   assert.equal(rows[0].status, 'failed'); assert.equal(rows[0].recoverable, false);
 });
+test('multi-scene backup retains anchors and child slots without restoring executable tasks', () => {
+  const assistant = { shouldDraw: true, positive: 'first', anchor: 'First sentence.',
+    apiKey: 'fixture-secret', illustrations: [
+      { positive: 'first', anchor: 'First sentence.' }, { positive: 'second', anchor: 'Second sentence.' },
+    ] };
+  const rows = normalizeBackupChats([
+    { binding: { ...binding, kind: 'smart' }, assistant, taskId: 'old', savedIds: ['image-a'] },
+    { binding: { ...binding, id: 'c'.repeat(64), kind: 'smart', slot: 1 },
+      assistant: assistant.illustrations[1], taskId: 'old-child', savedIds: ['image-b'] },
+  ], new Set(['image-a', 'image-b']));
+  assert.equal(rows[0].assistant.illustrations.length, 2);
+  assert.equal(rows[1].assistant.anchor, 'Second sentence.');
+  assert.ok(rows.every((row) => row.status === 'completed' && !row.taskId && !row.recoverable));
+  assert.ok(!JSON.stringify(rows).includes('fixture-secret'));
+});
 test('invalid chat bindings and duplicate slot records are rejected', () => {
   assert.throws(() => normalizeBackupChats([{ binding: { ...binding, slot: -1 } }], new Set()));
   assert.throws(() => normalizeBackupChats([{ binding }, { binding }], new Set()));

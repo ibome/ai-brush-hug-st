@@ -1,6 +1,6 @@
 export const RELEASE = Object.freeze({
-  version: '0.25.0',
-  build: '20261019-tauritavern-r1',
+  version: '0.26.0',
+  build: '20261024-comic-assistant-release',
   repository: 'ibome/ai-brush-hug-st',
   url: 'https://github.com/ibome/ai-brush-hug-st',
   storageProtocol: 2,

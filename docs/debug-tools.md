@@ -6,11 +6,11 @@
 
 选择 NovelAI、OpenAI 兼容、ComfyUI、SDWebUI 或「提示词助手 · 独立 API」，再点「检测当前设备网络」。读取所选接口已保存的连接配置，不改变当前生图模式。检测不提交文字或图片生成；鉴权检查会向当前接口发送对应凭据。
 
-独立文字接口连不上时，选择「提示词助手 · 独立 API」，也可在提示词助手配置旁点击「检测助手网络」。日志应显示 `provider: assistant`，不能用 `provider: novelai` 的图片接口日志判断助手是否可连接。该检测只读取助手地址下的模型列表，成功仍不代表所选模型支持聊天补全。独立 API 由当前浏览器直接访问，跟随酒馆由酒馆服务器访问，两者可能有不同的网络出口与跨域条件。
+独立文字接口连不上时，选择「提示词助手 · 独立 API」，也可在提示词助手配置旁点击「检测助手网络」。日志应显示 `provider: assistant`，不能用 `provider: novelai` 的图片接口日志判断助手是否可连接。该检测只读取助手地址下的模型列表，成功仍不代表所选模型支持聊天补全。检测跟随助手的连接方式：设备直连使用浏览器网络；酒馆转发通过酒馆查询上游，日志标记 `scope: tavern-relay` 与 `requestTransport: tavern-relay`。转发检查中的 HTTP 状态属于酒馆入口，不冒充上游状态码；酒馆入口 200 也可能表示上游失败。
 
 查看 HTTP 状态、耗时和检测结论。浏览器的网络错误不能精确区分 DNS、代理、TLS 和跨域，能打开其他外网也不能证明当前接口已走代理。不透明响应不能验证鉴权或实际生图权限。
 
-TauriTavern 日志会标记 `host: tauritavern` 与 `requestTransport: webview-direct`。插件生图和独立 API 不自动使用宿主 Request Proxy；「酒馆服务器」存图位于本机数据目录。具体边界见 [TauriTavern](tauritavern.md)。
+TauriTavern 直连日志会标记 `host: tauritavern` 与 `requestTransport: webview-direct`。图片与独立 API 的直连不自动使用宿主 Request Proxy；助手选择酒馆转发时使用宿主自定义文字接口，实际代理与端点许可按宿主配置生效。「酒馆服务器」存图位于本机数据目录。具体边界见 [TauriTavern](tauritavern.md)。
 
 ## 存储与缓存
 

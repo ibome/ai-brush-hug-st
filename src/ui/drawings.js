@@ -272,8 +272,8 @@ export class DrawingLibrary {
     this.db.onversionchange = () => this.db.close();
   }
 
-  async list(mode = this.mode()) {
-    if (mode === 'server') return this.server.list();
+  async list(mode = this.mode(), refresh = false) {
+    if (mode === 'server') return this.server.list(refresh);
     const transaction = this.db.transaction('drawings', 'readonly');
     return requestResult(transaction.objectStore('drawings').getAll());
   }
@@ -337,8 +337,8 @@ export class DrawingLibrary {
     await done.catch((error) => { throw failure || error; });
   }
 
-  async setFavorite(id, favorite) {
-    if (this.mode() === 'server') return this.server.setFavorite(id, favorite);
+  async setFavorite(id, favorite, mode = this.mode()) {
+    if (mode === 'server') return this.server.setFavorite(id, favorite);
     const transaction = this.db.transaction('drawings', 'readwrite');
     const done = transactionDone(transaction);
     const store = transaction.objectStore('drawings');
@@ -378,7 +378,7 @@ export class DrawingLibrary {
     return plan;
   }
 
-  async materialize(item) { return this.server.materialize(item); }
+  async materialize(item, signal) { return this.server.materialize(item, signal); }
   async syncPolicy(settings) { return this.server.policy(settings); }
   async backupChats(mode = this.mode()) {
     if (mode === 'server') return (await this.server.request('backup/chats')).rows;
@@ -397,14 +397,24 @@ export class DrawingLibrary {
   }
 }
 
-export function hydrateDrawings(rows) {
-  return rows.map((item) => ({ ...item, src: item.srcURL || URL.createObjectURL(item.blob), thumbSrc: item.thumbnailURL || URL.createObjectURL(item.thumbnail), size: `${item.width} × ${item.height}`, time: new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false }) }));
+export function hydrateDrawings(rows, previous = []) {
+  const old = new Map(previous.map((row) => [row.id, row]));
+  return rows.map((item) => {
+    const existing = old.get(item.id);
+    const same = existing && existing.storageLocation === item.storageLocation && existing.createdAt === item.createdAt
+      && existing.blob.size === item.blob.size && existing.thumbnail.size === item.thumbnail.size
+      && existing.blob.type === item.blob.type;
+    return { ...item, src: item.srcURL || (same && existing.src) || URL.createObjectURL(item.blob),
+      thumbSrc: item.thumbnailURL || (same && existing.thumbSrc) || URL.createObjectURL(item.thumbnail),
+      size: `${item.width} × ${item.height}`, time: new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false }) };
+  });
 }
 
-export function revokeDrawings(rows) {
+export function revokeDrawings(rows, retained = []) {
+  const used = new Set(retained.flatMap((row) => [row.src, row.thumbSrc]));
   rows.forEach((item) => {
-    if (item.src?.startsWith('blob:')) URL.revokeObjectURL(item.src);
-    if (item.thumbSrc?.startsWith('blob:')) URL.revokeObjectURL(item.thumbSrc);
+    if (item.src?.startsWith('blob:') && !used.has(item.src)) URL.revokeObjectURL(item.src);
+    if (item.thumbSrc?.startsWith('blob:') && !used.has(item.thumbSrc)) URL.revokeObjectURL(item.thumbSrc);
   });
 }
 
@@ -471,7 +481,7 @@ export function renderDrawingManager(items, ui) {
   const page = drawingPage(filtered, ui.page, ui.pageSize);
   const selected = ui.selection.size;
   const busy = ui.busy || ui.loading;
-  const totalBytes = items.reduce((sum, item) => sum + item.blob.size + item.thumbnail.size + new TextEncoder().encode(JSON.stringify(item.snapshot)).length, 0);
+  const totalBytes = items.reduce((sum, item) => sum + item.blob.size + item.thumbnail.size, 0);
   const chats = [...new Map(items.filter((item) => item.chatBinding).map((item) => {
     const bound = item.chatBinding;
     let fallback = bound.chatKey;
@@ -480,6 +490,8 @@ export function renderDrawingManager(items, ui) {
   })).values()];
   return `<section class="drawing-manager">
     <div class="page-heading"><div><h1>绘图管理</h1><p>${items.length} 张图片 · ${items.filter((item) => item.favorite).length} 张收藏 · ${ui.storageLocation === 'server' ? '酒馆服务器' : '浏览器'} ${formatBytes(totalBytes)}</p></div>${command('upload', '导入', 'drawing-import', busy ? 'disabled' : '')}</div>
+    ${ui.index ? `<div class="cache-footer"><span data-gallery-index-status role="status">${esc(galleryIndexStatus(ui.index))}</span>
+      ${command('database', '重新核对图库参数', 'drawing-reindex', busy ? 'disabled' : '')}</div>` : ''}
     <form class="drawing-filters" data-drawing-filters>
       ${field('来源模式', `<select name="source">${options([['all', '全部来源'], ['novelai', 'NovelAI'], ['comfyui', 'ComfyUI'], ['openai', 'OpenAI兼容'], ['sdwebui', 'SDWebUI'], ['unknown', '未识别来源']], ui.filters.source)}</select>`)}
       <div class="drawing-date-range">${field('开始日期', `<input type="date" name="start" value="${esc(ui.filters.start)}" />`)}${field('结束日期', `<input type="date" name="end" value="${esc(ui.filters.end)}" />`)}</div>
@@ -510,6 +522,13 @@ export function renderDrawingManager(items, ui) {
     </article>`).join('') : `<div class="drawing-empty">${icon('images')}<strong>${ui.loading ? '正在载入' : '暂无匹配图片'}</strong>${!ui.loading ? command('upload', '导入图片', 'drawing-import') : ''}</div>`}</div>
     <footer class="drawing-pagination"><label>每页<select data-drawing-page-size>${options([['12', '12'], ['24', '24'], ['48', '48']], String(ui.pageSize))}</select>张</label><div>${iconCommand('chevron-left', '上一页', 'drawing-prev-page', page.page === 1 ? 'disabled' : '')}<span>${page.page} / ${page.pages}</span>${iconCommand('chevron-right', '下一页', 'drawing-next-page', page.page === page.pages ? 'disabled' : '')}</div></footer>
   </section>`;
+}
+
+export function galleryIndexStatus(index) {
+  if (!index) return '';
+  return [index.available ? `本设备参数索引 · 本次复用 ${index.cached || 0} 张` : '参数缓存不可用，仍可读取服务器图片',
+    index.pending ? `剩余 ${index.pending} 张分批核对` : '已核对',
+    index.errors ? `${index.errors} 张暂无法核对，保留上次记录` : ''].filter(Boolean).join(' · ');
 }
 
 export function renderDrawingViewer(item, position, total, ui) {
@@ -544,7 +563,7 @@ export function renderDrawingViewer(item, position, total, ui) {
       if (processing.tool === 'emotion') rows.push(['表情', processing.emotion]);
     }
   }
-  return `<dialog class="drawing-viewer ${ui.details ? 'show-details' : ''} ${ui.zoom ? 'actual-size' : ''}" aria-label="查看图片：${esc(item.title)}">
+  return `<dialog class="drawing-viewer ${ui.details ? 'show-details' : ''} ${ui.zoom ? 'actual-size' : ''}" data-image-id="${esc(item.id)}" aria-label="查看图片：${esc(item.title)}">
     <header><div><strong>${esc(item.title)}</strong><span>${position + 1} / ${total}${item.demo ? ' · 示例图片' : ''}</span></div><div>
       ${iconCommand(ui.zoom ? 'maximize-2' : 'zoom-in', ui.zoom ? '适应窗口' : '原始尺寸', 'viewer-zoom')}
       ${iconCommand('panel-right', '图片参数', 'viewer-details', `aria-pressed="${ui.details}"`)}
@@ -558,6 +577,7 @@ export function renderDrawingViewer(item, position, total, ui) {
     <div class="drawing-version-bar"><div>${iconCommand('chevron-left', '上一个版本', 'version-prev', versionIndex <= 0 ? 'disabled' : '')}<select data-viewer-version aria-label="历史版本">${versions.map((row) => `<option value="${row.id}" ${row.id === item.id ? 'selected' : ''}>版本 ${normalizeVersion(row.version, row.id).number}${row.id === ui.currentId ? ' · 当前' : ''}</option>`).join('')}</select>${iconCommand('chevron-right', '下一个版本', 'version-next', versionIndex >= versions.length - 1 ? 'disabled' : '')}</div>
       <div>${command('pencil', '编辑这张图', 'viewer-edit', item.snapshot ? '' : 'disabled')}
       ${command('wand-sparkles', '图片增强', 'viewer-enhance')}
+      ${command('scan-eye', '本地反推 / 超分', 'viewer-local-tools')}
       ${command('image-plus', '作为底图', 'viewer-source')}${command('palette', '作为参考图', 'viewer-reference')}
       ${command('check', selected ? '当前版本' : '设为当前版本', 'version-select', selected ? 'disabled' : '')}
       ${iconCommand('columns-2', '比较版本', 'version-compare', `aria-pressed="${Boolean(ui.compare)}" ${versions.length < 2 ? 'disabled' : ''}`)}

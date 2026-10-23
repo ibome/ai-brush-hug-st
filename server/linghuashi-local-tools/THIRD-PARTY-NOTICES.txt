@@ -1,0 +1,26 @@
+Linghuashi Local Tools - third-party notices
+
+No pretrained weights are bundled. Models are downloaded only after an explicit request.
+
+WD ViT Tagger v3 by SmilingWolf, v2.0
+https://huggingface.co/SmilingWolf/wd-vit-tagger-v3
+Pinned revision: 790b0e92cefd2a0221451604e7831fe643ab7c4f
+License: Apache-2.0. A copy is included in LICENSES/Apache-2.0.txt.
+Preprocessing follows the author's documented ONNX input format:
+white square padding, bicubic resize, unnormalized float32 NHWC BGR.
+The implementation here is independent; the Gradio demo source is not bundled.
+
+FSRCNN TensorFlow models by Saafke / F. Redondo
+https://github.com/Saafke/FSRCNN_Tensorflow
+Pinned revision: 6a4812c4ef1c4f5947d79beafa32a05a6eb4a94d
+License: Apache-2.0. A copy is included in LICENSES/Apache-2.0.txt.
+Uses OpenCV's dnn_superres inference implementation with overlapped tiles.
+See upstream files for model provenance and additional attribution.
+
+Runtime dependencies are installed by pip, not redistributed inside this package:
+ONNX Runtime: https://github.com/microsoft/onnxruntime (MIT)
+OpenCV: https://github.com/opencv/opencv (Apache-2.0)
+OpenCV contrib: https://github.com/opencv/opencv_contrib (Apache-2.0)
+Pillow: https://github.com/python-pillow/Pillow (MIT-CMU / HPND and bundled library notices)
+NumPy: https://github.com/numpy/numpy (BSD-3-Clause and bundled library notices)
+Their distributions include their own licenses and notices, which remain applicable.

@@ -84,6 +84,33 @@ export function locatePromptRanges(root, entries, prefix, suffix) {
   return pairs.sort((left, right) => left.start - right.start);
 }
 
+export function locateSmartAnchors(root, entries) {
+  if (!root) return [];
+  const { text, pieces } = renderedText(root);
+  let compact = '';
+  const offsets = [];
+  for (let index = 0; index < text.length; index++) {
+    if (/\s/.test(text[index]) && compact.endsWith(' ')) continue;
+    compact += /\s/.test(text[index]) ? ' ' : text[index];
+    offsets.push(index);
+  }
+  return entries.flatMap((entry) => {
+    const anchor = entry.record?.assistant?.anchor?.replace(/\s+/g, ' ').trim();
+    if (!anchor || anchor.length < 2) return [];
+    const start = compact.indexOf(anchor);
+    if (start < 0 || compact.indexOf(anchor, start + 1) >= 0) return [];
+    const end = offsets[start + anchor.length - 1] + 1;
+    const piece = pieces.find((item) => item.start < end && end <= item.end);
+    if (!piece) return [];
+    let block = piece.node.parentElement;
+    while (block && block !== root && !blocks.has(block.tagName)) block = block.parentElement;
+    if (block && block !== root) return [{ entry, block }];
+    const range = root.ownerDocument.createRange();
+    range.setStart(piece.node, end - piece.start); range.collapse(true);
+    return [{ entry, range }];
+  });
+}
+
 export function replacePromptRange(range, element) {
   const document = range.startContainer.ownerDocument;
   const first = range.startContainer, startOffset = range.startOffset;

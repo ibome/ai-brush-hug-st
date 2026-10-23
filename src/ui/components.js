@@ -8,7 +8,7 @@ import '../styles/components.css';
 export const storageComponentURL = `${RELEASE.url}/releases/download/v${RELEASE.version}/linghuashi-storage-v${RELEASE.version}.zip`;
 
 export class ComponentsPanel {
-  constructor() { this.status = null; this.busy = false; this.steps = false; }
+  constructor(localTools) { this.localTools = localTools; this.status = null; this.busy = false; this.steps = false; }
   html() { return `<section class="components-page" data-components-root aria-label="扩展组件">${this.body()}</section>`; }
   body() {
     const state = this.status, installed = state?.enhanced === 'installed';
@@ -45,6 +45,7 @@ export class ComponentsPanel {
             <li>回到这里点击“检测组件”，显示“已安装”即可。原有浏览器任务仍可继续处理。</li>
           </ol><p>服务器组件无法通过酒馆的前端“安装扩展”入口安装；普通账号可把下载包交给管理员。</p></div>` : ''}
         </div></article>
+        ${this.localTools?.html() || ''}
         <article class="component-entry"><div class="component-symbol">${icon('panels-top-left')}</div><div class="component-copy">
           <div class="component-title"><h2>浏览器图片存储</h2><span class="component-status">内置 · 无需下载</span></div>
           <p>图片保存在此浏览器中，适合仅在当前设备使用。可随时从图片存储设置复制到酒馆账号。</p>
@@ -54,7 +55,7 @@ export class ComponentsPanel {
   refresh() {
     const root = document.querySelector('[data-components-root]');
     if (!root) return;
-    root.innerHTML = this.body(); paintIcons(root);
+    root.innerHTML = this.body(); paintIcons(root); this.localTools?.bind(root);
   }
   async check(force = false) {
     if (this.busy || !isInstalled()) return;
@@ -72,5 +73,6 @@ export class ComponentsPanel {
       if (action === 'steps') { this.steps = !this.steps; this.refresh(); }
     });
     if (!this.status) void this.check();
+    this.localTools?.bind(root);
   }
 }

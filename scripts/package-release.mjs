@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { RELEASE } from '../src/release.js';
 import { thirdPartyNotices } from './third-party-notices.mjs';
+import { localToolsPackage } from './local-tools-package.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const output = path.join(root, '.release-artifacts');
@@ -31,7 +32,7 @@ const files = [], scans = [];
 const privateName = /(?:^|\/)(?:allowed-accounts\.json|secrets\.json|settings\.json|\.env(?:\..*)?|.*\.pem|.*\.key)$/;
 async function add(zip, name, bytes, scan = false) {
   if (privateName.test(name)) throw new Error(`Private file in release allowlist: ${name}`);
-  if (scan && /\.(?:js|mjs|json|html|md|yml|yaml|sh|txt)$/.test(name)) {
+  if (scan && /\.(?:js|mjs|json|html|md|yml|yaml|sh|ps1|py|txt)$/.test(name)) {
     const text = bytes.toString('utf8');
     if (/\b(?:pst-|STD-)[A-Za-z0-9_-]{18,}|\bsk-[A-Za-z0-9_-]{30,}/.test(text)
       || /156\.239\.242\.3|45\.207\.199\.116|C:[/\\]Users[/\\]22678/.test(text)) {
@@ -46,7 +47,8 @@ async function walk(directory, prefix, zip, scan = false) {
     if (entry.isSymbolicLink()) throw new Error('Release must not contain symbolic links');
     const name = `${prefix}${entry.name}`;
     if (name.endsWith('.map')) throw new Error(`Source maps must not be published: ${name}`);
-    if (privateName.test(name) || entry.name === '.DS_Store') continue;
+    if (privateName.test(name) || ['.DS_Store', '__pycache__', '.venv'].includes(entry.name) || name.endsWith('.pyc')
+      || name === 'server/linghuashi-local-tools/data') continue;
     if (entry.isDirectory()) await walk(path.join(directory, entry.name), `${name}/`, zip, scan);
     else if (entry.isFile()) await add(zip, name, await fs.readFile(path.join(directory, entry.name)), scan);
   }
@@ -70,6 +72,9 @@ for (const [label, zip] of [['ai-brush-hug-st', frontend], ['linghuashi-storage'
   await fs.writeFile(path.join(output, name), bytes);
   files.push({ name, bytes: bytes.length, sha256: digest(bytes) });
 }
+const localName = `linghuashi-local-tools-v${RELEASE.version}.zip`, localBytes = await localToolsPackage();
+await fs.writeFile(path.join(output, localName), localBytes);
+files.push({ name: localName, bytes: localBytes.length, sha256: digest(localBytes) });
 const checksums = files.map((item) => `${item.sha256}  ${item.name}`).join('\n') + '\n';
 await fs.writeFile(path.join(output, 'SHA256SUMS.txt'), checksums);
 for (const directory of ['src', 'server', 'scripts', 'docs', 'examples', 'LICENSES']) await walk(path.join(root, directory), `${directory}/`, repository, true);

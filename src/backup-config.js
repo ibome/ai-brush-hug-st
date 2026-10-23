@@ -5,27 +5,33 @@ import { normalizeOpenAIState } from './ui/openai.js';
 import { normalizeComfyState, parseWorkflow } from './ui/comfyui.js';
 import { normalizeConnections, CONNECTION_PROVIDERS } from './connections.js';
 import { normalizeAssistant } from './prompt-assistant.js';
+import { normalizeAssistantSchemes, ASSISTANT_SCHEME_LIMIT, ASSISTANT_SCHEME_BYTES } from './assistant-schemes.js';
 import { normalizeArtistLibrary, ARTIST_LIBRARY_LIMIT } from './artist-library.js';
 import { normalizeProfileLibrary } from './character-profiles.js';
 import { normalizeTagLibrary, mergeTagLibraries, TAG_LIBRARY_BYTES, validateTagTemplates, validateTagMetadata } from './tag-library.js';
 import { normalizeWorkbench, normalizeReviews } from './prompt-workbench.js';
 import { normalizeVibeLibrary } from './vibe-library.js';
 import { normalizeSDWebUIState } from './ui/sdwebui.js';
+import { normalizeReaderSettings } from './chat-reader.js';
+import { normalizeComicLibrary, validateComicLibrary, COMIC_LIMITS, comicProjectFile } from './comic.js';
+import { normalizeLocalTools } from './local-tools.js';
 
 export const BACKUP_SECTIONS = Object.freeze([
   ['general', '插件设置与主题'], ['connections', '接口配置'], ['parameters', '参数预设与工作流'],
   ['artists', '画师串库'], ['tags', '中文标签库'], ['characters', '角色档案'], ['assistant', '提示词助手设置'],
+  ['comics', '漫画项目'],
 ]);
 export const CONFIG_KEYS = Object.freeze({
-  general: [...Object.keys(SETTINGS_DEFAULTS), 'drawingReviews'],
+  general: [...Object.keys(SETTINGS_DEFAULTS), 'drawingReviews', 'readerSettings'],
   connections: ['connections', 'connectionProfiles', 'connectionProfileIds', 'connectionLibraryVersion',
-    'presetBindings', 'openaiEndpoint', 'openaiPath', 'openaiTimeout', 'comfyTimeout'],
+    'presetBindings', 'openaiEndpoint', 'openaiPath', 'openaiTimeout', 'comfyTimeout', 'localTools'],
   parameters: ['novelai', 'novelaiPresets', 'novelaiPresetId', 'openai', 'openaiPresets', 'openaiPresetId',
     'comfyui', 'comfyPresets', 'comfyPresetId', 'sdwebui', 'sdwebuiPresets', 'sdwebuiPresetId', 'workbench', 'vibeLibrary'],
   artists: ['artistLibrary', 'artistLibraryVersion'],
   tags: ['tagLibrary'],
   characters: ['characterProfiles'],
-  assistant: ['assistant', 'assistantDefaultsVersion'],
+  assistant: ['assistant', 'assistantDefaultsVersion', 'assistantSchemes', 'assistantSchemeId'],
+  comics: ['comicLibrary'],
 });
 export const cloneBackup = (value) => JSON.parse(JSON.stringify(value));
 export const backupSize = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
@@ -77,6 +83,12 @@ export function normalizeBackupConfig(value = {}, sections = BACKUP_SECTIONS.map
   for (const preset of input.comfyPresets || []) parseWorkflow(JSON.stringify(preset.config?.graph));
   normalizeNovelAIState(state); normalizeOpenAIState(state); normalizeComfyState(state); normalizeSDWebUIState(state); normalizeConnections(state);
   state.assistant = normalizeAssistant(state.assistant);
+  state.localTools = normalizeLocalTools(state.localTools);
+  state.assistantSchemes = normalizeAssistantSchemes(state.assistantSchemes);
+  assertLibrary(input.assistantSchemes, state.assistantSchemes, '助手方案库');
+  if (backupSize(state.assistantSchemes) > ASSISTANT_SCHEME_BYTES) throw new Error('助手方案库超过容量限制');
+  state.assistantSchemeId = state.assistantSchemes.some((row) => row.id === input.assistantSchemeId)
+    || ['builtin-daily', 'builtin-portrait', 'builtin-story'].includes(input.assistantSchemeId) ? input.assistantSchemeId : '';
   state.artistLibrary = normalizeArtistLibrary(state.artistLibrary);
   state.artistLibraryVersion = 1;
   validateTagTemplates(input.tagLibrary?.templates);
@@ -84,6 +96,9 @@ export function normalizeBackupConfig(value = {}, sections = BACKUP_SECTIONS.map
   state.tagLibrary = normalizeTagLibrary(state.tagLibrary);
   state.workbench = normalizeWorkbench(input.workbench);
   state.drawingReviews = normalizeReviews(input.drawingReviews);
+  state.readerSettings = normalizeReaderSettings(input.readerSettings);
+  state.comicLibrary = validateComicLibrary(input.comicLibrary || normalizeComicLibrary());
+  state.comicLibrary.projects = state.comicLibrary.projects.map((project) => comicProjectFile(project).project);
   state.vibeLibrary = normalizeVibeLibrary(input.vibeLibrary);
   assertLibrary(input.vibeLibrary, state.vibeLibrary, 'Vibe 素材库');
   if (backupSize(state.vibeLibrary) > 300000) throw new Error('Vibe 素材库超过容量限制');
@@ -116,6 +131,8 @@ export function credentialNodes(config) {
     }
   }
   if (config.assistant) nodes.push({ provider: 'assistant', value: config.assistant });
+  if (config.localTools) nodes.push({ provider: 'localtools', value: config.localTools });
+  for (const row of config.assistantSchemes || []) nodes.push({ provider: 'assistant', value: row.settings });
   return nodes;
 }
 
@@ -139,7 +156,7 @@ export async function portableCredentials(config, readKey, includeKeys) {
     }
     value.keyRef = slots.get(identity);
   }
-  if (config.assistant) config.assistant.apiLink = null;
+  for (const { provider, value } of credentialNodes(config)) if (provider === 'assistant') value.apiLink = null;
   return secrets;
 }
 
@@ -147,7 +164,7 @@ export async function restoreBackupCredentials(incoming, current, secrets, write
   const slots = new Map();
   const existing = credentialNodes(current), targets = credentialNodes(incoming);
   for (const entry of secrets || []) {
-    if (![...CONNECTION_PROVIDERS, 'assistant'].includes(entry.provider)
+    if (![...CONNECTION_PROVIDERS, 'assistant', 'localtools'].includes(entry.provider)
       || !/^browser:[a-f0-9-]{36}$/.test(entry.slot) || typeof entry.key !== 'string' || !entry.key || entry.key.length > 4096) throw new Error('加密秘钥清单无效');
     const identity = `${entry.provider}:${entry.slot}`;
     if (slots.has(identity)) throw new Error('加密秘钥清单重复');
@@ -169,7 +186,7 @@ export async function restoreBackupCredentials(incoming, current, secrets, write
       entry.provider === provider && entry.value.keyRef
       && connectionSignature(provider, entry.value) === connectionSignature(provider, value))?.value.keyRef || '';
   }
-  if (incoming.assistant) incoming.assistant.apiLink = null;
+  for (const { provider, value } of credentialNodes(incoming)) if (provider === 'assistant') value.apiLink = null;
   return incoming;
 }
 
@@ -195,6 +212,7 @@ function combineRows(existing, incoming, limit, idMap = new Map(), nameLimit = 4
 
 export function mergeBackupConfig(current, imported, sections, mode = 'merge', preserveChat = false) {
   const next = cloneBackup(current), incoming = cloneBackup(imported);
+  if (incoming.comicLibrary) incoming.comicLibrary.projects = incoming.comicLibrary.projects.map((project) => comicProjectFile(project).project);
   if (!preserveChat && incoming.characterProfiles) incoming.characterProfiles.chats = [];
   if (mode === 'replace') {
     for (const section of sections) for (const key of CONFIG_KEYS[section]) {
@@ -221,6 +239,38 @@ export function mergeBackupConfig(current, imported, sections, mode = 'merge', p
       }
     }
     if (sections.includes('general')) next.drawingReviews = normalizeReviews({ ...incoming.drawingReviews, ...next.drawingReviews });
+    if (sections.includes('comics')) {
+      next.comicLibrary = normalizeComicLibrary(next.comicLibrary);
+      const incomingComics = normalizeComicLibrary(incoming.comicLibrary), seriesMap = new Map();
+      for (const series of incomingComics.series) {
+        const same = next.comicLibrary.series.find((row) => row.title === series.title);
+        if (same) { seriesMap.set(series.id, same.id); continue; }
+        const id = next.comicLibrary.series.some((row) => row.id === series.id) ? randomUUID() : series.id;
+        next.comicLibrary.series.push({ id, title: series.title }); seriesMap.set(series.id, id);
+      }
+      for (const project of incomingComics.projects) {
+        if (next.comicLibrary.projects.some((row) => equivalent(row) === equivalent(project))) continue;
+        const copied = comicProjectFile(project).project;
+        copied.seriesId = seriesMap.get(copied.seriesId) || copied.seriesId;
+        if ([...next.comicLibrary.projects, ...next.comicLibrary.shelved].some((row) => row.id === copied.id)) copied.id = randomUUID();
+        next.comicLibrary.projects.push(copied);
+      }
+      for (const row of incomingComics.shelved) {
+        if (next.comicLibrary.shelved.some((old) => old.key === row.key)) continue;
+        const copied = { ...row, seriesId: seriesMap.get(row.seriesId) || row.seriesId };
+        if ([...next.comicLibrary.projects, ...next.comicLibrary.shelved].some((old) => old.id === copied.id)) copied.id = randomUUID();
+        next.comicLibrary.shelved.push(copied);
+      }
+      if (next.comicLibrary.projects.length > COMIC_LIMITS.projects) throw new Error('合并后已加载项目超过 8 个，请先在章节库卸载部分章节再合并');
+      next.comicLibrary = validateComicLibrary(next.comicLibrary);
+    }
+    if (sections.includes('assistant')) {
+      const mapping = new Map();
+      next.assistantSchemes = combineRows(next.assistantSchemes, incoming.assistantSchemes, ASSISTANT_SCHEME_LIMIT, mapping, 60);
+      if (!next.assistantSchemeId && incoming.assistantSchemeId) {
+        next.assistantSchemeId = mapping.get(incoming.assistantSchemeId) || '';
+      }
+    }
     if (sections.includes('artists')) next.artistLibrary = combineRows(next.artistLibrary, incoming.artistLibrary, 100);
     if (sections.includes('tags')) next.tagLibrary = mergeTagLibraries(
       normalizeTagLibrary(next.tagLibrary), normalizeTagLibrary(incoming.tagLibrary));
@@ -245,6 +295,8 @@ export function mergeBackupConfig(current, imported, sections, mode = 'merge', p
     }
   }
   const normalized = normalizeBackupConfig(next);
+  // Existing live associations stay local; imported projects never resume old tasks.
+  normalized.comicLibrary = validateComicLibrary(next.comicLibrary || normalizeComicLibrary());
   for (const key of ['novelaiPresets', 'openaiPresets', 'comfyPresets', 'sdwebuiPresets']) assertLibrary(next[key], normalized[key], key);
   if (backupSize({ ...next, ...normalized }) > 2000000) throw new Error('恢复后的配置超过 2 MB');
   return { ...next, ...normalized };

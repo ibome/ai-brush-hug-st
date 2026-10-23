@@ -5,8 +5,16 @@ import { createReleaseMonitor } from './release-monitor.js';
 import { getBrowserStorage, readBrowserCache, writeBrowserCache } from './browser-cache.js';
 import { restoreStorageFailure } from './debug-errors.js';
 import { isWindowMessage, postWindowMessage } from './host-compat.js';
+import { normalizeAssistantHistory } from './assistant-history.js';
+import { UIStateSync } from './ui-state-sync.js';
 
 const environment = () => window.__LINGHUASHI_ENV__ || {};
+let uiStateFlush = () => {};
+const uiSyncListeners = new Set();
+const uiSync = new UIStateSync({ changed: (value) => { for (const listener of uiSyncListeners) listener(value); } });
+export const getUIStateSync = () => ({ ...uiSync.value });
+export function subscribeUIStateSync(listener) { uiSyncListeners.add(listener); return () => uiSyncListeners.delete(listener); }
+export function registerUIStateFlush(flush) { uiStateFlush = flush; }
 const secretRequests = new Map();
 const storageRequests = new Map();
 let previewVault;
@@ -24,6 +32,7 @@ function receiveReleaseState(value) {
 }
 window.addEventListener('message', (event) => {
   if (!isWindowMessage(event, window.parent)) return;
+  if (event.data?.type === 'linghuashi:state-result') uiSync.receive(event.data.requestId, event.data.error);
   if (event.data?.type === 'linghuashi:release-state') receiveReleaseState(event.data.value);
   if (event.data?.type === 'linghuashi:release-result') {
     const pending = releaseRequests.get(event.data.requestId);
@@ -105,10 +114,16 @@ window.addEventListener('message', (event) => {
   if (!isWindowMessage(event, window.parent) || event.data?.type !== 'linghuashi:assistant-result') return;
   const pending = assistantRequests.get(event.data.requestId);
   if (!pending) return;
-  pending.finish(event.data.error ? new Error(event.data.error) : null, event.data.value);
+  const error = event.data.error ? new Error(event.data.error) : null;
+  if (error && typeof event.data.failedResponse === 'string' && event.data.failedResponse.length <= 100000) {
+    Object.defineProperty(error, 'assistantResponse', { value: event.data.failedResponse });
+  }
+  if (error && event.data.execution) Object.defineProperty(error, 'assistantExecution', { value: event.data.execution });
+  pending.finish(error, event.data.value);
 });
 
 export function assistantHostRequest(action, value = {}, { signal, timeout = 120 } = {}) {
+  uiStateFlush();
   if (!isInstalled()) {
     return action === 'characters' ? Promise.resolve({ chatKey: '', name: '', avatars: [], characters: [] })
       : action === 'context' ? Promise.resolve({ target: '', messages: [], characters: [], world: '', summary: { messages: 0, characters: 0, worldCharacters: 0 } })
@@ -207,13 +222,33 @@ export function readUIState(name) {
 }
 
 export function notifyUIState(ui) {
-  if (isInstalled()) postWindowMessage(window.parent, { type: 'linghuashi:state', ui });
+  if (isInstalled()) {
+    const requestId = randomUUID();
+    uiSync.begin(requestId);
+    postWindowMessage(window.parent, { type: 'linghuashi:state', requestId, ui });
+  }
 }
 
 export function persistUIState(name, ui, serialized = JSON.stringify(ui)) {
   // Account settings must not depend on the optional browser cache.
   notifyUIState(ui);
   return writeBrowserCache(storageKey(name), serialized);
+}
+
+export function readAssistantArchive(name, legacy = [], updatedAt = 0) {
+  const account = environment().assistantArchive;
+  let local;
+  try { local = JSON.parse(readBrowserCache(storageKey(`${name}:assistant-history`)) || 'null'); } catch {}
+  const saved = account?.version === 1 && Array.isArray(account.rows) ? account
+    : { rows: legacy, updatedAt: Array.isArray(legacy) && legacy.length ? updatedAt : 0 };
+  const chosen = local?.version === 1 && Array.isArray(local.rows) && Number(local.updatedAt) > Number(saved.updatedAt || 0) ? local : saved;
+  return normalizeAssistantHistory(chosen.rows);
+}
+
+export function persistAssistantArchive(name, rows) {
+  const value = { version: 1, updatedAt: Date.now(), rows };
+  if (isInstalled()) postWindowMessage(window.parent, { type: 'linghuashi:assistant-archive', value });
+  return writeBrowserCache(storageKey(`${name}:assistant-history`), JSON.stringify(value));
 }
 
 export function currentChat() {

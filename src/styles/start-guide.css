@@ -1,0 +1,89 @@
+.start-guide-entry, .start-guide-heading, .start-guide-actions, .setup-checklist li, .setup-checklist li > span, .failure-actions, .experience-toolbar, .experience-level { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.start-guide-entry { justify-content: space-between; padding: 12px 0; border-block: 1px solid var(--border); margin-bottom: 18px; }
+.start-guide-entry > span, .start-guide h2 { display: flex; align-items: center; gap: 8px; }
+.start-guide-entry > span { font-size: 13px; }
+.start-guide { margin-bottom: 24px; padding: 16px 0; border-block: 1px solid var(--border); }
+.start-guide-heading { justify-content: space-between; margin-bottom: 14px; }
+.start-guide h2 { margin: 0; font-size: 16px; }
+.start-guide svg, .setup-readiness svg { width: 16px; height: 16px; flex: none; color: var(--accent); }
+.start-goals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.start-goals button { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 44px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); text-align: left; line-height: 1.5; font-size: 13px; }
+.start-goals button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.start-goals button > span { flex: 1; overflow-wrap: anywhere; }
+.start-goals button > svg:last-child:not(:first-child) { width: 14px; }
+.start-guide-progress { display: flex; align-items: center; gap: 12px; margin: 18px 0 6px; font-size: 12px; color: var(--secondary); }
+.start-guide-progress progress { flex: 1; min-width: 0; height: 6px; accent-color: var(--accent); }
+.start-checklist { padding: 0; margin: 0; list-style: none; }
+.start-checklist li { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.start-checklist li > div { display: grid; min-width: 0; gap: 5px; font-size: 13px; }
+.start-checklist li strong { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text); font-weight: 500; }
+.start-checklist li small, .start-checklist li span { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.start-checklist li[data-readiness="error"] span { color: var(--danger); }
+.start-guide-actions { justify-content: flex-end; margin-top: 16px; }
+.setup-readiness { margin: 0 0 18px; padding: 10px 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.setup-readiness > summary { display: flex; gap: 8px; align-items: center; cursor: pointer; font-size: 13px; list-style: none; min-height: 28px; }
+.setup-readiness > summary::-webkit-details-marker { display: none; }
+.setup-readiness > summary > span { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.setup-readiness > summary > svg:last-child { width: 13px; }
+.setup-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; margin: 18px 0; font-size: 12px; }
+.setup-facts > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; min-width: 0; }
+.setup-facts dt { color: var(--muted); }
+.setup-facts dd { margin: 0; overflow-wrap: anywhere; }
+.setup-checklist { list-style: none; margin: 0; padding: 0; }
+.setup-checklist li { justify-content: space-between; border-top: 1px solid var(--border); padding: 9px 0; }
+.setup-checklist strong { font-size: 12px; font-weight: 500; }
+.setup-checklist .ui-status { font-size: 11px; }
+.failure-actions { margin: 12px 0 16px; }
+.failure-actions .ui-button, .start-guide .ui-button, .setup-readiness .ui-button { white-space: normal; max-width: 100%; min-height: 36px; }
+.generation-issue { margin: 0 0 16px; padding: 12px 0; border-block: 1px solid var(--border); }
+.generation-issue > p { margin: 0; color: var(--danger); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.experience-toolbar { justify-content: space-between; margin: 0 0 14px; }
+.experience-level { border-bottom: 1px solid var(--border); gap: 0; }
+.experience-level button { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 7px 10px; color: var(--muted); font-size: 12px; }
+.experience-level button[aria-pressed="true"] { color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.experience-level svg { width: 14px; height: 14px; }
+.workspace-save-state { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); font-size: 11px; }
+.workspace-save-state[data-save-state="error"] { color: var(--danger); }
+.assistant-expert { margin: 14px 0; padding: 12px 0; border-block: 1px solid var(--border); }
+.assistant-expert > summary { cursor: pointer; color: var(--secondary); font-size: 13px; margin-bottom: 12px; }
+.storage-scope { margin: 12px 0; font-size: 12px; line-height: 1.7; color: var(--secondary); }
+.storage-scope strong { color: var(--text); }
+.config-glossary { padding: 12px 0; margin: 0 0 14px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.config-glossary summary { color: var(--secondary); cursor: pointer; }
+.config-glossary dl { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 9px 12px; line-height: 1.6; }
+.config-glossary dt { color: var(--text); }
+.config-glossary dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .setup-facts { grid-template-columns: minmax(0, 1fr); }
+  .plugin-bottom { padding: 8px 12px max(8px, env(safe-area-inset-bottom)); min-height: 60px; }
+  .plugin-bottom .bottom-actions { min-width: 0; flex: 1; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+  .plugin-bottom .bottom-actions > span { display: none; }
+  .plugin-bottom:has([data-page-primary] .ui-button) > span:first-child { display: none; }
+  .plugin-bottom .bottom-actions > .ui-button { flex: 1; }
+  .plugin-bottom [data-page-primary] { min-width: 0; }
+  .plugin-bottom .ui-button { min-height: 44px; white-space: normal; line-height: 1.4; }
+  .plugin-bottom .ui-button svg { flex: none; }
+  .plugin-header-right .session-label { display: none; }
+  .start-goals { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .start-goals button { min-height: 44px; }
+  .setup-checklist li > span { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .setup-readiness > summary { flex-wrap: wrap; }
+  .setup-readiness > summary > span { flex-basis: calc(100% - 50px); order: 2; margin-left: 24px; }
+  .setup-readiness > summary > svg:last-child { margin-left: auto; }
+  .start-checklist li > .ui-button { flex: none; }
+}
+@media (pointer: coarse) {
+  .start-guide button, .setup-readiness button, .failure-actions button, .experience-level button { min-height: 44px; }
+}
+.experience-options { border-block: 1px solid var(--border); margin-block: 14px; min-width: 0; }
+.experience-options > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px 0; font-weight: 600; }
+.experience-options > summary > span { flex: 1; }
+.experience-options > summary small { color: var(--muted); font-weight: 400; }
+.experience-options-body { min-width: 0; padding-bottom: 12px; }
+.experience-options-body > .settings-band { border: 0; padding-inline: 0; }
+.recovery-band > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.recovery-band > summary > span { margin-left: auto; color: var(--muted); }
+.recovery-band fieldset { padding: 0; border: 0; min-width: 0; }
+.recovery-row { padding: 12px 0; border-top: 1px solid var(--border); min-width: 0; }
+.recovery-row small { display: block; color: var(--muted); font-weight: 400; margin-top: 4px; }
+.recovery-row pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; font-size: 12px; }

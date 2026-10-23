@@ -247,7 +247,7 @@ export function renderOpenAIParameters(state, models = [], advancedOpen = false,
     ${select('size', '尺寸', SIZES)}
     ${value.size === 'custom' ? `<div class="nai-dimensions">${number('width', '宽度 (px)')}<button type="button" class="ui-icon-button" data-action="openai-swap-size" title="交换宽高" aria-label="交换宽高">${icon('arrow-left-right')}</button>${number('height', '高度 (px)')}</div>` : ''}
     <div class="two-field-row">${number('n', '每次生成张数')}${select('quality', '图像质量', openAIQualityOptions(value))}</div>
-    <details class="advanced-options openai-advanced" ${advancedOpen ? 'open' : ''}><summary>${icon('settings-2')}其他参数设置${icon('chevron-down')}</summary>
+    <details class="advanced-options openai-advanced" data-experience-fold="openai-parameters" ${advancedOpen || state.experience?.level === 'full' ? 'open' : ''}><summary>${icon('settings-2')}其他参数设置${icon('chevron-down')}</summary>
       <div class="two-field-row">
         ${select('parameterMode', '参数模式', [['auto', '按模型自动识别'], ['gpt', 'GPT Image'], ['basic', '通用图片接口']])}
         ${select('outputFormat', '图片格式', [['png', 'PNG'], ['jpeg', 'JPEG'], ['webp', 'WebP']], !gpt)}

@@ -3,14 +3,60 @@ import assert from 'node:assert/strict';
 import { createNativeStorage } from './native-storage.js';
 import { createStorageRequest, serverDrawing } from './server-storage.js';
 import { createTaskLedger } from '../server/linghuashi-storage/task-ledger.mjs';
+import { sha256Hex } from './crypto-compat.js';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRXYAAAAASUVORK5CYII=';
 const bound = { id: 'a'.repeat(64), branch: 'b'.repeat(64), chatKey: '["character","avatar","main"]', swipe: 0, slot: 0 };
 const row = (id, extra = {}) => ({ id, width: 1, height: 1, title: id, createdAt: 1000000, snapshot: { provider: 'novelai', params: { positive: 'garden', seed: 12 } }, ...extra });
 const addition = (id, extra) => ({ row: row(id, extra), image: png, thumbnail: png });
 const json = (value, status = 200) => Response.json(value, { status });
+
+test('closing the host aborts storage requests and prevents later calls on browsers with and without signal composition', async (t) => {
+  const original = AbortSignal.any;
+  t.after(() => { AbortSignal.any = original; });
+  for (const compose of [original, undefined]) {
+    AbortSignal.any = compose;
+    const controller = new AbortController();
+    let started = 0, began;
+    const ready = new Promise((resolve) => { began = resolve; });
+    const gateway = createStorageRequest(() => ({}), { signal: controller.signal, request: async (_url, options) => {
+      started++; began();
+      return new Promise((_resolve, reject) => options.signal.addEventListener('abort',
+        () => reject(new DOMException('Host closed', 'AbortError')), { once: true }));
+    } });
+    const work = gateway('components/status');
+    await ready; controller.abort();
+    assert.equal((await work).enhanced, 'error');
+    await assert.rejects(gateway('list'), { name: 'AbortError' });
+    assert.equal(started, 1);
+  }
+});
+test('navigation blocks delayed storage phases before fetch and cancelled navigation can resume on the same gateway', async () => {
+  let active = true, release, reached;
+  const ready = new Promise(resolve => { reached = resolve; }), calls = [];
+  const gateway = createStorageRequest(() => ({}), { isActive: () => active,
+    browserTasks: async () => {
+      reached();
+      await new Promise(resolve => { release = resolve; });
+      return { rows: [], serverTime: 1 };
+    },
+    request: async url => {
+      calls.push(url);
+      if (url.endsWith('/backup/status')) return json({ version: '1', protocol: 2 });
+      if (url.endsWith('/task/list')) return json({ rows: [], serverTime: 1 });
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  const pending = gateway('task/list');
+  await ready; active = false; release();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(calls.length, 1, 'the delayed remote list must not start during navigation');
+  await assert.rejects(gateway('list'), { name: 'AbortError' });
+  active = true;
+  assert.equal((await gateway('components/status')).enhanced, 'installed');
+});
 function memory() {
-  const files = new Map(), calls = [], locks = new Map();
+  const files = new Map(), calls = [], reads = [], locks = new Map();
   let time = 1000000, failure = null;
   const lock = { request(name, run) {
     const next = (locks.get(name) || Promise.resolve()).catch(() => {}).then(run);
@@ -41,14 +87,69 @@ function memory() {
       throw new Error(`unknown native route ${path}`);
     };
     const read = async (path) => {
+      reads.push({ account, path });
       const data = files.get(key(new URL(path, 'https://fixture.test').pathname.replace(/^\//, '')));
       return data ? new Response(data) : new Response('', { status: 404 });
     };
     return { api, read, account, now: () => time, locks: lock };
   }
-  return { files, calls, endpoint, native: (account) => createNativeStorage(endpoint(account)),
+  return { files, calls, reads, endpoint, native: (account, index) => createNativeStorage({ ...endpoint(account), ...(index ? { index } : {}) }),
     advance: (amount) => { time += amount; }, fail: (predicate) => { failure = predicate; } };
 }
+
+function memoryIndex() {
+  const rows = new Map();
+  return { read: async () => structuredClone([...rows.values()]), write: async (entries, removed = []) => {
+    removed.forEach((id) => rows.delete(id)); entries.forEach((row) => rows.set(row.id, structuredClone(row)));
+  } };
+}
+test('native chapter files are hashed, account isolated and never passed to image endpoints', async () => {
+  const f = memory(), a = f.native('a'), b = f.native('b');
+  const record = { format: 'linghuashi-comic-chapter', version: 1, project: { id: 'chapter-one', panels: [], source: 'garden' } };
+  const key = await sha256Hex(new TextEncoder().encode(JSON.stringify(record)));
+  await a('comic/chapter-put', { key, record });
+  assert.deepEqual(await a('comic/chapter-get', { key }), record);
+  assert.equal(await b('comic/chapter-get', { key }), null);
+  await assert.rejects(a('comic/chapter-put', { key, record: { ...record, version: 2 } }), /校验/);
+  await assert.rejects(a('comic/chapter-get', { key: '../secrets' }), /标识/);
+  assert.equal(f.calls.filter((row) => row.path.includes('/images/')).length, 0);
+});
+test('a warm device index keeps the complete gallery and revalidates bounded batches across reloads', async () => {
+  const f = memory(), index = memoryIndex(), a = f.native('large', index);
+  for (let id = 0; id < 120; id++) await a('add', addition(`picture-${id}`));
+  f.reads.length = 0;
+  const warm = await f.native('large', index)('list');
+  assert.equal(warm.rows.length, 120); assert.equal(f.reads.length, 0);
+  f.advance(300001);
+  f.reads.length = 0;
+  const next = f.native('large', index), batch = await next('list');
+  assert.equal(batch.rows.length, 120); assert.equal(batch.index.pending, 72);
+  assert.equal(f.reads.length, 48);
+  f.advance(200000);
+  assert.equal((await next('list')).index.pending, 24);
+  f.advance(200000);
+  assert.equal((await next('list')).index.pending, 0);
+  f.advance(1501);
+  assert.equal((await next('list')).index.pending, 0, 'a long scan must not immediately restart from its earliest batch');
+  const remote = f.native('large');
+  await remote('add', addition('new-picture'));
+  f.advance(1501);
+  assert.equal((await next('list')).rows.length, 121);
+  assert.deepEqual((await f.native('another', memoryIndex())('list')).rows, []);
+});
+test('cached metadata failures keep earlier rows visible, while forced checks fail instead of returning a partial list', async () => {
+  const f = memory(), index = memoryIndex(), a = f.native('a', index);
+  await a('add', addition('retained'));
+  f.advance(300001);
+  const endpoint = f.endpoint('a');
+  const broken = createNativeStorage({ ...endpoint, index, read: async () => { throw new Error('fixture network'); } });
+  const result = await broken('list');
+  assert.equal(result.rows[0].id, 'retained'); assert.equal(result.index.errors, 1);
+  await assert.rejects(broken('list', { refresh: true }), /fixture network/);
+  await f.native('a')('favorite', { id: 'retained', favorite: true });
+  await a('favorite', { id: 'retained', favorite: false });
+  assert.equal((await f.native('a')('list')).rows[0].favorite, false);
+});
 
 test('native account images, metadata, references and favorites survive a fresh adapter without a server plugin', async () => {
   const f = memory(), a = f.native('a');

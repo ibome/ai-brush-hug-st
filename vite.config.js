@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
+import { localToolsPackagePlugin } from './scripts/local-tools-package.mjs';
 
 export default defineConfig({
+  plugins: [localToolsPackagePlugin()],
   base: process.env.DRAW_BASE_PATH || '/',
   server: {
     host: '127.0.0.1',
@@ -10,6 +12,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist-preview',
+    cssTarget: ['safari15', 'chrome90', 'firefox90'],
     rollupOptions: {
       input: {
         workbench: fileURLToPath(new URL('./index.html', import.meta.url)),

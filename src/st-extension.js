@@ -9,6 +9,7 @@ import { SETTINGS_DEFAULTS } from './ui/settings.js';
 import { createStorageRequest, STORAGE_ACTIONS } from './server-storage.js';
 import { storageFailureInfo } from './debug-errors.js';
 import { createAssistantHost } from './assistant-host.js';
+import { normalizeAssistantHistory } from './assistant-history.js';
 import { chatIdentity } from './chat.js';
 import { RELEASE } from './release.js';
 import { createReleaseMonitor, RELEASE_CACHE_KEY } from './release-monitor.js';
@@ -36,8 +37,10 @@ async function start() {
   const account = await resolveHostAccount();
   const browserStorage = getBrowserStorage();
   const releaseMonitor = createReleaseMonitor({ storage: browserStorage });
+  const storageScope = new AbortController();
+  let leavingPage = false;
   const storageRequest = createStorageRequest(() => getContext()?.getRequestHeaders?.(), {
-    account, enhancedSupported: hostInfo.serverPlugins,
+    account, enhancedSupported: hostInfo.serverPlugins, signal: storageScope.signal, isActive: () => !leavingPage,
   });
   const credentialVault = createCredentialVault({
     account, storage: browserStorage,
@@ -55,6 +58,7 @@ async function start() {
   });
   const saved = context.extensionSettings[SETTINGS_KEY];
   let ui = plainObject(saved?.ui) ? clone(saved.ui) : {};
+  let assistantArchive = saved?.assistantArchive?.version === 1 ? clone(saved.assistantArchive) : null;
   let layout = { ...DEFAULT_CONFIG, ...(plainObject(saved?.layout) ? clone(saved.layout) : {}), surface: 'console', state: 'ready' };
   let frame;
   let mounted = false;
@@ -77,7 +81,7 @@ async function start() {
     getHeaders: () => getContext()?.getRequestHeaders?.(), isBusy: () => textGenerating,
     nativeUpdates: hostInfo.kind === 'tauritavern' });
   const assistantHost = createAssistantHost({ getContext, settings: () => ui.assistant,
-    post, isBusy: () => textGenerating });
+    post, isBusy: () => textGenerating, reader: (action, data, signal) => chatLink.read(action, data, signal) });
   const textStarted = (type, _options, dryRun) => {
     if (!dryRun && type !== 'quiet') textGenerating = true;
   };
@@ -109,8 +113,8 @@ async function start() {
     .ball:hover img { filter: brightness(1.06); }
     .ball img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; pointer-events: none; }
     .backdrop { position: fixed; inset: 0; z-index: 30001; display: grid; place-items: center; padding: 20px; background: #12172488; pointer-events: auto; }
-    .window { width: min(1200px,100%); height: min(900px,calc(100dvh - 40px)); display: flex; flex-direction: column; background: #fbfcff; border: 1px solid #ced8e8; border-radius: 8px; overflow: hidden; }
-    .window.fullscreen { width: 100%; height: 100dvh; border-radius: 0; }
+    .window { width: min(1200px,100%); height: min(900px,calc(100vh - 40px)); height: min(900px,calc(100dvh - 40px)); display: flex; flex-direction: column; background: #fbfcff; border: 1px solid #ced8e8; border-radius: 8px; overflow: hidden; }
+    .window.fullscreen { width: 100%; height: 100vh; height: 100dvh; border-radius: 0; }
     .backdrop:has(.fullscreen) { padding: 0; }
     .toolbar { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 14px; border-bottom: 1px solid #d4deed; background: #f3f6fc; }
     .toolbar strong { font-size: 14px; font-weight: 600; }
@@ -118,13 +122,13 @@ async function start() {
     .toolbar .actions { display: flex; margin-left: auto; gap: 3px; }
     .toolbar button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; }
     .toolbar button:hover { background: #dfe7f4; }
-    iframe { flex: 1; min-height: 0; width: 100%; border: 0; background: #fbfcff; }
+    iframe { display: block; flex: 1; min-width: 0; min-height: 0; width: 100%; border: 0; background: #fbfcff; }
     .status { margin: 12px; color: #65728a; font-size: 13px; }
     :host([data-theme="dark"]) .window { background: #1b1c20; border-color: #3a3d49; color: #e8ecf5; }
     :host([data-theme="dark"]) .toolbar { background: #23242b; border-color: #3a3d49; }
     :host([data-theme="dark"]) .badge { color: #a2aabc; }
     :host([data-theme="dark"]) .toolbar button:hover { background: #343641; }
-    @media (max-width: 720px) { .backdrop { padding: 0; } .window { width: 100%; height: 100dvh; border-radius: 0; } .ball { width: 64px; height: 64px; padding: 3px; } }
+    @media (max-width: 720px) { .backdrop { padding: 0; } .window { width: 100%; height: 100vh; height: 100dvh; border-radius: 0; } .ball { width: 64px; height: 64px; padding: 3px; } }
   </style>
   <button class="ball" type="button" title="打开灵画师菜单" aria-label="打开灵画师菜单"></button>
   <div class="backdrop" hidden>
@@ -212,6 +216,7 @@ async function start() {
     current.extensionSettings[SETTINGS_KEY] = {
       ...(plainObject(current.extensionSettings[SETTINGS_KEY]) ? current.extensionSettings[SETTINGS_KEY] : {}),
       schemaVersion: 1, version: VERSION, ui: clone(ui), layout: clone(layout),
+      ...(assistantArchive ? { assistantArchive } : {}),
     };
     current.saveSettingsDebounced();
   }
@@ -246,6 +251,7 @@ async function start() {
   }
 
   function ensureFrame() {
+    if (mounted) return Promise.resolve();
     if (!frameReady) {
       frameReady = new Promise((resolve, reject) => { resolveFrame = resolve; rejectFrame = reject; });
       frameReady.catch(() => {});
@@ -254,6 +260,11 @@ async function start() {
       frame.id = 'linghuashi-extension-frame';
       frame.src = `${baseURL}extension-ui.html?ver=${VERSION}&build=${BUILD}`;
       frame.setAttribute('allow', 'clipboard-write');
+      frame.addEventListener('load', () => {
+        if (destroyed) return;
+        frame.contentWindow.addEventListener('pointerdown', onPageResume, true);
+        frame.contentWindow.addEventListener('keydown', onPageResume, true);
+      });
       dialog.append(frame);
       sizeTimer = setTimeout(() => {
         if (!mounted && !destroyed) {
@@ -267,7 +278,7 @@ async function start() {
 
   function open(page) {
     if (destroyed) return;
-    if (['settings', 'updates', 'generate', 'batch', 'gallery', 'assistant', 'characters', 'styles', 'tags', 'connection', 'components', 'debug', 'changelog'].includes(page)) requestedPage = page;
+    if (['settings', 'updates', 'generate', 'batch', 'gallery', 'reader', 'assistant', 'characters', 'styles', 'tags', 'connection', 'components', 'debug', 'changelog'].includes(page)) requestedPage = page;
     floatingMenu.close();
     previousFocus = shadow.activeElement || document.activeElement;
     backdrop.hidden = false;
@@ -336,7 +347,7 @@ async function start() {
     }
     if (data.type === 'linghuashi:ready') {
       activeChat = chatContext();
-      post('linghuashi:init', { account, ui: clone(ui), layout: clone(layout), chat: activeChat,
+      post('linghuashi:init', { account, ui: clone(ui), assistantArchive, layout: clone(layout), chat: activeChat,
         host: hostInfo, page: requestedPage, releaseState: releaseMonitor.getState() });
       requestedPage = null;
     } else if (data.type === 'linghuashi:mounted') {
@@ -350,18 +361,30 @@ async function start() {
         requestedPage = null;
       }
       if (pendingFloatingBall !== null) post('linghuashi:floating', { visible: pendingFloatingBall });
-    } else if (data.type === 'linghuashi:state' && plainObject(data.ui)) {
-      const serialized = JSON.stringify(data.ui);
-      if (serialized.length > 2000000) return;
-      ui = JSON.parse(serialized);
-      if (pendingFloatingBall !== null) {
-        const acknowledged = ui.floatingBall === pendingFloatingBall;
-        ui.floatingBall = pendingFloatingBall;
-        if (acknowledged) pendingFloatingBall = null;
-      }
+    } else if (data.type === 'linghuashi:assistant-archive' && data.value?.version === 1
+      && Array.isArray(data.value.rows) && JSON.stringify(data.value).length <= 650000) {
+      assistantArchive = { version: 1, updatedAt: Date.now(), rows: normalizeAssistantHistory(data.value.rows) };
+      delete ui.assistantHistory;
       persist();
-      updateAppearance();
-      chatLink?.refresh();
+    } else if (data.type === 'linghuashi:state' && plainObject(data.ui)) {
+      const requestId = typeof data.requestId === 'string' ? data.requestId.slice(0, 64) : '';
+      try {
+        const serialized = JSON.stringify(data.ui);
+        if (serialized.length > 2000000) throw new Error('设置容量已满');
+        ui = JSON.parse(serialized);
+        if (assistantArchive) delete ui.assistantHistory;
+        if (pendingFloatingBall !== null) {
+          const acknowledged = ui.floatingBall === pendingFloatingBall;
+          ui.floatingBall = pendingFloatingBall;
+          if (acknowledged) pendingFloatingBall = null;
+        }
+        persist();
+        post('linghuashi:state-result', { requestId });
+        updateAppearance();
+        chatLink?.refresh();
+      } catch {
+        post('linghuashi:state-result', { requestId, error: '酒馆未能接收设置' });
+      }
     } else if (data.type === 'linghuashi:restore-layout' && plainObject(data.layout)) {
       layout = { ...layout, theme: data.layout.theme === 'dark' ? 'dark' : 'light',
         density: ['compact', 'standard', 'relaxed'].includes(data.layout.density) ? data.layout.density : layout.density };
@@ -390,8 +413,8 @@ async function start() {
     else if (data.type === 'linghuashi:storage-request' && typeof data.requestId === 'string'
       && data.requestId.length <= 64 && STORAGE_ACTIONS.has(data.action)) {
       void storageRequest(data.action, data.body).then(
-        (value) => post('linghuashi:storage-result', { requestId: data.requestId, value }),
-        (error) => post('linghuashi:storage-result', { requestId: data.requestId, error: error.message, failure: storageFailureInfo(error) }),
+        (value) => { if (!destroyed) post('linghuashi:storage-result', { requestId: data.requestId, value }); },
+        (error) => { if (!destroyed) post('linghuashi:storage-result', { requestId: data.requestId, error: error.message, failure: storageFailureInfo(error) }); },
       );
     }
     else if (data.type === 'linghuashi:error') {
@@ -407,10 +430,13 @@ async function start() {
     post('linghuashi:chat', { chat: activeChat });
   }
   function onResize() { positionBall(); floatingMenu.reposition(); }
+  function onBeforeUnload() { leavingPage = true; }
+  function onPageResume() { leavingPage = false; }
   function onPageHide(event) { if (!event.persisted) destroy(); }
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    storageScope.abort();
     clearTimeout(sizeTimer);
     clearTimeout(releaseStartTimer);
     clearInterval(releaseTimer);
@@ -428,6 +454,12 @@ async function start() {
     window.removeEventListener('message', onMessage);
     window.removeEventListener('resize', onResize);
     window.removeEventListener('pagehide', onPageHide);
+    window.removeEventListener('beforeunload', onBeforeUnload);
+    window.removeEventListener('pageshow', onPageResume);
+    window.removeEventListener('pointerdown', onPageResume, true);
+    window.removeEventListener('keydown', onPageResume, true);
+    frame?.contentWindow?.removeEventListener('pointerdown', onPageResume, true);
+    frame?.contentWindow?.removeEventListener('keydown', onPageResume, true);
     for (const type of events) context.eventSource?.removeListener?.(type, updateChat);
     for (const [type, handler] of textEvents) context.eventSource?.removeListener?.(type, handler);
     entry.remove();
@@ -493,6 +525,10 @@ async function start() {
   window.addEventListener('message', onMessage);
   window.addEventListener('resize', onResize);
   window.addEventListener('pagehide', onPageHide);
+  window.addEventListener('beforeunload', onBeforeUnload);
+  window.addEventListener('pageshow', onPageResume);
+  window.addEventListener('pointerdown', onPageResume, true);
+  window.addEventListener('keydown', onPageResume, true);
   const events = ['CHAT_CHANGED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_DELETED']
     .map((key) => context.eventTypes?.[key]).filter(Boolean);
   for (const type of events) context.eventSource?.on?.(type, updateChat);

@@ -4,12 +4,15 @@ import { normalizeAssistant } from './prompt-assistant.js';
 import { createChatSync, openChatStore } from './chat-storage.js';
 import { getCharacterTheme } from './ui/appearance.js';
 import { icon, paintIcons } from './icons.js';
-import { locatePromptRanges, replacePromptRange, restorePromptRange } from './chat-render.js';
+import { locatePromptRanges, replacePromptRange, restorePromptRange, locateSmartAnchors } from './chat-render.js';
+import { illustrationPlans, selectedIllustration } from './assistant-workflow.js';
 import { versionGroupId } from '../server/linghuashi-storage/image-versions.mjs';
 import { chatImageBelongsTo } from './chat-image-actions.js';
 import { quickCSS, quickTheme, quickButton, appendImageTools, editChatPrompt, copyChatPrompt, chooseChatSlots } from './ui/chat-quick.js';
 import { renderGenerationTransition, transitionCSS } from './ui/generation-transition.js';
+import { generationTransitionState } from './generation-transition.js';
 import { apiError } from './extension-api.js';
+import { createChatReader } from './chat-reader.js';
 
 const labels = {
   preparing: '准备生图', confirming: '等待确认提示词', queued: '排队中', running: '正在生图',
@@ -25,6 +28,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   const objectURLs = new Set();
   const pendingReplies = new Set();
   const replacements = [];
+  const anchorSplits = [];
   let store;
   let destroyed = false;
   let revision = 0;
@@ -36,6 +40,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   let channel;
   let dialogSession;
   const imageOperations = new Set();
+  const versionSelections = new Map();
   const ready = openChatStore(account, {
     mode: () => ['server', 'local'].includes(settings().cacheLocation) ? 'server' : 'browser', request: storageRequest,
     ownsRequest: (id) => requests.has(id),
@@ -43,15 +48,41 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     notice('聊天任务存储不可用，请检查浏览器存储权限');
   });
   const syncRecords = createChatSync((chatKey) => store.sync(chatKey));
+  const reader = createChatReader({
+    getContext, settings, isBusy: () => generating,
+    load: async (key) => {
+      await ready;
+      return store ? store.readerData(key) : { records: [], images: [], warnings: ['图片存储不可用，只能读取正文'] };
+    },
+    image: async (id, location) => store?.image(id, location),
+    preview: (row) => row?.thumbnailURL || (row?.thumbnail instanceof Blob ? URL.createObjectURL(row.thumbnail) : ''),
+  });
 
   const isCurrent = (entry) => bindingIsCurrent(entry, getContext(), settings());
   const scheduledRender = () => {
     clearTimeout(renderTimer);
     if (destroyed || generating) return;
-    renderTimer = setTimeout(() => { void reconcile(); }, 60);
+    renderTimer = setTimeout(() => { void reconcileSafely(); }, 60);
   };
+  async function reconcileSafely() {
+    try { await reconcile(); }
+    catch {
+      if (destroyed) return;
+      for (const card of document.querySelectorAll('.linghuashi-chat-images')) {
+        const status = card.shadowRoot?.querySelector('header .status');
+        if (status) status.textContent = '配图暂时无法读取，已有内容保留';
+      }
+    }
+  }
 
   function removeCards() {
+    for (const { left, right, card, before, after } of anchorSplits.reverse()) {
+      if (left.isConnected && right.isConnected && left.nextSibling === card && card.nextSibling === right
+        && left.data === before && right.data === after) {
+        left.data += right.data; right.remove();
+      }
+    }
+    anchorSplits.length = 0;
     for (const replacement of replacements.reverse()) restorePromptRange(replacement);
     replacements.length = 0;
     document.querySelectorAll('.linghuashi-chat-images,.linghuashi-smart-entry,.linghuashi-message-quick').forEach((node) => node.remove());
@@ -90,7 +121,14 @@ export function createChatLink({ account, getContext, settings, send, open, noti
         const slots = await bindImageSlots(context, message, options.triggerPrefix, options.triggerSuffix);
         if (!slots.length) {
           const smart = await bindSmartSlot(context, message);
-          if (smart) slots.push(smart);
+          if (smart) {
+            slots.push(smart);
+            const parent = await store.get(smart.binding.id);
+            for (let index = 1; index < illustrationPlans(parent?.assistant).length; index++) {
+              const child = await bindSmartSlot(context, message, index);
+              if (child) slots.push(child);
+            }
+          }
         }
         for (const slot of slots) {
           let entry = entries.get(slot.binding.id);
@@ -152,6 +190,24 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           replacements.push(replacePromptRange(range, card));
           placed.add(entry.binding.id);
         }
+        const anchors = options.inline !== false
+          ? locateSmartAnchors(node.querySelector('.mes_text'), current.filter((entry) => entry.binding.kind === 'smart')) : [];
+        for (const { entry, block, range } of anchors.reverse()) {
+          const card = cards.get(entry.binding.id);
+          card.dataset.placement = 'anchor';
+          if (block) block.after(card);
+          else if (range.startContainer.nodeType === 3) {
+            const left = range.startContainer, offset = range.startOffset;
+            if (offset === left.length) left.after(card);
+            else if (offset === 0) left.before(card);
+            else {
+              const right = left.splitText(offset);
+              left.after(card);
+              anchorSplits.push({ left, right, card, before: left.data, after: right.data });
+            }
+          } else range.insertNode(card);
+          placed.add(entry.binding.id);
+        }
         for (const entry of current) {
           if (placed.has(entry.binding.id)) continue;
           const card = cards.get(entry.binding.id);
@@ -169,6 +225,13 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           shadow.append(style, tools); quickTheme(quick, options.characterTheme); paintIcons(shadow);
           (node.querySelector('.mes_buttons') || node.querySelector('.mes_block'))?.append(quick);
         }
+      }
+      for (const [key, selection] of versionSelections) {
+        if (selection.saving) continue;
+        const displayed = [...cards.values()].some((card) =>
+          [...card.shadowRoot.querySelectorAll('.picture-entry')].some((picture) =>
+            picture.dataset.versionGroup === key && picture.dataset.image === selection.id));
+        if (displayed) versionSelections.delete(key);
       }
     } finally {
       observeChat();
@@ -227,7 +290,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     const record = entry.record;
     const owned = requests.has(record?.requestId);
     const pending = CHAT_PENDING.has(record?.status);
-    section.innerHTML = `<header><strong>${smart ? '灵画师 · 智能配图' : `灵画师 · 配图 ${entry.index + 1}`}</strong><span class="status"></span><div class="actions"></div></header><details><summary>提示词</summary><p class="prompt"></p></details>`;
+    section.innerHTML = `<header><strong>${smart ? `灵画师 · 智能配图${entry.binding.slot ? ` ${entry.index + 1}` : ''}` : `灵画师 · 配图 ${entry.index + 1}`}</strong><span class="status"></span><div class="actions"></div></header><details><summary>提示词</summary><p class="prompt"></p></details>`;
     section.querySelector('.prompt').textContent = entry.prompt;
     if (smart && !record) {
       section.querySelector('strong').hidden = true;
@@ -238,7 +301,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       `${record.assistant.scene}\n\n${record.assistant.positive}\n\n负面：${record.assistant.negative || '未填写'}`;
     section.querySelector('.status').textContent = pending && !owned
       ? record?.taskId ? '其他页面执行中，等待同步' : '任务记录待核对'
-      : (pending ? phases[record?.phase] : '') || labels[record?.status] || '等待生成';
+      : (record?.status === 'preparing' ? generationTransitionState(record)?.title : pending ? phases[record?.phase] : '')
+        || labels[record?.status] || '等待生成';
     const command = (label, glyph, action, disabled = false) => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -301,7 +365,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           image.width = row.width; image.height = row.height;
           button.append(image);
           button.addEventListener('click', () => { void imageAction(entry, row, 'view'); });
-          const picture = document.createElement('div'); picture.className = 'picture-entry'; picture.dataset.image = row.id; picture.append(button);
+          const picture = document.createElement('div'); picture.className = 'picture-entry'; picture.dataset.image = row.id;
+          const versionKey = `${row.storageLocation}:${groupId}`;
+          picture.dataset.versionGroup = versionKey; picture.append(button);
           const active = [...requests.values()].find((request) => request.quickImage && request.groupId === groupId
             && request.storageLocation === record.storageLocation && CHAT_PENDING.has(request.record?.status));
           const savedTask = store.imageTask(entry.binding.id, groupId, record.storageLocation);
@@ -313,6 +379,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           appendImageTools({ container: picture, row, versions, task, pending: taskPending || pending, theme: options.characterTheme,
             onAction: (action) => { void imageAction(entry, row, action, task); },
             onVersion: (versionId) => { void selectImageVersion(entry, row, versionId); } });
+          const selection = versionSelections.get(versionKey);
+          if (selection && (selection.saving || selection.id !== row.id)) markVersionPending(picture);
           pictures.append(picture);
         }
         if (imageReadFailed) {
@@ -357,20 +425,41 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     }
   }
 
+  function markVersionPending(picture) {
+    picture.setAttribute('aria-busy', 'true');
+    picture.querySelectorAll('button,select').forEach((control) => { control.disabled = true; });
+    if (picture.querySelector('.version-pending')) return;
+    const status = document.createElement('p');
+    status.className = 'prompt version-pending'; status.setAttribute('role', 'status');
+    status.textContent = '正在切换图片版本…'; picture.append(status);
+  }
+
   async function selectImageVersion(entry, row, id) {
+    const key = `${row.storageLocation}:${versionGroupId(row)}`;
+    if (!isCurrent(entry) || versionSelections.has(key) || id === row.id) return;
+    const selection = { id, saving: true };
+    versionSelections.set(key, selection);
+    for (const card of document.querySelectorAll('.linghuashi-chat-images')) {
+      for (const picture of card.shadowRoot.querySelectorAll('.picture-entry')) {
+        if (picture.dataset.versionGroup === key) markVersionPending(picture);
+      }
+    }
     try {
-      if (!isCurrent(entry)) return;
       const versions = await store.versions(row.id, row.storageLocation);
       if (!versions.some((item) => item.id === id && chatImageBelongsTo(item, entry.binding))) throw new Error('图片版本或原消息已变化，请刷新聊天');
-      if (!isCurrent(entry)) return;
+      if (!isCurrent(entry)) { versionSelections.delete(key); return; }
       await store.selectVersion(id, row.storageLocation);
+      selection.saving = false;
       channel?.postMessage({ type: 'images-changed' }); scheduledRender();
-    } catch (error) { notice(error.message); }
+    } catch (error) {
+      versionSelections.delete(key); notice(error.message); scheduledRender();
+    }
   }
 
   async function imageAction(entry, row, action, task) {
     const operation = `${row.storageLocation}:${row.id}:${action}`;
     if (!isCurrent(entry) || imageOperations.has(operation)) return;
+    if (versionSelections.has(`${row.storageLocation}:${versionGroupId(row)}`)) return;
     imageOperations.add(operation);
     try {
       if (!chatImageBelongsTo(row, entry.binding)) throw new Error('配图与原消息的关联已变化，请刷新聊天');
@@ -445,7 +534,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (destroyed || !isCurrent(entry)) return;
       if (!lock && navigator.locks) { notice('这个配图任务已在其他标签页运行'); return; }
       const previous = await store.get(entry.binding.id);
-      if (previous && automatic) return;
+      if (previous && automatic && !draftPlan) return;
       if (draftPlan && previous?.status !== 'drafted') { notice('配图草稿已变化，请刷新消息后重试'); return; }
       if (previous && (!navigator.locks && CHAT_PENDING.has(previous.status))) {
         notice('任务记录待核对，请先检查服务端任务'); return;
@@ -496,6 +585,25 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     void request(entry, false, entry.record.assistant);
   }
 
+  async function prepareSmartChildren(entry, plan, { reset = false, start = false, automatic = false } = {}) {
+    if (entry.binding.kind !== 'smart' || entry.binding.slot !== 0) return;
+    const shots = illustrationPlans(plan);
+    for (let index = 1; index < shots.length; index++) {
+      const slot = await bindSmartSlot(getContext(), entry.message, index);
+      if (!slot || !isCurrent(entry)) break;
+      const previous = await store.get(slot.binding.id);
+      if (previous && (CHAT_PENDING.has(previous.status) || previous.status === 'completed' && !reset)) continue;
+      const requestId = randomUUID();
+      const record = await store.reserve(slot.binding, requestId, Boolean(previous));
+      if (!record) continue;
+      const shot = selectedIllustration(plan, index);
+      const child = { ...slot, message: entry.message, text: entry.text, prompt: shot.positive, requestId, record };
+      await updateRecord(child, { status: 'drafted', assistant: shot });
+      entries.set(slot.binding.id, child);
+      if (start) void request(child, automatic, shot);
+    }
+  }
+
   async function receive(data) {
     if (data.type === 'linghuashi:chat-current-assist') {
       const context = getContext();
@@ -510,10 +618,20 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     const entry = requests.get(data.requestId) || (restored?.record?.requestId === data.requestId
       || restored && store?.hasImageRequest(restored.binding.id, data.requestId) ? restored : null);
     if (entry && data.type === 'linghuashi:chat-draft-submit') {
+      if (data.illustrationIndex > 0 && entry.binding.kind === 'smart' && entry.binding.slot === 0) {
+        const child = await bindSmartSlot(getContext(), entry.message, data.illustrationIndex);
+        const target = child && entries.get(child.binding.id);
+        if (!target || !isCurrent(target) || target.record?.status !== 'drafted') {
+          notice('这张配图已变化或正在生成，请在聊天中核对'); return;
+        }
+        await updateRecord({ ...target, requestId: target.record.requestId }, { status: 'drafted', assistant: data.plan });
+        void request(target, false, data.plan); return;
+      }
       if (!isCurrent(entry) || !['drafted', 'skipped'].includes(entry.record?.status)) {
         notice('原消息或草稿状态已变化，请在消息上重新操作'); return;
       }
       await updateRecord(entry, { status: 'drafted', assistant: data.plan, savedIds: [] });
+      if (data.allIllustrations) await prepareSmartChildren(entry, data.plan, { start: true });
       void request(entry, false, data.plan);
       return;
     }
@@ -535,6 +653,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (!isCurrent(entry) || ['queued', 'running', 'completed'].includes(entry.record?.status)) return;
       entry.requestId = data.requestId;
       await updateRecord(entry, { status: data.generating ? 'preparing' : data.plan.shouldDraw ? 'drafted' : 'skipped', assistant: data.plan, savedIds: [] });
+      await prepareSmartChildren(entry, data.plan, { reset: data.analysis === true,
+        start: data.generating && normalizeAssistant(settings().assistant).autoImage, automatic: true });
       if (!data.generating) entry.release?.();
       scheduledRender(); return;
     }
@@ -581,6 +701,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   for (const key of ['CHAT_CHANGED', 'CHAT_LOADED', 'MESSAGE_UPDATED', 'MESSAGE_SWIPED',
     'MESSAGE_DELETED', 'MORE_MESSAGES_LOADED', 'CHARACTER_MESSAGE_RENDERED',
     'MESSAGE_SWIPE_DELETED']) on(key, scheduledRender);
+  for (const key of ['CHAT_CHANGED', 'CHAT_LOADED']) on(key, () => reader.reset());
   const chat = document.getElementById('chat');
   function observeChat() {
     if (chat && !destroyed) observer?.observe(chat, { childList: true, characterData: true, subtree: true });
@@ -599,12 +720,13 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     channel = new BroadcastChannel(`linghuashi-chat:${account}`);
     channel.onmessage = scheduledRender;
   }
-  void reconcile();
+  void reconcileSafely();
   const syncTimer = setInterval(() => {
     if (settings().enabled && document.visibilityState === 'visible') scheduledRender();
   }, 15000);
   return {
     receive,
+    read: (action, data, signal) => reader.receive(action, data, signal),
     async prepareExternal({ chat, taskId, storageLocation }) {
       await ready;
       const context = getContext(), options = settings();
@@ -636,6 +758,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     refresh: scheduledRender,
     destroy() {
       destroyed = true; revision++; clearTimeout(renderTimer); clearInterval(syncTimer); observer?.disconnect(); removeCards();
+      reader.destroy();
       dialogSession?.controller.abort();
       channel?.close(); store?.close();
       for (const [type, handler] of listeners) context.eventSource.removeListener(type, handler);

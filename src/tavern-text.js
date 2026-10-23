@@ -1,6 +1,7 @@
 import { assistantModelNames } from './prompt-assistant.js';
 import { withRequestTimeout } from './request-timeout.js';
 import { hostEnvironment } from './host-compat.js';
+import { assistantResponseParameters, extractAssistantResponse } from './assistant-response.js';
 
 const STATUS_SOURCES = new Set(['openai', 'openrouter', 'mistralai', 'custom', 'cohere', 'chutes',
   'electronhub', 'nanogpt', 'deepseek', 'xai', 'aimlapi', 'pollinations', 'groq', 'moonshot',
@@ -60,13 +61,34 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
     return { models: list, current, source, signature: before, message };
   }
 
-  async function generate(messages, options, signal) {
+  async function generate(messages, options, signal, { onExecution } = {}) {
+    signal?.throwIfAborted();
     const context = getContext();
-    if (!options.tavernModel.trim()) {
+    const execution = (value) => { try { onExecution?.(value); } catch {} };
+    if (!options.tavernModel.trim() && !['tool', 'json'].includes(options.responseMode)) {
+      if (onExecution) {
+        let api = {};
+        if (context.mainApi === 'openai' && !context.getChatCompletionModel) {
+          try { api = await loadAPI(); } catch {}
+        }
+        const settings = context.chatCompletionSettings || api.oai_settings || {};
+        execution({ model: (context.getChatCompletionModel || api.getChatCompletionModel)?.(settings) || '',
+          source: settings.chat_completion_source || context.mainApi || '', route: 'native' });
+      }
+      signal?.throwIfAborted();
+      const request = { prompt: messages, responseLength: options.maxTokens, trimNames: false, quietToLoud: false };
+      if (context.mainApi === 'openai' && typeof context.generateRawData === 'function'
+        && typeof context.extractMessageFromData === 'function') {
+        // Utility JSON must not pass through chat display cleanup and regex replacements.
+        const data = await context.generateRawData(request);
+        signal?.throwIfAborted();
+        if (data?.choices || data?.output_text || data?.output) return extractAssistantResponse(data);
+        return context.extractMessageFromData(data, 'openai');
+      }
       if (typeof context.generateRaw !== 'function') throw new Error('当前酒馆不支持跟随文字模型，请改用独立 API');
-      return context.generateRaw({ prompt: messages, responseLength: options.maxTokens, trimNames: false, quietToLoud: false });
+      return context.generateRaw(request);
     }
-    if (context.mainApi !== 'openai') throw new Error('独立选模需要酒馆使用聊天补全接口');
+    if (context.mainApi !== 'openai') throw new Error('独立选模与结构化返回需要酒馆使用聊天补全接口');
     const api = await loadAPI();
     if (typeof api.createGenerationParameters !== 'function') throw new Error('当前酒馆版本不支持助手独立选模');
     signal?.throwIfAborted();
@@ -74,20 +96,28 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
     const settings = structuredClone(context.chatCompletionSettings || api.oai_settings);
     settings.openai_max_tokens = options.maxTokens;
     settings.request_images = false;
-    const { generate_data } = await api.createGenerationParameters(settings, options.tavernModel.trim(), 'quiet', structuredClone(messages));
-    const body = { ...generate_data, model: options.tavernModel.trim(), stream: false };
+    const model = options.tavernModel.trim() || (context.getChatCompletionModel || api.getChatCompletionModel)?.(settings);
+    if (!model) throw new Error('无法读取酒馆当前模型，请选择助手文字模型后重试');
+    execution({ model, source: settings.chat_completion_source, route: 'tavern-backend' });
+    const { generate_data } = await api.createGenerationParameters(settings, model, 'quiet', structuredClone(messages));
+    const body = { ...generate_data, model, stream: false };
     delete body.tools;
     delete body.tool_choice;
+    Object.assign(body, assistantResponseParameters(options.responseMode));
+    // Tavern's backend exposes JSON mode through its json_schema parameter.
+    if (options.responseMode === 'json') body.json_schema = { name: 'linghuashi_result', strict: false, value: { type: 'object' } };
     signal?.throwIfAborted();
     const data = await withRequestTimeout(signal, options.timeout * 1000, '酒馆文字请求超时，请手动重试', async (requestSignal) => {
       const response = await fetcher('/api/backends/chat-completions/generate', {
         method: 'POST', headers: context.getRequestHeaders(), credentials: 'same-origin', cache: 'no-store',
         body: JSON.stringify(body), signal: requestSignal,
       });
+      execution({ httpStatus: response.status });
       if (!response.ok) throw new Error(`酒馆文字请求失败（${response.status}）`);
       return response.json();
     });
     if (data.error) throw new Error('酒馆文字接口返回错误，请检查模型权限');
+    if (options.responseMode === 'tool' || data?.choices || data?.output_text || data?.output) return extractAssistantResponse(data);
     const content = typeof api.getStreamingReply === 'function'
       ? api.getStreamingReply(data, {}, { chatCompletionSource: settings.chat_completion_source, overrideShowThoughts: false })
       : data.choices?.[0]?.message?.content;
