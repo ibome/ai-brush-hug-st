@@ -1,3 +1,5 @@
+import { canRecoverGeneration } from './generation-recovery.js';
+
 export const START_GOALS = Object.freeze([
   ['manual', '手动生图', 'image-plus'],
   ['chat', '聊天自动配图', 'messages-square'],
@@ -97,14 +99,14 @@ export function guideStepComplete(row) {
 }
 
 export function failureActions({ scope = 'image', message = '', phase = '', execution = false,
-  saved = false, status: taskStatus = '', stage = '' } = {}) {
+  saved = false, status: taskStatus = '', stage = '', diagnostic } = {}) {
   if (scope === 'assistant') return [
     ...(/JSON|解析|格式|截断|回复|工具|分镜/.test(message) ? ['assistant-response'] : []),
     'assistant-config', 'assistant-network', 'assistant-diagnostic',
   ];
   const storage = /存储|保存|缓存|配额|磁盘|数据库|图库|缩略图/.test(message)
     || ['saving', 'refreshing', 'response-cache', 'image-processing'].includes(phase);
-  const recoverable = !['running', 'queued', 'completed', 'cancelled'].includes(taskStatus) && (execution || stage === 'waiting');
+  const recoverable = canRecoverGeneration({ status: taskStatus, stage, execution, error: message, diagnostic });
   return [...(recoverable ? ['task-retry'] : []), ...(saved ? ['gallery'] : []),
     ...(storage ? ['storage-check', 'storage-settings', 'backup-settings']
       : /网络|连接|跨域|超时|fetch|HTTPS/i.test(message) ? ['image-network', 'connection'] : ['connection']),

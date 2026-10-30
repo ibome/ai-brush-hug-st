@@ -1,4 +1,5 @@
 import { randomUUID, sha256Hex } from './crypto-compat.js';
+import { canRecoverGeneration } from './generation-recovery.js';
 export const EXTENSION_API_VERSION = 1;
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const identifier = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -90,8 +91,7 @@ export function publicExtensionTask(job) {
     error: String(job.error || '').replace(/\b(?:pst-|sk-|STD-)[A-Za-z0-9_-]+/g, '[已隐藏]').slice(0, 500),
     cancellable: ['queued', 'running', 'paused', 'uncertain', 'failed'].includes(job.status)
       && !(job.status === 'running' && job.phase === 'saving'),
-    recoverable: ['failed', 'paused', 'uncertain'].includes(job.status)
-      && (Boolean(job.execution) || job.stage === 'waiting') };
+    recoverable: canRecoverGeneration(job) };
   const progress = job.progress;
   if (progress && Number.isFinite(progress.value) && Number.isFinite(progress.max)
     && progress.value >= 0 && progress.max > 0) task.progress = {

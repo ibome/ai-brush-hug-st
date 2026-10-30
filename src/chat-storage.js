@@ -1,5 +1,6 @@
 import { serverDrawing } from './server-storage.js';
 import { currentDrawing, groupVersions, selectVersion } from '../server/linghuashi-storage/image-versions.mjs';
+import { canRecoverGeneration } from './generation-recovery.js';
 
 const requestResult = (request) => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
@@ -106,7 +107,7 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
       status: queuedHere ? 'queued' : ['paused', 'uncertain'].includes(task.status) ? 'failed' : task.status,
       phase: task.phase, updatedAt: task.updatedAt,
       error: queuedHere ? '' : task.status === 'paused' ? '任务已恢复，等待手动继续' : task.error,
-      recoverable: ['paused', 'failed'].includes(task.status) && (Boolean(task.execution) || task.stage === 'waiting'),
+      recoverable: canRecoverGeneration(task),
       assistant: row?.assistant || task.plan.snapshot?.assistant,
       savedIds: [...new Set([...(row?.savedIds || []), ...task.savedIds])] };
   };

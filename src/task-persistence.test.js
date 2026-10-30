@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { createTaskLedger, LEASE_MS } from '../server/linghuashi-storage/task-ledger.mjs';
 import { TaskPersistence } from './task-persistence.js';
-import { GenerationQueue, submitGeneration, downloadResults, wait } from './generation.js';
+import { GenerationQueue, GenerationError, submitGeneration, downloadResults, wait } from './generation.js';
+import { canRecoverGeneration } from './generation-recovery.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRXYAAAAASUVORK5CYII=', 'base64');
 const settings = { enabled: true, generationMode: 'queue', concurrency: 2, queueInterval: 0 };
@@ -91,6 +92,30 @@ test('accepted image response restores in a fresh queue and recovery does not PO
   await eventually(() => next.jobs[0].status === 'completed' && next.running === 0);
   assert.equal(posts, 1);
   assert.equal((await second.list()).rows[0].status, 'completed');
+});
+
+test('legacy invalid responses stay nonrecoverable after reload without losing the original task', async () => {
+  const f = fixture(), persistence = f.persistence(), current = plan(), record = await persistence.create(current);
+  let posts = 0;
+  const queue = new GenerationQueue({
+    settings: () => settings, persistence,
+    run: async (job) => {
+      await submitGeneration(job, async () => { posts++; return new Response('{"error":"wrong address"}'); });
+      throw new GenerationError('接口没有返回可用图片；不支持异步任务式图片响应');
+    },
+  });
+  const failed = queue.add(current, { id: record.id });
+  await eventually(() => failed.status === 'failed' && queue.running === 0);
+  const rows = (await persistence.list()).rows;
+  assert.ok(rows[0].execution);
+  assert.equal(canRecoverGeneration(rows[0]), false);
+  const restored = new GenerationQueue({ settings: () => settings, persistence: f.persistence(),
+    run: () => assert.fail('An invalid cached response must not be retried') });
+  restored.restore(rows);
+  restored.retry(record.id);
+  assert.equal(restored.jobs[0].status, 'failed');
+  assert.equal(posts, 1);
+  assert.equal((await persistence.list()).rows[0].id, record.id);
 });
 
 test('unsubmitted records restore paused and do not generate until manually resumed', async () => {

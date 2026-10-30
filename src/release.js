@@ -1,6 +1,6 @@
 export const RELEASE = Object.freeze({
-  version: '0.26.0',
-  build: '20261024-comic-assistant-release',
+  version: '0.26.1',
+  build: '20261030-chat-regeneration-fix',
   repository: 'ibome/ai-brush-hug-st',
   url: 'https://github.com/ibome/ai-brush-hug-st',
   storageProtocol: 2,

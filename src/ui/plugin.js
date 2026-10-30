@@ -100,6 +100,7 @@ import { renderGenerationTransition } from './generation-transition.js';
 import '../styles/generation-transition.css';
 import { createFloatingMenu } from './floating-menu.js';
 import { GenerationQueue, GenerationError, buildNovelAIRequest, submitGeneration, downloadResults, cancelComfyPending } from '../generation.js';
+import { canRecoverGeneration } from '../generation-recovery.js';
 import { TaskPersistence, createBrowserTaskRequest } from '../task-persistence.js';
 import '../styles/tasks.css';
 import { validBinding } from '../chat.js';
@@ -1217,7 +1218,7 @@ async function guideAction(action, buttonNode) {
   if (action === 'task-records') { if (state.page !== 'generate') openWorkflowPage('generate'); revealSetting('.generation-tasks'); return; }
   if (action === 'task-retry') {
     const job = taskQueue.jobs.find((row) => row.id === buttonNode?.dataset.guideTask);
-    if (!job || !failureActions({ ...job, phase: job.failurePhase || job.phase }).includes('task-retry')) {
+    if (!job || !failureActions({ ...job, message: job.error, phase: job.failurePhase || job.phase }).includes('task-retry')) {
       toast('请在任务记录核对当前状态'); return;
     }
     await libraryReady; activeJobId = job.id; generationIssue = ''; taskQueue.retry(job.id); return;
@@ -1914,7 +1915,7 @@ function updateTriggerFormat() {
 
 function resultMedia(chat = false) {
   const job = taskQueue.jobs.find((item) => item.id === activeJobId);
-  if (runtimeState === 'error') return `<div class="result-placeholder result-error">${chibi('sad', 'status-mascot')}<strong>${job?.saved ? '图片已保存，图库刷新失败' : job?.execution ? '图片任务需要继续处理' : '生成未完成'}</strong><span>${esc(job?.error || '服务暂时没有响应')}</span>${renderFailureActions(failureActions({ ...job,
+  if (runtimeState === 'error') return `<div class="result-placeholder result-error">${chibi('sad', 'status-mascot')}<strong>${job?.saved ? '图片已保存，图库刷新失败' : job && canRecoverGeneration(job) ? '图片任务需要继续处理' : '生成未完成'}</strong><span>${esc(job?.error || '服务暂时没有响应')}</span>${renderFailureActions(failureActions({ ...job,
     message: job?.error, phase: job?.failurePhase || job?.phase }), job?.id)}</div>`;
   if (runtimeState === 'queued' || runtimeState === 'generating') {
     const previous = activeDrawing();
@@ -1967,7 +1968,7 @@ function renderTasks() {
     ${taskQueue.jobs.length ? `<div class="task-list">${[...taskQueue.jobs].reverse().map((job) => `<div class="task-row">
       <div><strong>${job.plan.snapshot?.novelaiProcessing ? `${esc(processingTitle(job.plan.snapshot.novelaiProcessing))} · ` : ''}${esc(job.plan.model)}</strong><span>${labels[job.status]}${job.remote ? ' · 其他页面执行中' : ''} · ${esc(job.error || taskPhase(job.phase))}${job.imageCount ? ` · ${job.imageCount} 张` : ''}</span><span>${job.plan.snapshot?.extensionRequest ? `来自 ${esc(job.plan.snapshot.extensionRequest.source.name)} · ` : ''}${job.plan.storageLocation === 'server' ? '酒馆服务器' : '浏览器图片库'} · ${new Date(job.createdAt).toLocaleString()}</span></div>
       ${job.finishedAt && job.startedAt ? `<span class="task-duration">${((job.finishedAt - job.startedAt) / 1000).toFixed(1)} 秒</span>` : ''}
-      <div class="task-actions">${(['failed', 'paused'].includes(job.status) || job.status === 'uncertain' && job.execution) && (job.execution || job.stage === 'waiting') ? iconButton(job.execution ? 'download' : 'play', job.execution ? '继续取图或保存' : '继续提交此任务', 'task-retry', `data-task="${job.id}"`) : ''}
+      <div class="task-actions">${canRecoverGeneration(job) ? iconButton(job.execution ? 'download' : 'play', job.execution ? '继续取图或保存' : '继续提交此任务', 'task-retry', `data-task="${job.id}"`) : ''}
       ${iconButton('sliders-horizontal', '载入此任务的参数', 'task-parameters', `data-task="${job.id}"`)}
       ${['queued', 'running', 'paused', 'failed', 'uncertain'].includes(job.status) ? iconButton('x', job.status === 'uncertain' ? '关闭记录' : '取消此任务', 'task-cancel', `data-task="${job.id}" ${job.phase === 'saving' && job.status === 'running' ? 'disabled' : ''}`) : ''}</div>
     </div>`).join('')}</div>` : '<p class="task-empty">暂无请求</p>'}</section>`;
@@ -3839,7 +3840,7 @@ function reportChatTask(job) {
     status: ['paused', 'uncertain'].includes(job.status) ? 'failed' : job.status, phase: job.phase,
     progress: job.progress,
     error: job.status === 'paused' ? '任务已恢复，等待手动继续' : job.error || '',
-    recoverable: ['paused', 'failed'].includes(job.status) && (Boolean(job.execution) || job.stage === 'waiting'),
+    recoverable: canRecoverGeneration(job),
     savedIds: job.savedIds || [],
     ...(request.quickImage ? { imageId: job.plan.imageEdit.parentId, id: job.id, execution: Boolean(job.execution) } : {}),
   };

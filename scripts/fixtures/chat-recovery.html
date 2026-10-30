@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>聊天失败配图恢复回归</title>
+<style>
+  body { margin:24px auto; padding:0 20px; max-width:900px; font:15px/1.6 system-ui; color:#293b56; background:#f7f9fc; }
+  h1 { font-size:22px; } label { display:block; margin:12px 0; } input { width:100%; box-sizing:border-box; padding:8px; }
+  .mes { padding:16px 0; border-bottom:1px solid #d5dce6; } .mes_name { font-weight:600; }
+  output { display:block; white-space:pre-wrap; } button { cursor:pointer; } #notice { color:#9b3333; }
+</style>
+<h1>聊天失败配图恢复回归</h1>
+<p>隔离的本地模拟接口，不访问真实服务。刷新页面保留失败记录。</p>
+<label>当前接口地址<input id="endpoint" value="https://corrected.example/v1/images/generations"></label>
+<label>测试令牌<input id="key" value="corrected-fixture-key"></label>
+<div id="chat"></div>
+<p id="notice" role="status"></p>
+<h2>请求记录</h2>
+<output id="calls">尚无新请求</output>
+<script type="module">
+  import { createChatLink } from '../../src/chat-link.js';
+  import { openChatStore } from '../../src/chat-storage.js';
+  import { bindImageSlots, bindSmartSlot } from '../../src/chat.js';
+  import { GenerationQueue, submitGeneration, downloadResults } from '../../src/generation.js';
+  import { canRecoverGeneration } from '../../src/generation-recovery.js';
+  const account = `fixture-chat-recovery-v1:${new URLSearchParams(location.search).get('run') || 'default'}`;
+  const messages = [
+    { mes:'旧地址失败的配图：image###a quiet lake, moonlight###', name:'标签配图', send_date:'fixture-tags', swipe_id:0 },
+    { mes:'她在月光下的湖畔停下脚步。', name:'智能配图', send_date:'fixture-smart', swipe_id:0 },
+  ];
+  const context = { chat:messages, chatId:'recovery-regression', characterId:0, characters:[{ avatar:'fixture.png' }],
+    eventTypes:{}, eventSource:{ on() {}, removeListener() {} } };
+  const settings = { enabled:true, auto:false, inline:true, cacheLocation:'browser', characterTheme:'deepseek',
+    triggerPrefix:'image###', triggerSuffix:'###', assistant:{ autoPrompt:false } };
+  for (const [index, message] of messages.entries()) {
+    const node = document.createElement('article'); node.className = 'mes'; node.setAttribute('mesid', String(index));
+    node.innerHTML = '<div class="mes_block"><div class="mes_name"></div><div class="mes_text"></div><div class="mes_buttons"></div></div>';
+    node.querySelector('.mes_name').textContent = message.name;
+    node.querySelector('.mes_text').textContent = message.mes;
+    document.querySelector('#chat').append(node);
+  }
+  const store = await openChatStore(account);
+  const slots = [(await bindImageSlots(context, messages[0]))[0], await bindSmartSlot(context, messages[1])];
+  for (const [index, slot] of slots.entries()) {
+    if (await store.get(slot.binding.id)) continue;
+    const requestId = crypto.randomUUID();
+    await store.reserve(slot.binding, requestId, false);
+    await store.update(slot.binding.id, requestId, { status:'failed', recoverable:true,
+      error:'接口没有返回可用图片；不支持异步任务式图片响应',
+      ...(index ? { assistant:{ shouldDraw:true, scene:'月光湖畔', positive:'a girl beside a moonlit lake',
+        negative:'blurry', characters:[] } } : {}) });
+  }
+  store.close();
+  let link;
+  const calls = [];
+  const bindings = new Map();
+  const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRXYAAAAASUVORK5CYII='), c => c.charCodeAt(0));
+  const queue = new GenerationQueue({ settings:() => ({ enabled:true, generationMode:'queue', queueInterval:0 }),
+    changed() {
+      for (const job of queue.jobs) {
+        void link.receive({ type:'linghuashi:chat-task', requestId:job.plan.chatRequestId,
+          binding:bindings.get(job.plan.chatRequestId), status:job.status, phase:job.phase,
+          error:job.error || '', recoverable:canRecoverGeneration(job) });
+      }
+    },
+    async run(job) {
+      await submitGeneration(job, async (url, options) => {
+        calls.push({ url, authorization:options.headers.Authorization,
+          prompt:JSON.parse(options.body).prompt, requestId:job.plan.chatRequestId });
+        document.querySelector('#calls').textContent = JSON.stringify(calls, null, 2);
+        return new Response(png);
+      });
+      await downloadResults(job);
+    },
+  });
+  link = createChatLink({ account, getContext:() => context, settings:() => settings,
+    notice(message) { document.querySelector('#notice').textContent = message; }, open() {},
+    send(type, data) {
+      if (type === 'linghuashi:chat-assistant-open') {
+        const edit = document.createElement('button'); edit.textContent = '采用编辑后的提示词';
+        edit.onclick = () => { edit.remove(); void link.receive({ type:'linghuashi:chat-draft-submit', ...data,
+          plan:{ ...data.plan, positive:'edited moonlit lake' } }); };
+        document.querySelector('#notice').replaceChildren(edit);
+        return;
+      }
+      if (!['linghuashi:chat-generate', 'linghuashi:chat-draft-generate'].includes(type)) {
+        document.querySelector('#notice').textContent = `意外的命令：${type}`; return;
+      }
+      bindings.set(data.requestId, data.binding);
+      queue.add({ provider:'openai', url:document.querySelector('#endpoint').value,
+        headers:{ Authorization:`Bearer ${document.querySelector('#key').value}` }, timeout:5,
+        body:{ prompt:data.plan?.positive || data.prompt }, chatRequestId:data.requestId });
+    },
+  });
+  window.addEventListener('pagehide', () => link.destroy(), { once:true });
+</script>
+</html>

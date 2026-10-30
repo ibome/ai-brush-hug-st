@@ -2,6 +2,7 @@ import { randomUUID } from './crypto-compat.js';
 import { rememberGenerationFailure } from './debug-errors.js';
 import JSZip from 'jszip';
 import { sdwebuiImages, watchSDWebUIProgress } from './sdwebui.js';
+import { canRecoverGeneration, INVALID_IMAGE_RESPONSE } from './generation-recovery.js';
 
 const MAX_IMAGE = 20 * 1024 * 1024;
 const MAX_RESPONSE = 200 * 1024 * 1024;
@@ -9,13 +10,19 @@ const ACTIVE = new Set(['queued', 'running']);
 const abortError = () => new DOMException('任务已取消', 'AbortError');
 
 export class GenerationError extends Error {
-  constructor(message, { status = 0, cooldown = 0 } = {}) {
+  constructor(message, { status = 0, cooldown = 0, code = '' } = {}) {
     super(message);
     this.name = 'GenerationError';
     this.status = status;
     this.cooldown = cooldown;
+    this.code = code;
   }
 }
+
+const invalidImageResponse = (message) => new GenerationError(
+  `接口未返回可用图片：${message}。请检查接口地址和返回格式，修正后重新生成`,
+  { code: INVALID_IMAGE_RESPONSE },
+);
 
 export function imageType(bytes) {
   if (bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) return 'image/png';
@@ -270,8 +277,15 @@ export async function imageDescriptors(bytes) {
 
 export async function downloadResults(job, fetcher = fetch) {
   if (job.images) return job.images;
-  const descriptors = job.plan.provider === 'comfyui' ? await comfyResults(job, fetcher)
-    : job.plan.provider === 'sdwebui' ? sdwebuiImages(job.execution.bytes) : await imageDescriptors(job.execution.bytes);
+  let descriptors;
+  if (job.plan.provider === 'comfyui') descriptors = await comfyResults(job, fetcher);
+  else {
+    try {
+      descriptors = job.plan.provider === 'sdwebui' ? sdwebuiImages(job.execution.bytes) : await imageDescriptors(job.execution.bytes);
+    } catch (error) {
+      throw invalidImageResponse(error instanceof GenerationError ? error.message : '图片响应格式无效');
+    }
+  }
   job.phase = 'downloading';
   job.notify?.();
   const images = [];
@@ -281,14 +295,14 @@ export async function downloadResults(job, fetcher = fetch) {
     let bytes = descriptor.bytes;
     if (descriptor.base64) {
       descriptor.base64 = descriptor.base64.replace(/^data:image\/(?:png|jpeg|webp);base64,/, '');
-      if (descriptor.base64.length > MAX_IMAGE * 1.4) throw new GenerationError('单张图片超过 20 MB');
+      if (descriptor.base64.length > MAX_IMAGE * 1.4) throw invalidImageResponse('单张图片超过 20 MB');
       try { bytes = Uint8Array.from(atob(descriptor.base64), (char) => char.charCodeAt(0)); }
-      catch { throw new GenerationError('图片 Base64 内容无效'); }
+      catch { throw invalidImageResponse('图片 Base64 内容无效'); }
     } else if (descriptor.url) {
       let url;
-      try { url = new URL(descriptor.url); } catch { throw new GenerationError('服务返回的图片地址无效'); }
+      try { url = new URL(descriptor.url); } catch { throw invalidImageResponse('服务返回的图片地址无效'); }
       if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
-        throw new GenerationError('服务返回的图片地址不可使用');
+        throw invalidImageResponse('服务返回的图片地址不可使用');
       }
       // Signed/CDN image URLs never receive the API key.
       const response = await request(job, url.href, {
@@ -299,7 +313,13 @@ export async function downloadResults(job, fetcher = fetch) {
     if (!bytes?.length || bytes.length > MAX_IMAGE || (total += bytes.length) > MAX_RESPONSE) {
       throw new GenerationError('生成图片为空或超过存储大小限制');
     }
-    images.push({ blob: new Blob([bytes], { type: imageType(bytes) }), seed: descriptor.seed, model: descriptor.model,
+    let type;
+    try { type = imageType(bytes); }
+    catch (error) {
+      if (descriptor.url) throw error;
+      throw invalidImageResponse(error.message);
+    }
+    images.push({ blob: new Blob([bytes], { type }), seed: descriptor.seed, model: descriptor.model,
       ...(descriptor.filename ? { filename: descriptor.filename } : {}) });
   }
   job.images = images;
@@ -386,8 +406,7 @@ export class GenerationQueue {
 
   retry(id) {
     const job = this.jobs.find((item) => item.id === id);
-    if (!job || (!['failed', 'paused'].includes(job.status) && !(job.status === 'uncertain' && job.execution))
-      || (!job.execution && job.stage !== 'waiting')) return;
+    if (!job || !canRecoverGeneration(job)) return;
     job.status = 'queued'; job.phase = 'waiting'; job.error = '';
     job.controller = new AbortController();
     this.changed(); this.pump();

@@ -199,6 +199,11 @@ test('public progress omits fabricated percentages and removes credential-like e
   assert.deepEqual(publicExtensionTask(job).progress, { value: 2, max: 10, node: '3' });
   assert.equal(publicExtensionTask(job).error, '[已隐藏]');
   job.progress.max = Infinity; assert.equal(publicExtensionTask(job).progress, undefined);
+  job.status = 'failed'; job.execution = { size: 100 };
+  job.error = '接口没有返回可用图片；不支持异步任务式图片响应';
+  assert.equal(publicExtensionTask(job).recoverable, false);
+  job.error = '保存失败';
+  assert.equal(publicExtensionTask(job).recoverable, true);
 });
 
 function bridgeFixture(f = fixture(), timeout = 1000) {

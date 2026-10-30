@@ -1,3 +1,5 @@
+import { INVALID_IMAGE_RESPONSE } from './generation-recovery.js';
+
 const recent = [];
 const PHASES = {
   preparing: '准备参考素材', submitting: '提交生图', retrieving: '取回图片',
@@ -43,6 +45,8 @@ export function classifyGenerationFailure(error, job, trustedMessage = false) {
     message = status === 413 ? '酒馆拒绝图片上传：请求超过服务器或反向代理大小限制，请联系管理员调整'
       : status === 401 || status === 403 ? '酒馆图片存储访问被拒绝，请核对登录状态、账号权限或服务器插件授权'
         : `酒馆存储请求失败${status ? `（HTTP ${status}）` : ''}，请到调试工具检测并复制日志`;
+  } else if (trustedMessage && error?.code === INVALID_IMAGE_RESPONSE) {
+    code = INVALID_IMAGE_RESPONSE; message = raw;
   } else if (trustedMessage) {
     code = status ? 'GENERATION_HTTP' : 'GENERATION_REJECTED'; message = raw;
   } else if (name === 'TypeError') {

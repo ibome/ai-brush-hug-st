@@ -13,6 +13,7 @@ import { renderGenerationTransition, transitionCSS } from './ui/generation-trans
 import { generationTransitionState } from './generation-transition.js';
 import { apiError } from './extension-api.js';
 import { createChatReader } from './chat-reader.js';
+import { canRecoverGeneration, unusableGenerationResponse } from './generation-recovery.js';
 
 const labels = {
   preparing: '准备生图', confirming: '等待确认提示词', queued: '排队中', running: '正在生图',
@@ -314,15 +315,17 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     };
     if (pending && !owned && record?.taskId) command('查看任务', 'list-checks', () => open('generate'));
     else if (pending && owned) command('取消', 'x', () => send('linghuashi:chat-cancel', { requestId: record.requestId }), record.phase === 'saving');
-    else if (record?.status === 'failed' && record.recoverable) {
-      command('继续取图', 'download', () => send('linghuashi:chat-recover', { requestId: record.requestId }));
-    } else if (smart && record?.assistant?.shouldDraw && record.status === 'drafted') {
-      command('编辑提示词', 'pencil', () => openDraft(entry));
-      command('生成图片', 'sparkles', () => generateDraft(entry));
-    } else if (record?.status !== 'completed') {
-      if (smart) command(record ? '重新分析' : '给这条配图', 'sparkles', () => { entry.openEditor = true; void request(entry, false); });
-      else
-      command(pending ? '核对后重试' : record ? '重新生成' : '生成图片', 'sparkles', () => { void request(entry, false); });
+    else {
+      if (record?.status === 'failed' && record.recoverable && !unusableGenerationResponse(record)) {
+        command('继续取图', 'download', () => send('linghuashi:chat-recover', { requestId: record.requestId }));
+      }
+      if (smart && record?.assistant?.shouldDraw && ['drafted', 'failed'].includes(record.status)) {
+        command('编辑提示词', 'pencil', () => openDraft(entry));
+        command(record.status === 'failed' ? '重新生成' : '生成图片', 'sparkles', () => generateDraft(entry));
+      } else if (record?.status !== 'completed') {
+        if (smart) command(record ? '重新分析' : '给这条配图', 'sparkles', () => { entry.openEditor = true; void request(entry, false); });
+        else command(pending ? '核对后重试' : record ? '重新生成' : '生成图片', 'sparkles', () => { void request(entry, false); });
+      }
     }
     if (record?.assistant?.reason && !record.error) {
       const explanation = document.createElement('p');
@@ -373,9 +376,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           const savedTask = store.imageTask(entry.binding.id, groupId, record.storageLocation);
           const task = active?.record || (savedTask && { ...savedTask, requestId: savedTask.plan.chatRequestId,
             remote: savedTask.status === 'running',
-            recoverable: ['paused', 'failed', 'uncertain'].includes(savedTask.status) && (Boolean(savedTask.execution) || savedTask.stage === 'waiting') });
+            recoverable: canRecoverGeneration(savedTask) });
           const taskPending = Boolean(active || savedTask && ['running', 'paused'].includes(savedTask.status)
-            || savedTask?.status === 'uncertain' || savedTask?.execution && savedTask.status === 'failed');
+            || savedTask?.status === 'uncertain' || savedTask?.execution && canRecoverGeneration(savedTask));
           appendImageTools({ container: picture, row, versions, task, pending: taskPending || pending, theme: options.characterTheme,
             onAction: (action) => { void imageAction(entry, row, action, task); },
             onVersion: (versionId) => { void selectImageVersion(entry, row, versionId); } });
@@ -503,9 +506,11 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (!lock || destroyed || !isCurrent(entry)) return;
       await store.sync(entry.binding.chatKey);
       const previous = store.imageTask(entry.binding.id, groupId, row.storageLocation);
-      if (previous && (['running', 'paused', 'uncertain'].includes(previous.status) || previous.status === 'failed' && previous.execution)) {
+      if (previous && (['running', 'paused', 'uncertain'].includes(previous.status) || previous.status === 'failed' && canRecoverGeneration(previous))) {
         notice('这张图已有待处理任务，请先继续或取消原任务'); scheduledRender(); return;
       }
+      if (previous?.status === 'failed'
+        && !window.confirm('将使用当前接口配置重新提交生图请求，可能再次计费。是否继续？')) return;
       const latest = (await store.versions(row.id, row.storageLocation)).find((item) => item.id === row.id);
       if (!latest || !chatImageBelongsTo(latest, entry.binding) || !isCurrent(entry)) return;
       const requestId = randomUUID();
@@ -535,11 +540,14 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (!lock && navigator.locks) { notice('这个配图任务已在其他标签页运行'); return; }
       const previous = await store.get(entry.binding.id);
       if (previous && automatic && !draftPlan) return;
-      if (draftPlan && previous?.status !== 'drafted') { notice('配图草稿已变化，请刷新消息后重试'); return; }
+      if (draftPlan && (!['drafted', 'failed'].includes(previous?.status) || previous.requestId !== entry.record?.requestId)) {
+        notice('配图草稿已变化，请刷新消息后重试'); return;
+      }
       if (previous && (!navigator.locks && CHAT_PENDING.has(previous.status))) {
         notice('任务记录待核对，请先检查服务端任务'); return;
       }
-      if (previous && !draftPlan && !window.confirm('这张配图有任务记录。请先核对服务端是否已经生成；继续会重新提交生图请求，可能再次计费。')) return;
+      if (previous && (!draftPlan || previous.status !== 'drafted')
+        && !window.confirm('这张配图有任务记录。请先核对服务端是否已经生成；继续会使用当前接口配置重新提交生图请求，可能再次计费。')) return;
       const requestId = randomUUID();
       const record = await store.reserve(entry.binding, requestId, Boolean(previous));
       if (!record) return;
@@ -621,16 +629,20 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (data.illustrationIndex > 0 && entry.binding.kind === 'smart' && entry.binding.slot === 0) {
         const child = await bindSmartSlot(getContext(), entry.message, data.illustrationIndex);
         const target = child && entries.get(child.binding.id);
-        if (!target || !isCurrent(target) || target.record?.status !== 'drafted') {
+        if (!target || !isCurrent(target) || !['drafted', 'failed'].includes(target.record?.status)) {
           notice('这张配图已变化或正在生成，请在聊天中核对'); return;
         }
-        await updateRecord({ ...target, requestId: target.record.requestId }, { status: 'drafted', assistant: data.plan });
+        await updateRecord({ ...target, requestId: target.record.requestId }, {
+          status: target.record.status === 'failed' ? 'failed' : 'drafted', assistant: data.plan,
+        });
         void request(target, false, data.plan); return;
       }
-      if (!isCurrent(entry) || !['drafted', 'skipped'].includes(entry.record?.status)) {
+      if (!isCurrent(entry) || !['drafted', 'skipped', 'failed'].includes(entry.record?.status)) {
         notice('原消息或草稿状态已变化，请在消息上重新操作'); return;
       }
-      await updateRecord(entry, { status: 'drafted', assistant: data.plan, savedIds: [] });
+      await updateRecord({ ...entry, requestId: entry.record.requestId }, {
+        status: entry.record.status === 'failed' ? 'failed' : 'drafted', assistant: data.plan, savedIds: [],
+      });
       if (data.allIllustrations) await prepareSmartChildren(entry, data.plan, { start: true });
       void request(entry, false, data.plan);
       return;

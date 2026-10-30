@@ -5,6 +5,7 @@ import {
   GenerationQueue, GenerationError, submitGeneration, downloadResults,
   buildNovelAIRequest, imageDescriptors, readLimited, cancelComfyPending, wait,
 } from './generation.js';
+import { canRecoverGeneration, INVALID_IMAGE_RESPONSE } from './generation-recovery.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRXYAAAAASUVORK5CYII=', 'base64');
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), {
@@ -91,6 +92,58 @@ test('CDN download receives no API key, and recovery never resubmits', async () 
   assert.equal((await downloadResults(current, fetcher)).length, 1);
   assert.equal(posts, 1);
   assert.equal(downloads, 2);
+});
+
+test('wrong endpoint JSON cannot loop in recovery; a new task uses the corrected connection', async () => {
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push({ url, authorization: options.headers.Authorization, prompt: JSON.parse(options.body).prompt });
+    return url.includes('/wrong/')
+      ? json({ error: 'Not an image endpoint; secret must not reach diagnostics' })
+      : json({ data: [{ b64_json: png.toString('base64') }] });
+  };
+  const queue = new GenerationQueue({
+    settings: () => ({ enabled: true, generationMode: 'queue', queueInterval: 0 }),
+    run: async (current) => {
+      await submitGeneration(current, fetcher);
+      await downloadResults(current, fetcher);
+    },
+  });
+  const original = job().plan;
+  original.url = 'https://api.example/wrong/images/generations';
+  const failed = queue.add({ ...original, timeout: 5 });
+  await eventually(() => failed.status === 'failed' && queue.running === 0);
+  assert.equal(failed.diagnostic.code, INVALID_IMAGE_RESPONSE);
+  assert.ok(!failed.error.includes('secret must not'));
+  assert.equal(canRecoverGeneration(failed), false);
+  queue.retry(failed.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.attempts, 1);
+  const corrected = queue.add({ ...original, url: 'https://corrected.example/v1/images/generations',
+    headers: { Authorization: 'Bearer corrected-key' }, timeout: 5 });
+  await eventually(() => corrected.status === 'completed' && queue.running === 0);
+  assert.notEqual(corrected.id, failed.id);
+  assert.deepEqual(calls, [
+    { url: original.url, authorization: 'Bearer test-secret', prompt: 'lake' },
+    { url: 'https://corrected.example/v1/images/generations', authorization: 'Bearer corrected-key', prompt: 'lake' },
+  ]);
+});
+
+test('unusable embedded image data is classified separately from a temporary CDN response', async () => {
+  for (const body of [
+    { data: [{ b64_json: '%%%invalid%%%' }] },
+    { data: [{ b64_json: btoa('not an image') }] },
+    { data: [{ url: 'data:text/html,invalid' }] },
+  ]) {
+    const current = job();
+    await submitGeneration(current, async () => json(body));
+    await assert.rejects(downloadResults(current), (error) => error.code === INVALID_IMAGE_RESPONSE);
+  }
+  const current = job();
+  await submitGeneration(current, async () => json({ data: [{ url: 'https://cdn.example/image.png' }] }));
+  await assert.rejects(downloadResults(current, async () => new Response('temporary CDN failure')),
+    (error) => error.code !== INVALID_IMAGE_RESPONSE);
+  assert.equal((await downloadResults(current, async () => new Response(png))).length, 1);
 });
 
 test('NAI ZIP keeps all images and validates their bytes', async () => {
