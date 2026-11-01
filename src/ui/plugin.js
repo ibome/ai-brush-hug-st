@@ -9,8 +9,8 @@ import { apiError, publicExtensionTask } from '../extension-api.js';
 import { createExtensionTaskService } from '../extension-tasks.js';
 import { extensionCapabilities, extensionPresets, prepareExtensionSnapshot, publicImageParameters } from './extension-generation.js';
 import { imageEditDraft, prepareImageEdit, imageEditMessages, applyImageRewrite, drawingSeed } from '../image-edit.js';
-import { applyChatImageEdit, chatImageBelongsTo } from '../chat-image-actions.js';
-import { blockingChatWindow, waitForChatWindow } from '../chat-preparation.js';
+import { applyChatImageEdit, applyChatImageStyle, chatImageBelongsTo } from '../chat-image-actions.js';
+import { blockingChatWindow, waitForChatWindow, mergeChatPrompt } from '../chat-preparation.js';
 import { renderImageEditor } from './image-editor.js';
 import { NovelAIProcessingPanel } from './novelai-processing.js';
 import { processingSnapshot, prepareProcessingSource, validateProcessingDraft, buildProcessingRequest,
@@ -18,6 +18,8 @@ import { processingSnapshot, prepareProcessingSource, validateProcessingDraft, b
 import '../styles/novelai-processing.css';
 import { AdvancedPanel } from './advanced.js';
 import { BackupPanel } from './backup.js';
+import { settingsResetPatch } from '../settings-reset.js';
+import { SettingsResetPanel } from './settings-reset.js';
 import { BackupStore } from '../backup-store.js';
 import { ComicChapterStore } from '../comic-chapters.js';
 import { RecoveryDraftPanel } from './recovery-drafts.js';
@@ -768,6 +770,47 @@ const backupPanel = new BackupPanel({
   importParameters: (snapshot) => { restoreSnapshot(state, snapshot); persist(); showPage('generate'); },
   reload: async () => { serverPolicySignature = null; await reloadDrawings(); await syncStoragePolicy(); chatPost('linghuashi:images-changed'); },
   render: () => render(true), notify: toast,
+});
+
+const settingsResetPanel = new SettingsResetPanel({
+  notify: toast,
+  apply: async (scopes) => {
+    const busy = () => backupPanel.active() || backupPanel.ui.busy || backupPanel.ui.restoring
+      || drawingUI.busy || cleanupBusy || profileAI.ui?.busy || processingChat || chatInbox.length > 0;
+    if (busy()) throw new Error('请等待当前生图、分析、编辑或备份任务完成后再重置');
+    await backupPanel.ready();
+    await apiSyncWork;
+    await backupPanel.flush();
+    if (busy()) throw new Error('任务正在进行，设置尚未重置，请完成后再试');
+    const patch = settingsResetPatch(state, scopes), previous = state;
+    state = { ...state, ...patch };
+    try {
+      persist();
+      if (configSaveState === 'error') throw new Error('设置未能保存，请检查设备存储后重试');
+    } catch (error) {
+      state = previous;
+      try { persist(); } catch {}
+      throw error;
+    }
+    if (scopes.includes('generation')) advancedPanel.resetMask();
+    if (scopes.includes('assistant')) {
+      taskPromptPanel.close();
+      taskPromptPanel.drafts.clear(); taskPromptPanel.baselines.clear();
+      for (const task of Object.keys(taskPromptPanel.draftStore?.value.entries || {})) taskPromptPanel.draftStore.remove(task);
+      taskPromptPanel.previewResult = null;
+      assistantPresetPanel.epoch++;
+      assistantPresetPanel.ui.preset = null;
+      assistantPresetPanel.ui.loading = false;
+      assistantPresetPanel.ui.error = '';
+      assistantUI.error = '';
+    }
+    render(true);
+    const sync = scopes.includes('general')
+      ? await Promise.allSettled([taskPersistence.configure(), syncStoragePolicy()]) : [];
+    const failure = sync.find((result) => result.status === 'rejected');
+    return failure ? `设置已重置，接口与作品已保留；调度或清理设置同步未完成：${failure.reason.message}`
+      : '所选设置已恢复默认，接口、已选模型与作品资料已保留';
+  },
 });
 
 const readerPanel = new ReaderPanel({
@@ -4078,7 +4121,11 @@ async function enqueueChatImage(request) {
     const rows = await drawingLibrary.list(request.storageLocation);
     const parent = rows.find((row) => row.id === request.imageId);
     if (!chatImageBelongsTo(parent, request.binding) || !await validateChatRequest(request)) throw new Error('原消息或图片已变化，请重新打开配图');
-    const draft = applyChatImageEdit(imageEditDraft(parent.snapshot), request.edits, request.randomize === true);
+    let original = imageEditDraft(parent.snapshot);
+    if (request.randomize === true && request.edits === undefined) {
+      original = applyChatImageStyle(original, captureSnapshot({ ...state, provider: original.provider }), samples[0].prompt);
+    }
+    const draft = applyChatImageEdit(original, request.edits, request.randomize === true);
     const snapshot = prepareImageEdit(draft), relation = editRelation(parent, request.edits ? '聊天修改提示词' : '聊天再画一张');
     relation.number = Math.max(...groupVersions(rows, parent.id).map((row) => row.version?.number || 1)) + 1;
     await enqueueGeneration(request, undefined, { snapshot, relation, chatBinding: parent.chatBinding, storageLocation: request.storageLocation });
@@ -4228,7 +4275,7 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
         params.negative = snapshot.characterScene.baseNegative;
         delete snapshot.characterScene.applied;
       }
-      params.positive = [params.positive.trim(), request.prompt.trim()].filter(Boolean).join(', ');
+      params.positive = mergeChatPrompt(params.positive, request.prompt, samples[0].prompt);
     }
     if (params.positive.length > 32000) { report('failed', '合并后的提示词超过 32000 字符'); return; }
   }
@@ -4506,6 +4553,7 @@ export function mountPlugin(root, next) {
     if (target.dataset.drawing) { activeDrawingId = target.dataset.drawing; activeJobId = null; runtimeState = 'success'; render(); return; }
     if (target.dataset.sample) { activeSample = samples.find((item) => item.id === target.dataset.sample); runtimeState = 'success'; render(); return; }
     switch (target.dataset.action) {
+      case 'settings-reset': settingsResetPanel.open(); break;
       case 'start-guide': await guideAction('open'); revealSetting('.start-guide'); break;
       case 'connection-new': case 'connection-copy': case 'connection-rename': case 'connection-delete':
         connectionDialog(target.dataset.action.replace('connection-', '')); break;

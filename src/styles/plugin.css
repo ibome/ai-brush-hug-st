@@ -823,6 +823,25 @@ button, strong, label { overflow-wrap: anywhere; }
 .plugin-floating-ball:hover .plugin-logo { filter: brightness(1.06); }
 .plugin-settings { width: 100%; max-width: 800px; }
 .settings-page-heading { margin-bottom: 8px; align-items: center; }
+.settings-heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.settings-reset-dialog { width: 500px; overflow-y: auto; }
+.settings-reset-dialog h2 { display: flex; align-items: center; gap: 8px; }
+.settings-reset-dialog h2 svg { width: 18px; color: var(--accent); }
+.settings-reset-dialog .settings-reset-retained { display: flex; gap: 8px; align-items: flex-start; color: var(--accent); }
+.settings-reset-retained svg { flex: 0 0 18px; width: 18px; margin-top: 3px; }
+.settings-reset-scopes { margin-top: 16px; padding: 0; border: 0; min-width: 0; }
+.settings-reset-scopes legend { font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.settings-reset-scopes label { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.settings-reset-scopes input { flex: 0 0 18px; width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
+.settings-reset-scopes label > span { min-width: 0; overflow-wrap: anywhere; }
+.settings-reset-scopes strong { display: block; font-size: 13px; }
+.settings-reset-scopes small { display: block; margin-top: 5px; color: var(--secondary); font-size: 12px; line-height: 1.7; }
+.settings-reset-dialog footer .ui-button { white-space: normal; }
+@media (max-width: 480px) {
+  .settings-page-heading { flex-wrap: wrap; }
+  .settings-heading-actions { width: 100%; justify-content: space-between; }
+  .settings-reset-dialog { padding: 16px; }
+}
 .settings-save-status { display: inline-flex; align-items: center; gap: 5px; color: var(--secondary); font-size: 11px; white-space: nowrap; }
 .settings-save-status svg { color: var(--accent); width: 14px; }
 .settings-band { padding: 24px 0; border-bottom: 1px solid var(--border); }

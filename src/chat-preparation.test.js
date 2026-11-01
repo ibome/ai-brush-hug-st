@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { waitForChatWindow } from './chat-preparation.js';
+import { mergeChatPrompt, waitForChatWindow } from './chat-preparation.js';
+
+test('chat prompts exclude the first-install example and retain customized prefixes', () => {
+  const sample = 'a quiet alpine lake, mountain chalet';
+  assert.equal(mergeChatPrompt(` ${sample} `, 'temple, moonlight', sample), 'temple, moonlight');
+  assert.equal(mergeChatPrompt('masterpiece, clean line art', 'temple, moonlight', sample),
+    'masterpiece, clean line art, temple, moonlight');
+  assert.equal(mergeChatPrompt('', ' temple, moonlight ', sample), 'temple, moonlight');
+});
 
 test('unblocked preparation starts immediately without a waiting notice', async () => {
   await waitForChatWindow({ querySelector: () => null }, {

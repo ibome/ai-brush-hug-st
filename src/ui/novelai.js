@@ -33,9 +33,9 @@ export const NOVELAI_SIZES = Object.freeze([
 ]);
 export const NOVELAI_DEFAULTS = Object.freeze({
   model: 'nai-diffusion-4-5-full',
-  artist: '',
+  artist: '2.1::artist:aoi ogata::, 1.5::artist:an yasuri ::,1.2::artist:mx2j::, 0.7::artist:quasarcake::, 0.6::qiandaiyiyu::, 1.5::sos adult::,1.5::shiroshisu,kome_cola::, 0.7::yoshio_(55level)::,2::artist:bm94199 ::, 2::artist:nixeu::,dino(dinoartforame), wanke, liduke, year 2025, realistic, 4k, -2::green ::, {textless version, The image is highly intricate finished drawn\uff0cwrite realistically\uff0ctrue to life,3d}, Only the character\'s face is in anime style, but their body is in realistic style,1.35::A highly finished photo-style artwork that has lively color, graphic texture, realistic skin surface, and lifelike flesh with little obliques::, 1.63::photorealistic::, 1.63::photo(medium)::, 20::best quality, absurdres, very aesthetic, detailed, masterpiece::, -5.1::artist collaboration, -5::flat_color::',
   positive: samples[0].prompt,
-  negative: 'low quality, blurry, watermark',
+  negative: '2::dark areola,dark pussy,big anal::,logo, chibi,doll,dark penis, watermark, too many watermarks, blank page, text-only page, reference, blush, shy, username, signature, artist:xinzoruo, artist:milkpanda, artist collaboration, variant set, large variant set, 4koma, 2koma, toon (style), oekaki, chibi, turnaround, film grain, monochrome, dithering, halftone, screentones, dated, old, 1990s (style), mutation, deformed, distorted, disfigured, artistic error, distorted anatomy, anatomical structure error, asymmetrical face, unnatural hair, bad eyes, cloudy eyes, blank eyes, pointy ears, bad proportions, bad limb, bad hands, extra hands, bad hand structure, extra digits, fewer digits, bad legs, extra legs, amputee, distorted composition, bad perspective, multiple views, negative space, animation error, chromatic aberration, disorganized colors, scan artifacts, jpeg artifacts, vertical lines, vertical banding, worst quality, bad quality, lowres, blurry, upscaled, fewer details, unfinished, incomplete, amateur, cheesy, unsatisfactory, inadequate, deficient, subpar, poor, displeasing, very displeasing, bad illustration, bad portrait, 3girls, 4girls, 5girls, 6+girls',
   width: 832,
   height: 1216,
   steps: 23,

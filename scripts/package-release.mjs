@@ -30,9 +30,10 @@ await fs.mkdir(output, { recursive: true });
 const frontend = new JSZip(), backend = new JSZip(), repository = new JSZip();
 const files = [], scans = [];
 const privateName = /(?:^|\/)(?:allowed-accounts\.json|secrets\.json|settings\.json|\.env(?:\..*)?|.*\.pem|.*\.key)$/;
+const opaqueWorldbook = 'docs/worldbooks/- (主体)文生图1.17.json';
 async function add(zip, name, bytes, scan = false) {
   if (privateName.test(name)) throw new Error(`Private file in release allowlist: ${name}`);
-  if (scan && /\.(?:js|mjs|json|html|md|yml|yaml|sh|ps1|py|txt)$/.test(name)) {
+  if (scan && name !== opaqueWorldbook && /\.(?:js|mjs|json|html|md|yml|yaml|sh|ps1|py|txt)$/.test(name)) {
     const text = bytes.toString('utf8');
     if (/\b(?:pst-|STD-)[A-Za-z0-9_-]{18,}|\bsk-[A-Za-z0-9_-]{30,}/.test(text)
       || /156\.239\.242\.3|45\.207\.199\.116|C:[/\\]Users[/\\]22678/.test(text)) {

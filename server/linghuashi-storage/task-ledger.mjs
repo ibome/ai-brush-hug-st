@@ -94,13 +94,19 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
     const { token, captureSize, captureOffset, ...value } = row;
     return clone(value);
   }
+  function renew(row) {
+    // Waiting for a provider must survive browser timer suspension during the request.
+    const responseWindow = row.stage === 'submitting' && !row.execution
+      ? row.plan.timeout * 1000 : 0;
+    row.leaseUntil = now() + LEASE_MS + responseWindow;
+  }
   function owned(body) {
     const row = state.rows[body.id];
     if (!row || row.owner !== body.owner || row.token !== body.token || row.leaseUntil <= now() || row.status !== 'running') {
       throw fail('任务已由其他页面接管或执行权限已过期');
     }
     if (row.cancelRequested) throw fail('任务已请求取消');
-    row.leaseUntil = now() + LEASE_MS;
+    renew(row);
     row.updatedAt = now();
     return row;
   }
@@ -153,7 +159,7 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
         const limit = settings.generationMode === 'parallel' ? Math.max(1, Math.min(16, Number(settings.concurrency) || 2)) : 1;
         if (Object.values(state.rows).filter((item) => item.status === 'running').length >= limit
           || state.nextStart > now()) return { busy: true, retryAfter: Math.max(1000, state.nextStart - now()) };
-        row.status = 'running'; row.owner = body.owner; row.token = body.token; row.leaseUntil = now() + LEASE_MS;
+        row.status = 'running'; row.owner = body.owner; row.token = body.token; renew(row);
         row.phase = row.execution ? 'retrieving' : 'waiting'; row.error = ''; row.cancelRequested = false;
         row.attempts++; row.startedAt = now(); row.updatedAt = now();
         row.interval = settings.generationMode === 'parallel' ? 0 : Math.max(0, Math.min(3600, Number(settings.queueInterval) || 0)) * 1000;
@@ -194,7 +200,7 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
           row.captureSize = body.total;
           if (row.captureOffset === body.total) row.execution = { size: body.total };
         }
-        if (row.execution) { row.stage = 'accepted'; row.phase = 'retrieving'; }
+        if (row.execution) { row.stage = 'accepted'; row.phase = 'retrieving'; renew(row); }
         return { accepted: Boolean(row.execution), offset: row.captureOffset || 0 };
       });
     }
@@ -218,6 +224,7 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
         if (value.stage === 'submitting') {
           if (row.stage !== 'waiting' || row.execution) throw fail('任务已经提交过，禁止重复提交');
           row.stage = 'submitting'; row.phase = 'submitting';
+          renew(row);
         } else if (value.stage === 'saving') {
           if (!row.execution) throw fail('任务响应尚未保存');
           row.stage = 'saving'; row.phase = 'saving';

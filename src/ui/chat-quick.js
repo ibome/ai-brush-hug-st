@@ -46,6 +46,7 @@ export function appendImageTools({ container, row, versions, task, pending, them
   ];
   for (const [glyph, label, action, disabled] of actions) {
     const button = quickButton(glyph, label, () => onAction(action), disabled);
+    if (action === 'repeat') button.title = '再画一张：保留原图场景，使用当前画师串和负面提示词';
     if (action === 'favorite') button.setAttribute('aria-pressed', String(Boolean(row.favorite)));
     tools.append(button);
   }

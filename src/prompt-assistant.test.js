@@ -405,7 +405,7 @@ test('context stops at target, excludes system messages, respects switches and u
       assert.equal(dry, true); return { worldInfoString: '城堡图书馆', worldInfoDepth: [{ entries: ['绿裙'] }] };
     } };
   const slot = await bindSmartSlot(context, target);
-  const extracted = await collectAssistantContext(context, {}, slot.binding);
+  const extracted = await collectAssistantContext(context, { includeWorld: true }, slot.binding);
   assert.equal(extracted.messages.length, 2);
   assert.equal(extracted.messages.at(-1).content, '窗边读书。');
   assert.equal(extracted.characters[0].description, '绿色头发');

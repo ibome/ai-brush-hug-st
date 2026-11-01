@@ -88,7 +88,7 @@ export function renderSettings(state, additions = '', guide = '') {
   const count = state.history.length;
   const queue = state.generationMode === 'queue';
   const cleanupOptions = [['manual', '不自动清理'], ['time', '定时清空'], ['count', '达到数量清理']];
-  return `<div class="page-heading settings-page-heading"><div><h1>插件设置</h1><p>灵画师</p></div><span class="settings-save-status" data-workspace-save role="status"></span></div>
+  return `<div class="page-heading settings-page-heading"><div><h1>插件设置</h1><p>灵画师</p></div><div class="settings-heading-actions"><span class="settings-save-status" data-workspace-save role="status"></span><button type="button" class="ui-button secondary" data-action="settings-reset">${icon('rotate-ccw')}<span>重置设置</span></button></div></div>
     ${guide}
     <div class="plugin-settings">
       <section class="settings-band" aria-labelledby="activation-heading">

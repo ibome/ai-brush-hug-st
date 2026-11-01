@@ -1,6 +1,11 @@
 import { wait } from './generation.js';
 import { withRequestTimeout } from './request-timeout.js';
 
+export function mergeChatPrompt(base, prompt, samplePrompt) {
+  const prefix = base.trim();
+  return [prefix === samplePrompt.trim() ? '' : prefix, prompt.trim()].filter(Boolean).join(', ');
+}
+
 export function blockingChatWindow(root) {
   return root?.querySelector('dialog[open]:not(.drawing-viewer)') || null;
 }

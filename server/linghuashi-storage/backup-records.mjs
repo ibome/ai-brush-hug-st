@@ -2,7 +2,7 @@ import { validImageId } from './image-versions.mjs';
 import { storedAssistantPlan } from './assistant-plan.mjs';
 
 export const BACKUP_ACTIONS = ['backup/status', 'backup/chats', 'backup/chats-merge'];
-export const STORAGE_VERSION = '0.21.0';
+export const STORAGE_VERSION = '0.21.1';
 export const STORAGE_PROTOCOL = 2;
 
 export function normalizeBackupChats(values, imageIds) {

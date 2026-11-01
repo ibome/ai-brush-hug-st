@@ -1,64 +1,64 @@
 {
-  "version": "0.26.2",
-  "build": "20261101-illustration-templates",
+  "version": "0.26.3",
+  "build": "20261101-settings-reset-worldbook",
   "profile": "light-identifiers-v1",
   "sourceMaps": false,
   "files": [
     {
-      "name": "assets/config-LumsDnqo.js",
+      "name": "assets/config-pnxTBMJK.js",
       "protected": true,
-      "beforeBytes": 111265,
-      "bytes": 168385,
-      "sha256": "0bd41e735a579c532c582efa193870acd61a792b9f68f40f9853e9e2aaedabda"
+      "beforeBytes": 111267,
+      "bytes": 168370,
+      "sha256": "b7d0cacaa8b10db991cac2084c1ddafe5035aba824900cb8333edc585ed3c055"
     },
     {
-      "name": "assets/plugin-BJIiWynj.js",
+      "name": "assets/plugin-Frrdt8Xy.js",
       "protected": true,
-      "beforeBytes": 945871,
-      "bytes": 1401352,
-      "sha256": "1bd836498ed9f8f93bbdb46e207eab0a40143b8bdd9909f0d6d0612897206e03"
+      "beforeBytes": 955235,
+      "bytes": 1413787,
+      "sha256": "9131d569e3f755c52744d6da19843c6b1438fe75c70fdde34fa8939ebc046629"
     },
     {
-      "name": "assets/preload-helper-CSOBtAJk.js",
+      "name": "assets/preload-helper-BQE9DfEg.js",
       "protected": true,
       "beforeBytes": 3232,
-      "bytes": 5611,
-      "sha256": "6987e07deb04a63250e8b7e3eb73d1563f0cd03b7f49a75a22c44375308fc53d"
+      "bytes": 5608,
+      "sha256": "600766f7a7f58a0f041da95b00d7bf8d04ff3a61d1be22e9b0a3aaea2007addf"
     },
     {
-      "name": "assets/rolldown-runtime-CMLgbrSe.js",
+      "name": "assets/rolldown-runtime-CDyCQ3Nj.js",
       "protected": true,
       "beforeBytes": 1106,
-      "bytes": 2137,
-      "sha256": "60e1f5a1379b6e3644268bf7763f69e649a455684ff46ecf88040c69d9a77f9c"
+      "bytes": 2140,
+      "sha256": "718c5dcfac235ecaef1717183e2c0552ad0aab8cb3860f36cb86a99439192368"
     },
     {
-      "name": "assets/ui-vd3131ta.js",
+      "name": "assets/ui-DHZ19KY6.js",
       "protected": true,
       "beforeBytes": 3263,
-      "bytes": 4964,
-      "sha256": "40a732f7e51e02fcafb81f40d1c367157d3f1444d746fe4f69ea6bb80a56c7dd"
+      "bytes": 4966,
+      "sha256": "e561206c350e4e26985ac0f570715a213d1b04a7d14fdffb9c0c4b8481758c91"
     },
     {
-      "name": "assets/update-mascots-C6I-WAB9.js",
+      "name": "assets/update-mascots-Jzoi1UWJ.js",
       "protected": true,
-      "beforeBytes": 119660,
-      "bytes": 186939,
-      "sha256": "ba14dc0208d497db02de748c6d876ac93edba83ebb8af8cb24157ba45df370ee"
+      "beforeBytes": 120378,
+      "bytes": 188119,
+      "sha256": "f89f8c5fe5f5a4172707227e2bcd7804793144b80f41a600ebac5f8fab6545ef"
     },
     {
-      "name": "assets/vendor-Bp0I9T13.js",
+      "name": "assets/vendor-DRNsUNZg.js",
       "protected": false,
       "beforeBytes": 124385,
-      "bytes": 124636,
-      "sha256": "aad77606c2dbf960f1b65090ffe3c558b6032c8b033c3fd5290fa2bff4a055a4"
+      "bytes": 124638,
+      "sha256": "5afcde5063cec94570f0e461f999e6a007e208754f1da59ba410bc6402d2accd"
     },
     {
       "name": "index.js",
       "protected": true,
-      "beforeBytes": 90089,
-      "bytes": 141160,
-      "sha256": "1f042fd3bbd51443904840225c5954908ff031186c69921dcbd0c7385432e973"
+      "beforeBytes": 90185,
+      "bytes": 141247,
+      "sha256": "52c5efb2b0e81ac4050288000a715fc2007805c4e3b50b9888b9e75ecaddc13f"
     }
   ]
 }

@@ -65,7 +65,7 @@ test('truncation reports both partial and wholly omitted messages, keeping newes
 test('context validation catches edits made while world book scan is running', async () => {
   const context = fixture();
   context.getWorldInfoPrompt = async () => { context.chat[0].mes = 'Edited'; return { worldInfoString: '' }; };
-  await assert.rejects(collectAssistantContext(context, {}), /变化/);
+  await assert.rejects(collectAssistantContext(context, { includeWorld: true }), /变化/);
 });
 test('usage estimate includes all prepared preset messages and exposes output limit without changing the request', () => {
   const messages = [{ role: 'system', content: 'a'.repeat(10000) }, { role: 'user', content: '中文场景' }];

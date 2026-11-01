@@ -29,7 +29,7 @@ async function fixture(t) {
     const result = await call('claim', body);
     return { ...body, result };
   };
-  return { root, user, service, call, create, claim, advance: () => { time += LEASE_MS + 1; }, now: () => time };
+  return { root, user, service, call, create, claim, advance: (ms = LEASE_MS + 1) => { time += ms; }, now: () => time };
 }
 
 test('frozen task survives restart with parameters and secret reference, but no headers or key', async (t) => {
@@ -86,10 +86,25 @@ test('expired unsubmitted tasks pause; expired submitted tasks are uncertain and
   assert.equal((await f.call('list')).rows[0].status, 'paused');
   await assert.rejects(f.call('update', { ...owned, value: { stage: 'submitting' } }), { status: 409 });
   const next = await f.claim(one);
-  await f.call('update', { ...next, value: { stage: 'submitting' } });
-  f.advance();
+  const submitted = await f.call('update', { ...next, value: { stage: 'submitting' } });
+  f.advance(submitted.leaseUntil - f.now() + 1);
   assert.equal((await f.call('list')).rows[0].status, 'uncertain');
   await assert.rejects(f.claim(one), { status: 409 });
+});
+
+test('an in-flight response survives a missed heartbeat without allowing a second submission', async (t) => {
+  const f = await fixture(t), row = await f.create({ timeout: 90 }), owned = await f.claim(row);
+  const submitted = await f.call('update', { ...owned, value: { stage: 'submitting' } });
+  assert.equal(submitted.leaseUntil - f.now(), 90000 + LEASE_MS);
+  f.advance(43000);
+  assert.equal((await f.call('list')).rows[0].status, 'running');
+  assert.equal((await f.claim(row)).result.busy, true);
+  await assert.rejects(f.call('update', { ...owned, value: { stage: 'submitting' } }), { status: 409 });
+  await f.call('execution-put', { ...owned, total: 1, offset: 0, data: 'YQ==' });
+  await f.call('update', { ...owned, value: { status: 'completed', savedIds: [`${row.id}-0`] } });
+  const finished = (await f.call('list')).rows[0];
+  assert.equal(finished.status, 'completed');
+  assert.equal(finished.attempts, 1);
 });
 
 test('ComfyUI accepted prompt ID survives restart and claim retrieves without submission', async (t) => {
@@ -134,7 +149,8 @@ test('partial capture is uncertain after interruption, not a recoverable accepte
   const f = await fixture(t), row = await f.create(), owned = await f.claim(row);
   await f.call('update', { ...owned, value: { stage: 'submitting' } });
   await f.call('execution-put', { ...owned, total: 2, offset: 0, data: 'YQ==' });
-  f.advance();
+  const pending = (await f.call('list')).rows[0];
+  f.advance(pending.leaseUntil - f.now() + 1);
   assert.equal((await f.call('list')).rows[0].status, 'uncertain');
   await assert.rejects(f.claim(row), { status: 409 });
 });

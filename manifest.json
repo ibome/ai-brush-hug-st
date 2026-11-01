@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.2&build=20261101-illustration-templates",
+  "js": "dist/index.js?ver=0.26.3&build=20261101-settings-reset-worldbook",
   "author": "小波",
-  "version": "0.26.2",
+  "version": "0.26.3",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

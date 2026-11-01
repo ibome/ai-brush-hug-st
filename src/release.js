@@ -1,6 +1,6 @@
 export const RELEASE = Object.freeze({
-  version: '0.26.2',
-  build: '20261101-illustration-templates',
+  version: '0.26.3',
+  build: '20261101-settings-reset-worldbook',
   repository: 'ibome/ai-brush-hug-st',
   url: 'https://github.com/ibome/ai-brush-hug-st',
   storageProtocol: 2,

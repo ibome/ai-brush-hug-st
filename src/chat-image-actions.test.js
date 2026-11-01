@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyChatImageEdit, chatImageBelongsTo, chatImagePrompt, chatImagePromptText } from './chat-image-actions.js';
+import { applyChatImageEdit, applyChatImageStyle, chatImageBelongsTo, chatImagePrompt, chatImagePromptText } from './chat-image-actions.js';
+globalThis.window ||= { addEventListener() {} };
+const { imageEditDraft, prepareImageEdit } = await import('./image-edit.js');
+const { applyCharacterScene } = await import('./character-profiles.js');
 
 test('image operations require the same chat, message, branch, swipe and slot', () => {
   const binding = { id: 'image-slot', chatKey: 'chat-a', branch: 'text-hash', swipe: 0, slot: 1 };
@@ -42,6 +45,73 @@ test('NovelAI repeat gets a new seed and retains all other frozen parameters', (
   assert.deepEqual(draft, before);
   assert.equal(applyChatImageEdit({ provider: 'novelai', params: { seed: 4294967295 } }, undefined, true,
     () => 4294967295).params.seed, 0);
+});
+
+test('chat repeat uses current artist and negatives while preserving the original scene and generation settings', () => {
+  const original = { provider: 'novelai', params: { model: 'nai-diffusion-4-5-full', seed: 17,
+    positive: 'temple, moonlight', negative: 'old negative', artist: 'old artist', width: 832, height: 1216, steps: 28 } };
+  const current = { provider: 'novelai', params: { model: 'nai-diffusion-3', seed: 999,
+    positive: 'unrelated workshop scene', artist: '2::artist:new::', negative: 'new negative', width: 1024, height: 1024 } };
+  const before = structuredClone(original), currentBefore = structuredClone(current);
+  const styled = applyChatImageStyle(imageEditDraft(original), current);
+  const result = prepareImageEdit(applyChatImageEdit(styled, undefined, true, () => 23));
+  assert.equal(result.params.artist, '2::artist:new::');
+  assert.equal(result.params.negative, 'new negative');
+  for (const key of ['positive', 'model', 'width', 'height', 'steps']) assert.equal(result.params[key], original.params[key]);
+  assert.equal(result.params.seed, 23);
+  assert.deepEqual(original, before);
+  assert.deepEqual(current, currentBefore);
+});
+
+test('clearing artist or negative in current settings also clears it for the next chat repeat', () => {
+  for (const provider of ['novelai', 'openai', 'sdwebui']) {
+    const draft = { provider, params: { positive: 'garden', artist: 'old artist', negative: 'old negative' } };
+    const result = applyChatImageStyle(draft, { provider, params: { artist: '', negative: '' } });
+    assert.equal(result.params.artist, '');
+    assert.equal(result.params.negative, '');
+    assert.equal(result.params.positive, 'garden');
+  }
+});
+
+test('ComfyUI chat repeat reads current negative without replacing the original workflow or its mapping', () => {
+  const draft = { provider: 'comfyui', config: { graph: { old: {} }, mapping: { seed: '3.inputs.seed' },
+    params: { positive: 'garden', negative: 'old negative', seed: 17 } } };
+  const result = applyChatImageEdit(applyChatImageStyle(draft, { provider: 'comfyui',
+    config: { graph: { other: {} }, mapping: {}, params: { positive: 'other scene', negative: 'new negative' } } }),
+  undefined, true, () => 23);
+  assert.deepEqual(result.config.graph, draft.config.graph);
+  assert.deepEqual(result.config.mapping, draft.config.mapping);
+  assert.equal(result.config.params.positive, 'garden');
+  assert.equal(result.config.params.negative, 'new negative');
+  assert.equal(result.config.params.seed, 23);
+  assert.throws(() => applyChatImageStyle(draft, { provider: 'openai', params: {} }), /模式不一致/);
+});
+
+test('legacy example prefixes are removed without replacing the actual scene or deleting an example-only prompt', () => {
+  const example = 'a quiet alpine lake, mountain chalet';
+  const current = { provider: 'novelai', params: { artist: 'new artist', negative: 'new negative' } };
+  for (const positive of [`${example}, temple, moonlight`, 'temple, moonlight', example]) {
+    const draft = { provider: 'novelai', params: { positive } };
+    const result = applyChatImageStyle(draft, current, example);
+    assert.equal(result.params.positive, positive === example ? example : 'temple, moonlight');
+    assert.equal(draft.params.positive, positive);
+  }
+});
+
+test('chat repeat updates global negatives once and preserves the original character directions', () => {
+  const original = applyCharacterScene({ provider: 'novelai', params: { model: 'nai-diffusion-3',
+    positive: 'temple, moonlight', negative: 'old negative', artist: 'old artist', seed: 17 } },
+  { entries: [{ profileId: 'a', profile: { id: 'a', name: 'A', tags: 'black hair', negative: 'red hair' } }] });
+  const current = { provider: 'novelai', params: { artist: 'new artist', negative: 'new negative' } };
+  const next = prepareImageEdit(applyChatImageStyle(imageEditDraft(original), current));
+  assert.equal(next.characterScene.baseNegative, 'new negative');
+  assert.deepEqual(next.characterScene.characterPrompts, original.characterScene.characterPrompts);
+  assert.equal(next.params.negative, 'new negative, red hair');
+  assert.equal(next.params.positive.match(/black hair/g).length, 1);
+  const edited = prepareImageEdit(applyChatImageEdit(imageEditDraft(original),
+    { positive: 'library', negative: 'explicit image-only negative' }));
+  assert.equal(edited.characterScene.baseNegative, 'explicit image-only negative');
+  assert.equal(edited.params.artist, 'old artist');
 });
 
 test('OpenAI repeat only randomizes an explicit seed and preserves other extra parameters', () => {

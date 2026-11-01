@@ -29,6 +29,23 @@ export function chatImagePromptText(row) {
   return sections.filter(Boolean).join('\n\n');
 }
 
+export function applyChatImageStyle(draft, current, samplePrompt = '') {
+  if (draft.provider !== current?.provider) throw new Error('画风配置与原图的生图模式不一致');
+  const next = structuredClone(draft);
+  const params = next.params || next.config?.params;
+  const style = current.params || current.config?.params;
+  if (!params || !style) throw new Error('图片没有可用的生成参数');
+  for (const key of ['artist', 'negative']) {
+    if (typeof style[key] === 'string') params[key] = style[key];
+  }
+  const examplePrefix = samplePrompt.trim() && `${samplePrompt.trim()}, `;
+  if (examplePrefix && params.positive?.startsWith(examplePrefix)) {
+    const scene = params.positive.slice(examplePrefix.length).trim();
+    if (scene) params.positive = scene;
+  }
+  return next;
+}
+
 export function applyChatImageEdit(draft, edits, randomize = false, seed = () => crypto.getRandomValues(new Uint32Array(1))[0]) {
   const next = structuredClone(draft), params = next.params || next.config?.params;
   if (!params) throw new Error('图片没有可用的生成参数');

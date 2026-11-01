@@ -12,7 +12,7 @@ export const ASSISTANT_DEFAULTS = Object.freeze({
   source: 'tavern', apiTransport: 'direct', endpoint: '', model: '', tavernModel: '', keyRef: '', apiLink: null,
   temperature: 0.6, maxTokens: 4000, timeout: 120,
   presetMode: 'none', presetId: '', presetSelection: null,
-  contextMessages: 8, contextCharacters: 24000, includeCharacters: true, includeWorld: true,
+  contextMessages: 8, contextCharacters: 24000, includeCharacters: true, includeWorld: false,
   format: 'auto', template: 'scene', customTemplate: '', appearance: '',
   autoPrompt: false, autoImage: false, frequency: 'scene', every: 3,
   count: 1, aspect: 'keep', composition: 'balanced',
