@@ -358,7 +358,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           const groupId = versionGroupId(row);
           if (displayed.has(groupId)) continue;
           displayed.add(groupId);
-          const url = row.thumbnailURL || URL.createObjectURL(row.thumbnail || row.blob);
+          const url = row.srcURL || URL.createObjectURL(row.blob);
           if (url.startsWith('blob:')) urls.add(url);
           const button = document.createElement('button');
           button.type = 'button'; button.className = 'picture';

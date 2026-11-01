@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.1&build=20261030-chat-regeneration-fix",
+  "js": "dist/index.js?ver=0.26.2&build=20261101-illustration-templates",
   "author": "小波",
-  "version": "0.26.1",
+  "version": "0.26.2",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

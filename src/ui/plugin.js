@@ -475,9 +475,9 @@ const taskPromptPanel = new TaskPromptPanel({
     try { persist(); } catch (error) { state.assistant = previous; throw error; }
     render(true);
   },
-  preview: async (operation, taskPrompts) => {
+  preview: async (operation, patch) => {
     pendingSave.flush();
-    let options = normalizeAssistant({ ...state.assistant, taskPrompts }), base, note = '使用当前助手配置';
+    let options = normalizeAssistant({ ...state.assistant, ...patch }), base, note = '使用当前助手配置';
     const snapshot = captureSnapshot(state), params = snapshot.params || snapshot.config.params;
     if (operation === 'comic') {
       const project = comicPanel.project;
@@ -2917,6 +2917,15 @@ function render(force = false) {
   }
   if (!force && advancedPanel.ui.painting) return;
   const editing = document.activeElement;
+  // Replacing a focused input closes mobile keyboards even if focus is restored afterward.
+  if (!force && samePage && state.page === 'connection' && config.surface === 'console'
+    && host.contains(editing) && editing?.matches('input, textarea')
+    && !['checkbox', 'radio', 'range', 'color', 'file', 'button', 'submit', 'reset'].includes(editing.type)) {
+    updateConnectionStatus();
+    updateCredentialStatus();
+    refreshSaveStatus();
+    return;
+  }
   if (!force && host.dataset.renderedPage === state.page
     && editing?.matches('[data-advanced-field], [data-vibe-field], [data-lora-field], [data-mask-brush]')
     && !['checkbox', 'select-one'].includes(editing.type)) return;
@@ -4492,7 +4501,7 @@ export function mountPlugin(root, next) {
       persist(); render(); taskQueue.pump(); return;
     }
     if (target.dataset.shape) { state.shape = target.dataset.shape; persist(); render(); return; }
-    if (target.dataset.provider) { keyVisible = false; state.provider = target.dataset.provider; Object.assign(state, normalizeSettings(state)); resetConnection(); persist(); render(); checkConnection(); return; }
+    if (target.dataset.provider) { keyVisible = false; state.provider = target.dataset.provider; Object.assign(state, normalizeSettings(state)); resetConnection(); persist(); render(true); checkConnection(); return; }
     if (target.dataset.style) { state.style = target.dataset.style; persist(); render(); return; }
     if (target.dataset.drawing) { activeDrawingId = target.dataset.drawing; activeJobId = null; runtimeState = 'success'; render(); return; }
     if (target.dataset.sample) { activeSample = samples.find((item) => item.id === target.dataset.sample); runtimeState = 'success'; render(); return; }
@@ -4660,7 +4669,7 @@ export function mountPlugin(root, next) {
         const model = target.dataset.openaiModelId;
         state.openai.model = model;
         commitOpenAIFields();
-        render();
+        render(true);
         copyOpenAIModel(model, true);
         break;
       }

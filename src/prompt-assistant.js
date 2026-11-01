@@ -5,6 +5,7 @@ import { normalizeTaskMessages, normalizeCharacterStates } from './assistant-wor
 import { assistantResponseParameters, extractAssistantResponse } from './assistant-response.js';
 import { ASSISTANT_MAX_TOKENS } from './assistant-limits.js';
 import { normalizeTaskPrompts, renderTaskRules } from './assistant-rules.js';
+import { normalizeIllustrateTemplate, illustrateUserPrefix } from './data/illustrate-templates.js';
 import { normalizeCompatibilityProfiles, assistantRequestParameters } from './assistant-compatibility.js';
 
 export const ASSISTANT_DEFAULTS = Object.freeze({
@@ -16,6 +17,7 @@ export const ASSISTANT_DEFAULTS = Object.freeze({
   autoPrompt: false, autoImage: false, frequency: 'scene', every: 3,
   count: 1, aspect: 'keep', composition: 'balanced',
   illustrationCount: 1, rememberState: false, responseMode: 'text', taskMessages: {}, taskPrompts: {},
+  illustrateTemplate: 'default',
   compatibilityProfiles: [], outputParameter: 'max_tokens', omitTemperature: false, contextWindow: 0, outputLimit: 0,
 });
 export const ASSISTANT_TEMPLATES = [
@@ -57,6 +59,7 @@ export function normalizeAssistant(value = {}) {
   result.temperature = clamp(value.temperature ?? result.temperature, 0, 2, result.temperature, false);
   result.taskMessages = normalizeTaskMessages(value.taskMessages);
   result.taskPrompts = normalizeTaskPrompts(value.taskPrompts);
+  result.illustrateTemplate = normalizeIllustrateTemplate(value.illustrateTemplate ?? result.illustrateTemplate);
   result.compatibilityProfiles = normalizeCompatibilityProfiles(value.compatibilityProfiles);
   result.outputParameter = value.outputParameter === 'max_completion_tokens' ? value.outputParameter : 'max_tokens';
   result.contextWindow = clamp(value.contextWindow ?? 0, 0, 4000000, 0);
@@ -208,7 +211,8 @@ export function buildAssistantMessages({ settings, operation = 'generate', ruleT
     ...(context.characterScene?.entries?.length ? { DRAWING_PROFILES: profileContext(context.characterScene) } : {}),
     TASK: `${task} Return exactly one complete JSON object matching the schema above. Do not continue the story or output explanations, reasoning, XML or markdown.`,
   });
-  return [{ role: 'system', content: system }, { role: 'user', content: user }];
+  const prefix = operation === 'illustrate' ? illustrateUserPrefix(options.illustrateTemplate) : '';
+  return [{ role: 'system', content: system }, { role: 'user', content: prefix + user }];
 }
 
 function assistantResultObject(raw) {

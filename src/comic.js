@@ -100,8 +100,9 @@ export function newComicProject(scene = null) {
   return { id: randomUUID(), title: '未命名漫画', createdAt: Date.now(), updatedAt: Date.now(),
     archived: false, seriesId: '', chapter: 1, referenceProfileId: '',
     source: '', sourceLabel: '', panelCount: 4,
-    style: 'anime comic illustration, clean line art, soft cel shading, consistent character design',
-    negative: '', characterScene: normalizeCharacterScene(scene),
+    style: 'masterpiece, best quality, very aesthetic, absurdres, newest, anime comic illustration, clean line art, soft cel shading, sharp outlines, detailed eyes, soft lighting, vibrant color, clean coloring',
+    negative: 'lowres, worst quality, low quality, normal quality, bad anatomy, bad hands, missing fingers, extra fingers, fused fingers, extra limbs, missing limbs, bad feet, deformed, disfigured, mutation, blurry, jpeg artifacts, signature, watermark, username, text, error, cropped, poorly drawn face, cross-eyed, bad proportions, ugly, 3d, render, photorealistic',
+    characterScene: normalizeCharacterScene(scene),
     storyboard: { presetMode: 'none', responseMode: 'text', maxTokens: 4000, model: '' },
     layout: normalizeComicLayout(), panels: [] };
 }

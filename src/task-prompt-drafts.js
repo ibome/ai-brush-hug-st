@@ -1,11 +1,12 @@
 import { readBrowserCache, writeBrowserCache } from './browser-cache.js';
-import { defaultTaskPrompt, TASK_PROMPT_LIMIT, TASK_PREFIX_LIMIT } from './assistant-rules.js';
+import { defaultTaskPrompt, normalizeIllustrateTemplate, TASK_PROMPT_LIMIT, TASK_PREFIX_LIMIT } from './assistant-rules.js';
 import { createCoalescedSave } from './coalesced-save.js';
 
 const tasks = ['generate', 'translate', 'polish', 'illustrate', 'profile', 'edit', 'comic'];
 const cleanValue = (value, task) => ({
   prefix: typeof value?.prefix === 'string' ? value.prefix.slice(0, TASK_PREFIX_LIMIT) : '',
   rules: typeof value?.rules === 'string' ? value.rules.slice(0, TASK_PROMPT_LIMIT) : defaultTaskPrompt(task),
+  ...(task === 'illustrate' ? { template: normalizeIllustrateTemplate(value?.template) } : {}),
 });
 export function normalizeTaskDrafts(value) {
   const entries = {};

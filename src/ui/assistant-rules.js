@@ -3,7 +3,8 @@ import { icon, paintIcons } from '../icons.js';
 import { ASSISTANT_OPERATIONS } from '../assistant-workflow.js';
 import { TaskPromptDrafts } from '../task-prompt-drafts.js';
 import { defaultTaskPrompt, validateTaskPrompt, normalizeTaskPrompts, taskPromptVariables,
-  TASK_PROMPT_DESCRIPTIONS, TASK_RULE_VARIABLES, TASK_PROMPT_LIMIT, TASK_PREFIX_LIMIT } from '../assistant-rules.js';
+  TASK_PROMPT_DESCRIPTIONS, TASK_RULE_VARIABLES, TASK_PROMPT_LIMIT, TASK_PREFIX_LIMIT,
+  ILLUSTRATE_TEMPLATE_META, normalizeIllustrateTemplate } from '../assistant-rules.js';
 
 const command = (action, glyph, label, disabled = false, primary = false) =>
   `<button type="button" class="ui-button ${primary ? 'primary' : 'secondary'}" data-task-prompt-action="${action}" ${disabled ? 'disabled' : ''}>${icon(glyph)}<span>${label}</span></button>`;
@@ -27,7 +28,12 @@ export class TaskPromptPanel {
   }
   saved(operation = this.operation) {
     const value = this.settings().taskPrompts?.[operation] || {};
-    return { prefix: value.prefix || '', rules: value.rules ?? defaultTaskPrompt(operation) };
+    const template = normalizeIllustrateTemplate(this.settings().illustrateTemplate);
+    return { prefix: value.prefix || '', rules: value.rules ?? defaultTaskPrompt(operation, template),
+      ...(operation === 'illustrate' ? { template } : {}) };
+  }
+  get template() {
+    return this.operation === 'illustrate' ? this.draft().template : normalizeIllustrateTemplate(this.settings().illustrateTemplate);
   }
   draft() {
     if (!this.drafts.has(this.operation)) {
@@ -61,6 +67,8 @@ export class TaskPromptPanel {
       this.dialog.addEventListener('change', (event) => {
         if (event.target.matches('[data-task-prompt-operation]')) {
           this.operation = event.target.value; this.epoch++; this.previewResult = null; this.status = ''; this.render();
+        } else if (event.target.matches('[data-task-prompt-template]')) {
+          this.selectTemplate(event.target.value);
         }
       });
       this.dialog.addEventListener('cancel', (event) => { event.preventDefault(); this.close(); });
@@ -82,6 +90,9 @@ export class TaskPromptPanel {
       <div class="assistant-rules-body">
         <label class="ui-field"><span>编辑哪个任务</span><select data-task-prompt-operation aria-label="提示词任务">${ASSISTANT_OPERATIONS.map(([id, name]) =>
           `<option value="${id}" ${id === this.operation ? 'selected' : ''}>${name}</option>`).join('')}</select></label>
+        ${this.operation === 'illustrate' ? `<label class="ui-field"><span>插入模板</span><select data-task-prompt-template aria-label="聊天插入模板">${ILLUSTRATE_TEMPLATE_META.map((row) =>
+          `<option value="${row.id}" ${row.id === this.template ? 'selected' : ''}>${esc(row.name)}</option>`).join('')}</select></label>
+          <p class="assistant-context">${esc(ILLUSTRATE_TEMPLATE_META.find((row) => row.id === this.template)?.note || '')}</p>` : ''}
         <p class="assistant-context">${esc(TASK_PROMPT_DESCRIPTIONS[this.operation])}</p>
         <label class="ui-field"><span>前置提示词（可选）</span><textarea rows="3" maxlength="${TASK_PREFIX_LIMIT}" data-task-prompt-field="prefix" aria-label="任务前置提示词" placeholder="例如：注重人物表情、镜头变化与情绪连贯。">${esc(draft.prefix)}</textarea></label>
         <label class="ui-field"><span>底层提示词</span><textarea rows="14" maxlength="${TASK_PROMPT_LIMIT}" data-task-prompt-field="rules" aria-label="任务底层提示词" spellcheck="false">${esc(draft.rules)}</textarea></label>
@@ -104,7 +115,7 @@ export class TaskPromptPanel {
   }
   updateStatus() {
     if (!this.dialog) return;
-    const errors = validateTaskPrompt(this.operation, this.draft()), validation = this.dialog.querySelector('[data-task-prompt-validation]');
+    const errors = validateTaskPrompt(this.operation, this.prompt()), validation = this.dialog.querySelector('[data-task-prompt-validation]');
     validation.textContent = errors.join('；'); validation.className = errors.length ? 'assistant-error' : '';
     this.dialog.querySelector('[data-task-prompt-action="save"]').disabled = Boolean(errors.length);
     this.dialog.querySelector('[data-task-prompt-action="preview"]').disabled = Boolean(errors.length) || this.previewing;
@@ -112,7 +123,8 @@ export class TaskPromptPanel {
     const stored = this.draftStore?.status;
     this.dialog.querySelector('[data-task-prompt-action="discard"]').disabled = !dirty;
     this.dialog.querySelector('[data-task-prompt-status]').textContent = [
-      this.status || (dirty ? '未生效' : this.settings().taskPrompts?.[this.operation] ? '已保存自定义提示词' : '内置默认'),
+      this.status || (dirty ? '未生效' : this.settings().taskPrompts?.[this.operation] ? '已保存自定义提示词'
+        : this.operation === 'illustrate' ? `内置模板：${ILLUSTRATE_TEMPLATE_META.find((row) => row.id === this.template)?.name || '默认'}` : '内置默认'),
       dirty ? stored === 'pending' ? '草稿待保存' : stored === 'error' ? '本设备草稿保存失败，请保留页面'
         : this.draftStore ? '草稿保存在本设备，刷新后可恢复' : '草稿保留在当前页面' : '',
       dirty && changed ? '已保存配置已变化，请对照后再保存' : '',
@@ -131,7 +143,8 @@ export class TaskPromptPanel {
     this.status = '';
     try {
       if (action === 'reset') {
-        this.drafts.set(this.operation, { prefix: '', rules: defaultTaskPrompt(this.operation) });
+        this.drafts.set(this.operation, { prefix: '', rules: defaultTaskPrompt(this.operation, this.template),
+          ...(this.operation === 'illustrate' ? { template: this.template } : {}) });
         this.stash();
         this.previewResult = null; this.epoch++; this.status = '默认内容已载入，保存后生效'; this.render(); return;
       }
@@ -141,26 +154,43 @@ export class TaskPromptPanel {
         this.drafts.set(this.operation, this.saved()); this.baselines.set(this.operation, JSON.stringify(this.saved()));
         this.previewResult = null; this.epoch++; this.status = '已恢复为当前生效内容'; this.render(); return;
       }
-      const errors = validateTaskPrompt(this.operation, this.draft());
+      const errors = validateTaskPrompt(this.operation, this.prompt());
       if (errors.length) throw new Error(errors[0]);
+      const patch = this.patch();
       if (action === 'save') {
-        const taskPrompts = normalizeTaskPrompts({ ...this.settings().taskPrompts, [this.operation]: this.draft() });
-        this.update({ taskPrompts }); this.drafts.set(this.operation, this.saved());
+        this.update(patch); this.drafts.set(this.operation, this.saved());
         this.baselines.set(this.operation, JSON.stringify(this.saved())); this.draftStore?.remove(this.operation);
         this.status = this.draftStore?.status === 'error' ? '配置已保存；本设备旧草稿未能清理' : '本任务提示词已保存'; this.updateStatus();
       }
       if (action === 'preview' && !this.previewing) {
         const epoch = ++this.epoch, operation = this.operation;
-        const taskPrompts = normalizeTaskPrompts({ ...this.settings().taskPrompts, [operation]: this.draft() });
         this.previewing = true; this.updateStatus();
         try {
-          const result = await this.preview(operation, taskPrompts);
+          const result = await this.preview(operation, patch);
           if (epoch === this.epoch && this.dialog) { this.previewResult = result; this.render(); }
         } finally { this.previewing = false; this.updateStatus(); }
       }
     } catch (error) {
       if (this.dialog) { this.status = error.message; this.updateStatus(); }
     }
+  }
+  selectTemplate(value) {
+    if (this.operation !== 'illustrate') return;
+    const draft = this.draft();
+    draft.template = normalizeIllustrateTemplate(value);
+    draft.rules = defaultTaskPrompt('illustrate', draft.template);
+    this.status = '已切换插入模板，保存后生效';
+    this.epoch++; this.previewResult = null; this.stash(); this.render();
+  }
+  prompt() {
+    const { prefix, rules } = this.draft();
+    return { prefix, rules };
+  }
+  patch() {
+    const clean = this.prompt();
+    if (this.operation === 'illustrate' && clean.rules === defaultTaskPrompt('illustrate', this.template)) delete clean.rules;
+    const taskPrompts = normalizeTaskPrompts({ ...this.settings().taskPrompts, [this.operation]: clean });
+    return { taskPrompts, ...(this.operation === 'illustrate' ? { illustrateTemplate: normalizeIllustrateTemplate(this.template) } : {}) };
   }
   stash() {
     if (this.draftStore) this.draftStore.set(this.operation, this.draft(), JSON.parse(this.baselines.get(this.operation)));
