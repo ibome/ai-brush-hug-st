@@ -226,7 +226,7 @@ async function start() {
     const theme = getCharacterTheme(ui.characterTheme).id;
     const selected = ball.querySelector('img')?.dataset.iconTheme;
     if (selected !== theme) ball.innerHTML = pluginIcon(theme);
-    ball.hidden = ui.enabled === false || ui.floatingBall === false || !backdrop.hidden;
+    ball.hidden = ui.floatingBall === false || !backdrop.hidden;
     const themeButton = shadow.querySelector('[data-action="theme"]');
     themeButton.innerHTML = icon(layout.theme === 'dark' ? 'sun' : 'moon');
     paintIcons(shadow);

@@ -1,6 +1,6 @@
 export const RELEASE = Object.freeze({
-  version: '0.26.3',
-  build: '20261101-settings-reset-worldbook',
+  version: '0.26.4',
+  build: '20261102-chat-reroll-floating-entry',
   repository: 'ibome/ai-brush-hug-st',
   url: 'https://github.com/ibome/ai-brush-hug-st',
   storageProtocol: 2,

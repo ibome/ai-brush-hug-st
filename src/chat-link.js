@@ -7,7 +7,7 @@ import { icon, paintIcons } from './icons.js';
 import { locatePromptRanges, replacePromptRange, restorePromptRange, locateSmartAnchors } from './chat-render.js';
 import { illustrationPlans, selectedIllustration } from './assistant-workflow.js';
 import { versionGroupId } from '../server/linghuashi-storage/image-versions.mjs';
-import { chatImageBelongsTo } from './chat-image-actions.js';
+import { chatImageBelongsTo, chatImageTaskBusy } from './chat-image-actions.js';
 import { quickCSS, quickTheme, quickButton, appendImageTools, editChatPrompt, copyChatPrompt, chooseChatSlots } from './ui/chat-quick.js';
 import { renderGenerationTransition, transitionCSS } from './ui/generation-transition.js';
 import { generationTransitionState } from './generation-transition.js';
@@ -377,8 +377,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           const task = active?.record || (savedTask && { ...savedTask, requestId: savedTask.plan.chatRequestId,
             remote: savedTask.status === 'running',
             recoverable: canRecoverGeneration(savedTask) });
-          const taskPending = Boolean(active || savedTask && ['running', 'paused'].includes(savedTask.status)
-            || savedTask?.status === 'uncertain' || savedTask?.execution && canRecoverGeneration(savedTask));
+          const taskPending = Boolean(active || chatImageTaskBusy(savedTask));
           appendImageTools({ container: picture, row, versions, task, pending: taskPending || pending, theme: options.characterTheme,
             onAction: (action) => { void imageAction(entry, row, action, task); },
             onVersion: (versionId) => { void selectImageVersion(entry, row, versionId); } });
@@ -506,11 +505,13 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (!lock || destroyed || !isCurrent(entry)) return;
       await store.sync(entry.binding.chatKey);
       const previous = store.imageTask(entry.binding.id, groupId, row.storageLocation);
-      if (previous && (['running', 'paused', 'uncertain'].includes(previous.status) || previous.status === 'failed' && canRecoverGeneration(previous))) {
+      if (chatImageTaskBusy(previous)) {
         notice('这张图已有待处理任务，请先继续或取消原任务'); scheduledRender(); return;
       }
-      if (previous?.status === 'failed'
-        && !window.confirm('将使用当前接口配置重新提交生图请求，可能再次计费。是否继续？')) return;
+      if (['failed', 'uncertain'].includes(previous?.status)
+        && !window.confirm(previous.status === 'uncertain'
+          ? '上次请求的结果尚未确认，服务端可能已经生成。继续将重新提交生图请求，可能再次计费。是否继续？'
+          : '将使用当前接口配置重新提交生图请求，可能再次计费。是否继续？')) return;
       const latest = (await store.versions(row.id, row.storageLocation)).find((item) => item.id === row.id);
       if (!latest || !chatImageBelongsTo(latest, entry.binding) || !isCurrent(entry)) return;
       const requestId = randomUUID();

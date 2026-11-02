@@ -3013,7 +3013,7 @@ function render(force = false) {
       button.title = '插件已关闭';
     });
   }
-  if (state.enabled && state.floatingBall && config.surface === 'chat') {
+  if (state.floatingBall && config.surface === 'chat') {
     host.insertAdjacentHTML('beforeend', `<button type="button" class="plugin-floating-ball" data-action="floating-menu" title="打开${esc(config.name)}菜单" aria-label="打开${esc(config.name)}菜单">${pluginIcon(state.characterTheme)}</button>`);
     floatingMenu = createFloatingMenu({
       button: host.querySelector('.plugin-floating-ball'), container: host,

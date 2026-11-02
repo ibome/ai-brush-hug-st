@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>待核对重画回归</title>
+<style>
+  body { margin:24px auto; padding:0 20px; max-width:900px; font:15px/1.6 system-ui; color:#293b56; background:#f7f9fc; }
+  h1 { font-size:22px; } output { display:block; white-space:pre-wrap; } .mes { padding:16px 0; }
+  #notice { color:#9b3333; } .picture img { min-height:60px; background:#d8ebf5; }
+</style>
+<h1>待核对重画回归</h1>
+<p>仅记录本地模拟请求，不访问图片接口。</p>
+<div id="chat"></div>
+<p id="notice" role="status"></p>
+<h2>模拟请求记录</h2>
+<output id="calls">0</output>
+<script type="module">
+  import { createChatLink } from '../../src/chat-link.js';
+  import { openChatStore } from '../../src/chat-storage.js';
+  import { bindImageSlots } from '../../src/chat.js';
+  const run = new URLSearchParams(location.search).get('run') || 'default';
+  const account = `fixture-uncertain-reroll:${run}`;
+  const message = { mes:'湖畔配图：image###a quiet lake, moonlight###', name:'测试', send_date:'fixture', swipe_id:0 };
+  const context = { chat:[message], chatId:'uncertain-reroll', characterId:0, characters:[{ avatar:'fixture.png' }],
+    eventTypes:{}, eventSource:{ on() {}, removeListener() {} } };
+  const settings = { enabled:true, auto:false, inline:true, cacheLocation:'browser', characterTheme:'deepseek',
+    triggerPrefix:'image###', triggerSuffix:'###', assistant:{ autoPrompt:false } };
+  const node = document.createElement('article'); node.className = 'mes'; node.setAttribute('mesid', '0');
+  node.innerHTML = '<div class="mes_block"><div class="mes_text"></div><div class="mes_buttons"></div></div>';
+  node.querySelector('.mes_text').textContent = message.mes;
+  document.querySelector('#chat').append(node);
+  const [slot] = await bindImageSlots(context, message);
+  const store = await openChatStore(account);
+  const requestId = crypto.randomUUID(), imageId = 'fixture-lake';
+  await store.reserve(slot.binding, requestId, true);
+  await store.update(slot.binding.id, requestId, { status:'completed', savedIds:[imageId] });
+  store.close();
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(`linghuashi-drawings-v1:st:${encodeURIComponent(account)}`, 1);
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRXYAAAAASUVORK5CYII='), c => c.charCodeAt(0));
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('drawings', 'readwrite');
+    tx.objectStore('drawings').put({ id:imageId, title:'测试湖畔', blob:new Blob([png], { type:'image/png' }),
+      width:1, height:1, createdAt:Date.now(), chatBinding:slot.binding,
+      snapshot:{ provider:'novelai', params:{ positive:'a quiet lake, moonlight', negative:'blur', seed:7 } } });
+    tx.oncomplete = resolve; tx.onabort = () => reject(tx.error);
+  });
+  db.close();
+  const oldTask = { id:crypto.randomUUID(), status:'uncertain', stage:'submitting',
+    createdAt:Date.now(), error:'请求可能已受理，请核对服务任务记录；不会自动重新提交',
+    plan:{ chatRequestId:crypto.randomUUID(), chatBinding:slot.binding, storageLocation:'browser',
+      imageEdit:{ groupId:imageId, parentId:imageId, number:2 } } };
+  const calls = [];
+  let link;
+  link = createChatLink({ account, getContext:() => context, settings:() => settings, open() {},
+    notice(text) { document.querySelector('#notice').textContent = text; },
+    async storageRequest(action) {
+      if (action === 'task/list') return { rows:[oldTask] };
+      throw new Error(`Unexpected storage action: ${action}`);
+    },
+    async send(type, data) {
+      if (type !== 'linghuashi:chat-image-generate') throw new Error(`Unexpected command: ${type}`);
+      calls.push({ type, randomize:data.randomize, edits:data.edits || null, oldTaskStatus:oldTask.status });
+      document.querySelector('#calls').textContent = JSON.stringify(calls, null, 2);
+      queueMicrotask(() => { void link.receive({ type:'linghuashi:chat-task', ...data,
+        status:'failed', imageId, error:'模拟请求已记录，未调用真实接口' }); });
+    },
+  });
+  window.addEventListener('pagehide', () => link.destroy(), { once:true });
+</script>
+</html>

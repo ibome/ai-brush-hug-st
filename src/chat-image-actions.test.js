@@ -1,9 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyChatImageEdit, applyChatImageStyle, chatImageBelongsTo, chatImagePrompt, chatImagePromptText } from './chat-image-actions.js';
+import { applyChatImageEdit, applyChatImageStyle, chatImageBelongsTo, chatImagePrompt, chatImagePromptText, chatImageTaskBusy } from './chat-image-actions.js';
 globalThis.window ||= { addEventListener() {} };
 const { imageEditDraft, prepareImageEdit } = await import('./image-edit.js');
 const { applyCharacterScene } = await import('./character-profiles.js');
+
+test('uncertain image tasks permit a new version while active and recoverable failed tasks remain busy', () => {
+  for (const status of ['uncertain', 'completed', 'cancelled']) {
+    for (const execution of [undefined, { size: 1024 }]) {
+      assert.equal(chatImageTaskBusy({ status, execution }), false);
+    }
+  }
+  for (const status of ['queued', 'preparing', 'confirming', 'running', 'paused']) {
+    assert.equal(chatImageTaskBusy({ status }), true);
+  }
+  assert.equal(chatImageTaskBusy({ status: 'failed', stage: 'waiting' }), true);
+  assert.equal(chatImageTaskBusy({ status: 'failed', execution: { size: 1024 } }), true);
+  assert.equal(chatImageTaskBusy({ status: 'failed', stage: 'rejected' }), false);
+  assert.equal(chatImageTaskBusy(), false);
+});
 
 test('image operations require the same chat, message, branch, swipe and slot', () => {
   const binding = { id: 'image-slot', chatKey: 'chat-a', branch: 'text-hash', swipe: 0, slot: 1 };

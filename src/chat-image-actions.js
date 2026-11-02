@@ -1,4 +1,10 @@
 import { nativeCharacterPrompts } from './character-profiles.js';
+import { canRecoverGeneration } from './generation-recovery.js';
+
+export function chatImageTaskBusy(task) {
+  return ['queued', 'preparing', 'confirming', 'running', 'paused'].includes(task?.status)
+    || task?.status === 'failed' && canRecoverGeneration(task);
+}
 
 export function chatImageBelongsTo(row, binding) {
   return Boolean(row?.chatBinding && binding
