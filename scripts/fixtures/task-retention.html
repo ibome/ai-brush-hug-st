@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>任务自动整理检查</title>
+<style>
+  body { margin: 32px auto; padding: 0 20px; max-width: 900px; font: 15px/1.6 system-ui; color: #243c42; background: #f4faf8; }
+  h1 { font-size: 22px; }
+  output { display: block; white-space: pre-wrap; }
+  .mes { margin: 20px 0; }
+</style>
+<h1>任务自动整理检查</h1>
+<p>仅使用隔离测试数据和模拟回复。</p>
+<output id="checks">正在检查浏览器任务缓存…</output>
+<div id="chat"></div>
+<output id="navigation"></output>
+<script type="module">
+  import { createBrowserTaskRequest } from '../../src/task-persistence.js';
+  import { createChatLink } from '../../src/chat-link.js';
+  import { openChatStore } from '../../src/chat-storage.js';
+  import { bindImageSlots } from '../../src/chat.js';
+
+  const account = `fixture-task-retention:${crypto.randomUUID()}`;
+  const database = `${account}:tasks`;
+  const request = createBrowserTaskRequest(database);
+  await request('task/list');
+  const db = await new Promise((resolve, reject) => {
+    const opened = indexedDB.open(database, 1);
+    opened.onsuccess = () => resolve(opened.result);
+    opened.onerror = () => reject(opened.error);
+  });
+  const plan = {
+    provider: 'openai', model: 'fixture', url: 'https://example.test/v1/images/generations',
+    body: { prompt: 'a quiet garden' }, snapshot: { provider: 'openai', params: { positive: 'a quiet garden' } },
+  };
+  const ended = Array.from({ length: 99 }, (_, index) => ({
+    id: crypto.randomUUID(), plan, status: 'completed', stage: 'saving',
+    createdAt: index + 1, updatedAt: index + 1, finishedAt: index + 1,
+    execution: { size: 1 }, captureSize: 1, captureOffset: 1, savedIds: [`saved-image-${index}`],
+  }));
+  const recoverable = {
+    id: crypto.randomUUID(), plan, status: 'failed', stage: 'saving',
+    createdAt: 1, execution: { size: 1 }, savedIds: [],
+  };
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('tasks', 'readwrite'), store = tx.objectStore('tasks');
+    const rows = [...ended, recoverable];
+    store.put({ version: 1, rows: Object.fromEntries(rows.map(row => [row.id, row])), nextStart: 0 }, 'index');
+    for (const row of rows) store.put(new Uint8Array([1]), `${row.id}:0`);
+    store.put('preserved', 'unrelated-fixture-key');
+    tx.oncomplete = resolve;
+    tx.onabort = () => reject(tx.error);
+  });
+  const added = await request('task/create', { id: crypto.randomUUID(), plan });
+  const { rows } = await request('task/list');
+  const keys = await new Promise((resolve, reject) => {
+    const read = db.transaction('tasks').objectStore('tasks').getAllKeys();
+    read.onsuccess = () => resolve(read.result);
+    read.onerror = () => reject(read.error);
+  });
+  const checks = {
+    historyCount: rows.length,
+    oldestEndedRemoved: !rows.some(row => row.id === ended[0].id),
+    savedImageIdsRetained: rows.find(row => row.id === ended[1].id)?.savedIds[0] === 'saved-image-1',
+    unfinishedResponseRetained: keys.includes(`${recoverable.id}:0`),
+    endedResponsesReleased: ended.every(row => !keys.includes(`${row.id}:0`)),
+    unrelatedKeyRetained: keys.includes('unrelated-fixture-key'),
+    newTaskSaved: rows.some(row => row.id === added.id),
+  };
+  document.querySelector('#checks').textContent = JSON.stringify(checks, null, 2);
+  db.close();
+
+  const message = { mes: '窗边花园：image###a quiet garden###', name: '测试', send_date: 'fixture', swipe_id: 0 };
+  const context = { chat: [message], chatId: 'task-retention', characterId: 0, characters: [{ avatar: 'fixture.png' }],
+    eventTypes: {}, eventSource: { on() {}, removeListener() {} } };
+  const settings = { enabled: true, auto: false, inline: true, cacheLocation: 'browser', characterTheme: 'deepseek',
+    triggerPrefix: 'image###', triggerSuffix: '###', assistant: { autoPrompt: false } };
+  const article = document.createElement('article');
+  article.className = 'mes'; article.setAttribute('mesid', '0');
+  article.innerHTML = '<div class="mes_block"><div class="mes_text"></div><div class="mes_buttons"></div></div>';
+  article.querySelector('.mes_text').textContent = message.mes;
+  document.querySelector('#chat').append(article);
+  const [slot] = await bindImageSlots(context, message);
+  const store = await openChatStore(account);
+  const requestId = crypto.randomUUID();
+  await store.reserve(slot.binding, requestId, true);
+  await store.update(slot.binding.id, requestId, {
+    status: 'failed', error: '还有 32 个生图任务需要处理，请打开“查看待处理任务”，等待完成、继续保存或关闭不需要的任务后再试',
+  });
+  store.close();
+  const navigation = [];
+  const link = createChatLink({
+    account, getContext: () => context, settings: () => settings, notice() {},
+    open(page) { navigation.push(`打开：${page}`); },
+    async send(type) {
+      navigation.push(type);
+      document.querySelector('#navigation').textContent = navigation.join('\n');
+    },
+    async storageRequest(action) {
+      if (action === 'task/list') return { rows: [] };
+      throw new Error(`Unexpected action: ${action}`);
+    },
+  });
+  window.addEventListener('pagehide', () => link.destroy(), { once: true });
+</script>
+</html>

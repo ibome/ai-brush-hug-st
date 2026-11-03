@@ -44,9 +44,7 @@ export function createBrowserTaskRequest(name) {
           const base = Math.floor(offset / CHUNK_SIZE) * CHUNK_SIZE;
           return (await read(`${id}:${base}`) || new Uint8Array()).slice(offset - base, offset - base + size);
         },
-        removeResult: async (id) => {
-          for (let offset = 0; offset < 200 * 1024 * 1024; offset += CHUNK_SIZE) await write(`${id}:${offset}`, null, true);
-        },
+        removeResult: (id) => write(IDBKeyRange.bound(`${id}:`, `${id}:\uffff`), null, true),
       });
       return ledger.dispatch(action, body);
     };
@@ -62,8 +60,21 @@ export class TaskPersistence {
     this.owner = randomUUID();
   }
   list() { return this.request('task/list'); }
+  async clearLegacyHistory({ responses = false } = {}) {
+    const { rows } = await this.list();
+    const ended = rows.filter((row) => ['completed', 'cancelled'].includes(row.status)
+      && (!responses || row.execution?.size))
+      .sort((a, b) => (a.finishedAt || a.updatedAt || a.createdAt) - (b.finishedAt || b.updatedAt || b.createdAt));
+    const ids = (responses ? ended : ended.slice(0, Math.max(1, rows.length - 99))).slice(0, 100).map((row) => row.id);
+    return ids.length ? (await this.request('task/clear', { ids })).cleared : 0;
+  }
   async create(plan, id = randomUUID()) {
-    return this.request('task/create', { id, plan: frozenPlan(plan) });
+    const body = { id, plan: frozenPlan(plan) };
+    try { return await this.request('task/create', body); }
+    catch (error) {
+      if (!/^最多保留 100 条任务/.test(error.message) || !await this.clearLegacyHistory()) throw error;
+      return this.request('task/create', body);
+    }
   }
   async claim(job) {
     const token = randomUUID();
@@ -114,8 +125,13 @@ export class TaskPersistence {
     else {
       const bytes = job.execution.bytes;
       for (let offset = 0; offset < bytes.length; offset += CHUNK_SIZE) {
-        await this.call(job, 'task/execution-put', { offset, total: bytes.length,
-          data: toBase64(bytes.subarray(offset, offset + CHUNK_SIZE)) });
+        const body = { offset, total: bytes.length, data: toBase64(bytes.subarray(offset, offset + CHUNK_SIZE)) };
+        try { await this.call(job, 'task/execution-put', body); }
+        catch (error) {
+          if (!/^待恢复响应超过 512 MB/.test(error.message)
+            || !await this.clearLegacyHistory({ responses: true })) throw error;
+          await this.call(job, 'task/execution-put', body);
+        }
       }
     }
     job.executionPersisted = true;

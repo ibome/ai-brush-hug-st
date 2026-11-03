@@ -51,7 +51,7 @@ const actionNames = {
   'task-retry': ['download', '继续取图 / 保存'], gallery: ['images', '查看已存图片'], connection: ['plug', '检查生图接口'],
   'image-network': ['scan', '检测生图网络'], 'storage-check': ['hard-drive', '检测存储与缓存'],
   'storage-settings': ['settings-2', '图片存储设置'], 'backup-settings': ['archive', '备份与迁移'],
-  'task-records': ['list-todo', '核对任务记录'], 'assistant-response': ['file-json', '查看回复并本地修复'],
+  'task-records': ['list-todo', '查看待处理任务'], 'assistant-response': ['file-json', '查看回复并本地修复'],
   'assistant-config': ['settings-2', '检查文字配置'], 'assistant-network': ['scan', '检测文字网络'],
   'assistant-diagnostic': ['list-checks', '查看调用诊断'],
 };

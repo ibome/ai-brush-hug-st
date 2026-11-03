@@ -8,11 +8,15 @@ export const CHUNK_SIZE = 512 * 1024;
 export const LEASE_MS = 30000;
 const MAX_RESULT = 200 * 1024 * 1024;
 const MAX_TOTAL = 512 * 1024 * 1024;
+const MAX_TASKS = 100;
+const MAX_PENDING = 32;
 const idOK = (value) => typeof value === 'string' && /^[a-f0-9-]{36}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const fail = (message, status = 409) => Object.assign(new Error(message), { status });
 const terminal = (row) => ['completed', 'cancelled'].includes(row.status);
+const finished = (row) => terminal(row)
+  || row.status === 'failed' && row.stage === 'rejected' && !row.execution && !row.captureSize;
 const scheduling = (value = {}) => ({
   generationMode: value.generationMode === 'parallel' ? 'parallel' : 'queue',
   concurrency: Math.max(1, Math.min(16, Math.round(Number(value.concurrency) || 2))),
@@ -84,6 +88,24 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
     try { const value = await change(); await save(state); return value; }
     catch (error) { state = before; throw error; }
   }
+  async function releaseFinishedResults() {
+    const released = [];
+    for (const row of Object.values(state.rows)) {
+      if (!terminal(row) || !row.execution && !row.captureSize) continue;
+      try { await removeResult(row.id); released.push(row.id); } catch {}
+    }
+    if (!released.length) return;
+    // Saved images live in the image library; these are only temporary provider responses.
+    try {
+      await commit(() => {
+        for (const id of released) {
+          delete state.rows[id].execution;
+          delete state.rows[id].captureSize;
+          delete state.rows[id].captureOffset;
+        }
+      });
+    } catch {}
+  }
   function expire(row) {
     if (row.status !== 'running' || row.leaseUntil > now()) return;
     row.status = row.execution ? 'paused' : row.stage === 'waiting' ? 'paused' : 'uncertain';
@@ -121,6 +143,7 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
       if (Object.values(state.rows).some((row) => row.status === 'running' && row.leaseUntil <= now())) {
         await commit(() => { for (const row of Object.values(state.rows)) expire(row); });
       }
+      await releaseFinishedResults();
       return { rows: Object.values(state.rows).map(publicRow), serverTime: now() };
     }
     if (action === 'task/create') {
@@ -133,15 +156,23 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
       if (plan.chatRequestId && Object.values(state.rows).some((row) => row.plan.chatRequestId === plan.chatRequestId)) {
         throw fail('该聊天请求已有任务，请查看原任务记录');
       }
-      if (Object.keys(state.rows).length >= 100) throw fail('最多保留 100 条任务，请清理已完成记录');
-      if (Object.values(state.rows).filter((row) => !terminal(row)).length >= 32) throw fail('最多保留 32 条未完成任务');
-      return commit(() => {
+      const rows = Object.values(state.rows);
+      if (rows.filter((row) => !finished(row)).length >= MAX_PENDING) {
+        throw fail('还有 32 个生图任务需要处理，请打开“查看待处理任务”，等待完成、继续保存或关闭不需要的任务后再试');
+      }
+      const expired = rows.filter(finished)
+        .sort((a, b) => (a.finishedAt || a.updatedAt || a.createdAt) - (b.finishedAt || b.updatedAt || b.createdAt))
+        .slice(0, Math.max(0, rows.length - MAX_TASKS + 1));
+      const result = await commit(() => {
+        for (const row of expired) delete state.rows[row.id];
         const row = { id: body.id, plan, createdAt: now(), updatedAt: now(), status: 'paused',
           stage: 'waiting', phase: 'waiting', attempts: 0, savedIds: [], error: '',
           owner: '', token: '', leaseUntil: 0, cancelRequested: false };
         state.rows[row.id] = row;
         return publicRow(row);
       });
+      await Promise.all(expired.map((row) => removeResult(row.id).catch(() => {})));
+      return result;
     }
     if (action === 'task/claim') {
       if (!idOK(body.owner) || !idOK(body.token)) throw fail('执行标识无效', 400);
@@ -172,6 +203,7 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
       return commit(() => { const current = owned(body); return { leaseUntil: current.leaseUntil }; });
     }
     if (action === 'task/execution-put') {
+      await releaseFinishedResults();
       return commit(async () => {
         const row = owned(body);
         if (!['submitting', 'accepted', 'saving'].includes(row.stage)) throw fail('任务尚未提交');
@@ -186,7 +218,9 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
           const bytes = Uint8Array.from(atob(body.data), (char) => char.charCodeAt(0));
           if (!bytes.length || bytes.length > CHUNK_SIZE || body.offset + bytes.length > body.total) throw fail('任务响应块大小无效', 400);
           const total = Object.values(state.rows).reduce((sum, item) => sum + (item.execution?.size || item.captureSize || 0), 0);
-          if (total - (row.captureSize || row.execution?.size || 0) + body.total > MAX_TOTAL) throw fail('待恢复响应超过 512 MB，请清理已完成任务');
+          if (total - (row.captureSize || row.execution?.size || 0) + body.total > MAX_TOTAL) {
+            throw fail('待保存的图片响应已达到 512 MB，请打开“查看待处理任务”，继续保存已有图片或关闭不需要的任务后再试');
+          }
           if (row.captureSize && row.captureSize !== body.total) throw fail('任务响应大小不一致');
           const offset = row.captureOffset || 0;
           if (body.offset > offset) throw fail('任务响应块不连续');
@@ -213,7 +247,7 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
       return { data: btoa(text), total: row.execution.size };
     }
     if (action === 'task/update') {
-      return commit(() => {
+      await commit(() => {
         // Finalizing a cancelled worker still requires its unexpired fencing token.
         const candidate = state.rows[body.id];
         const cancelled = candidate?.cancelRequested;
@@ -247,9 +281,11 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
         } else if (cancelled) row.cancelRequested = true;
         return publicRow(row);
       });
+      await releaseFinishedResults();
+      return publicRow(state.rows[body.id]);
     }
     if (action === 'task/cancel') {
-      return commit(() => {
+      await commit(() => {
         const row = state.rows[body.id];
         if (!row) throw fail('任务不存在', 404);
         expire(row);
@@ -258,10 +294,12 @@ export function createTaskLedger({ load, save, writeChunk, readChunk, removeResu
         row.updatedAt = now();
         return publicRow(row);
       });
+      await releaseFinishedResults();
+      return publicRow(state.rows[body.id]);
     }
     if (action === 'task/clear') {
-      if (body.ids !== undefined && (!Array.isArray(body.ids) || body.ids.length > 100 || !body.ids.every(idOK))) throw fail('清理任务列表无效', 400);
-      const ids = Object.values(state.rows).filter((row) => terminal(row) && (!body.ids || body.ids.includes(row.id))).map((row) => row.id);
+      if (body.ids !== undefined && (!Array.isArray(body.ids) || body.ids.length > MAX_TASKS || !body.ids.every(idOK))) throw fail('清理任务列表无效', 400);
+      const ids = Object.values(state.rows).filter((row) => finished(row) && (!body.ids || body.ids.includes(row.id))).map((row) => row.id);
       await commit(() => { for (const id of ids) delete state.rows[id]; });
       await Promise.all(ids.map((id) => removeResult(id).catch(() => {})));
       return { cleared: ids.length };

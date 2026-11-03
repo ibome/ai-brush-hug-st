@@ -2006,7 +2006,8 @@ function taskPhase(phase) {
 function renderTasks() {
   const labels = { queued: '等待中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消', paused: '等待继续', uncertain: '结果待核对' };
   return `<section class="generation-tasks" aria-label="生图任务">
-    <div class="field-heading"><h2>任务与请求记录</h2><div class="task-actions">${iconButton('refresh-cw', '刷新任务记录', 'task-refresh')}${iconButton('trash-2', '清理已完成和已关闭记录', 'task-clear')}${iconButton('download', '导出请求记录', 'task-export')}</div></div>
+    <div class="field-heading"><h2>任务与请求记录</h2><div class="task-actions">${iconButton('refresh-cw', '刷新任务记录', 'task-refresh')}${iconButton('trash-2', '清理已结束记录，保留已保存图片', 'task-clear')}${iconButton('download', '导出请求记录', 'task-export')}</div></div>
+    <p class="task-empty">已结束记录自动整理，已保存图片保留。未完成的图片可在下方继续保存或核对。</p>
     ${taskError ? `<p class="task-empty" role="status">${esc(taskError)}</p>` : ''}
     ${taskQueue.jobs.length ? `<div class="task-list">${[...taskQueue.jobs].reverse().map((job) => `<div class="task-row">
       <div><strong>${job.plan.snapshot?.novelaiProcessing ? `${esc(processingTitle(job.plan.snapshot.novelaiProcessing))} · ` : ''}${esc(job.plan.model)}</strong><span>${labels[job.status]}${job.remote ? ' · 其他页面执行中' : ''} · ${esc(job.error || taskPhase(job.phase))}${job.imageCount ? ` · ${job.imageCount} 张` : ''}</span><span>${job.plan.snapshot?.extensionRequest ? `来自 ${esc(job.plan.snapshot.extensionRequest.source.name)} · ` : ''}${job.plan.storageLocation === 'server' ? '酒馆服务器' : '浏览器图片库'} · ${new Date(job.createdAt).toLocaleString()}</span></div>
@@ -3922,6 +3923,10 @@ async function validateChatRequest(request) {
 
 export function receiveChatCommand(data) {
   if (!isInstalled()) return;
+  if (data.type === 'linghuashi:chat-task-records') {
+    showPage('generate'); revealSetting('.generation-tasks');
+    void refreshTasks(); return;
+  }
   if (data.type === 'linghuashi:chat-valid') {
     chatValidations.get(data.validationId)?.(data.valid === true);
     return;
@@ -4853,7 +4858,7 @@ export function mountPlugin(root, next) {
         activeJobId = target.dataset.task; taskQueue.retry(activeJobId); break;
       case 'task-refresh': await refreshTasks(); break;
       case 'task-clear':
-        try { const result = await taskPersistence.clear(); await refreshTasks(); toast(`已清理 ${result.cleared} 条任务记录`); }
+        try { const result = await taskPersistence.clear(); await refreshTasks(); toast(`已清理 ${result.cleared} 条已结束记录，已保存图片保留`); }
         catch (error) { toast(error.message); }
         break;
       case 'task-parameters': {

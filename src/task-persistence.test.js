@@ -187,3 +187,77 @@ test('failed response checkpoint can save retained bytes on this page without a 
   await eventually(() => job.status === 'completed' && queue.running === 0);
   assert.equal(posts, 1);
 });
+
+test('an older server ledger is cleaned once and the exact same new task ID is retried', async () => {
+  const ended = Array.from({ length: 98 }, (_, index) => ({
+    id: crypto.randomUUID(), status: 'completed', finishedAt: index + 1,
+  }));
+  const protectedRows = [
+    { id: crypto.randomUUID(), status: 'failed', execution: { size: 1 } },
+    { id: crypto.randomUUID(), status: 'uncertain' },
+  ];
+  const calls = [];
+  const persistence = new TaskPersistence({
+    settings: () => settings, readKey: async () => 'secret',
+    request: async (action, body) => {
+      calls.push({ action, body });
+      if (action === 'task/create') {
+        if (calls.filter((item) => item.action === action).length === 1) throw new Error('最多保留 100 条任务，请清理已完成记录');
+        return { id: body.id };
+      }
+      if (action === 'task/list') return { rows: [...protectedRows, ...ended] };
+      if (action === 'task/clear') {
+        assert.deepEqual(body.ids, [ended[0].id]);
+        return { cleared: 1 };
+      }
+      assert.fail(`Unexpected action: ${action}`);
+    },
+  });
+  const result = await persistence.create(plan());
+  const creates = calls.filter((item) => item.action === 'task/create');
+  assert.equal(creates.length, 2);
+  assert.equal(creates[0].body.id, creates[1].body.id);
+  assert.equal(result.id, creates[0].body.id);
+});
+
+test('legacy response quota recovery clears only finished caches and retries the same checkpoint', async () => {
+  const ended = { id: crypto.randomUUID(), status: 'completed', execution: { size: 1024 } };
+  const job = { id: crypto.randomUUID(), durable: { token: crypto.randomUUID() }, execution: { bytes: new Uint8Array([1]) } };
+  const chunks = [];
+  const persistence = new TaskPersistence({
+    settings: () => settings, readKey: async () => 'secret',
+    request: async (action, body) => {
+      if (action === 'task/execution-put') {
+        chunks.push(body);
+        if (chunks.length === 1) throw new Error('待恢复响应超过 512 MB，请清理已完成任务');
+        return { accepted: true };
+      }
+      if (action === 'task/list') return { rows: [ended,
+        { id: job.id, status: 'running', execution: { size: 1 } },
+        { id: crypto.randomUUID(), status: 'failed', execution: { size: 1 } },
+      ] };
+      if (action === 'task/clear') {
+        assert.deepEqual(body.ids, [ended.id]);
+        return { cleared: 1 };
+      }
+      assert.fail(`Unexpected action: ${action}`);
+    },
+  });
+  await persistence.capture(job);
+  assert.deepEqual(chunks[1], chunks[0]);
+  assert.equal(job.executionPersisted, true);
+});
+
+test('legacy capacity recovery never clears unresolved tasks or loops when there is nothing safe to remove', async () => {
+  let creates = 0;
+  const persistence = new TaskPersistence({
+    settings: () => settings, readKey: async () => 'secret',
+    request: async (action) => {
+      if (action === 'task/create') { creates++; throw new Error('最多保留 100 条任务，请清理已完成记录'); }
+      if (action === 'task/list') return { rows: [{ id: crypto.randomUUID(), status: 'uncertain' }] };
+      assert.fail(`Unexpected cleanup: ${action}`);
+    },
+  });
+  await assert.rejects(persistence.create(plan()), /最多保留/);
+  assert.equal(creates, 1);
+});

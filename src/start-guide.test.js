@@ -58,3 +58,14 @@ test('failure actions prioritize recovery and never resubmit uncertain generatio
   assert.ok(failureActions({ scope: 'assistant', message: 'JSON 解析失败' }).includes('assistant-response'));
   assert.ok(!failureActions({ scope: 'assistant', message: '连接超时' }).includes('assistant-response'));
 });
+
+test('task capacity issues direct users to pending tasks instead of changing their API or deleting images', () => {
+  for (const message of [
+    '最多保留 100 条任务，请清理已完成记录',
+    '最多保留 32 条未完成任务',
+    '最多保留 32 个等待或运行任务',
+    '还有 32 个生图任务需要处理，请打开“查看待处理任务”',
+    '待恢复响应超过 512 MB，请清理已完成任务',
+    '待保存的图片响应已达到 512 MB，请打开“查看待处理任务”',
+  ]) assert.deepEqual(failureActions({ message }), ['task-records']);
+});

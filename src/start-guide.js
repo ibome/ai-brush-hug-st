@@ -1,4 +1,4 @@
-import { canRecoverGeneration } from './generation-recovery.js';
+import { canRecoverGeneration, taskCapacityIssue } from './generation-recovery.js';
 
 export const START_GOALS = Object.freeze([
   ['manual', '手动生图', 'image-plus'],
@@ -104,6 +104,7 @@ export function failureActions({ scope = 'image', message = '', phase = '', exec
     ...(/JSON|解析|格式|截断|回复|工具|分镜/.test(message) ? ['assistant-response'] : []),
     'assistant-config', 'assistant-network', 'assistant-diagnostic',
   ];
+  if (taskCapacityIssue(message)) return ['task-records'];
   const storage = /存储|保存|缓存|配额|磁盘|数据库|图库|缩略图/.test(message)
     || ['saving', 'refreshing', 'response-cache', 'image-processing'].includes(phase);
   const recoverable = canRecoverGeneration({ status: taskStatus, stage, execution, error: message, diagnostic });

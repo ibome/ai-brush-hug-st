@@ -13,7 +13,7 @@ import { renderGenerationTransition, transitionCSS } from './ui/generation-trans
 import { generationTransitionState } from './generation-transition.js';
 import { apiError } from './extension-api.js';
 import { createChatReader } from './chat-reader.js';
-import { canRecoverGeneration, unusableGenerationResponse } from './generation-recovery.js';
+import { canRecoverGeneration, unusableGenerationResponse, taskCapacityIssue } from './generation-recovery.js';
 
 const labels = {
   preparing: '准备生图', confirming: '等待确认提示词', queued: '排队中', running: '正在生图',
@@ -313,6 +313,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       button.addEventListener('click', action);
       section.querySelector('.actions').append(button);
     };
+    if (taskCapacityIssue(record?.error)) command('查看待处理任务', 'list-todo', () => {
+      open('generate'); void send('linghuashi:chat-task-records', {});
+    });
     if (pending && !owned && record?.taskId) command('查看任务', 'list-checks', () => open('generate'));
     else if (pending && owned) command('取消', 'x', () => send('linghuashi:chat-cancel', { requestId: record.requestId }), record.phase === 'saving');
     else {
