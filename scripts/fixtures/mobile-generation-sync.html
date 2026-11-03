@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手机生图同步回归</title>
+<style>
+  body { margin:20px auto; padding:0 16px; max-width:720px; font:15px/1.6 system-ui; color:#23443b; background:#f7faf9; }
+  h1 { font-size:21px; } .mes { margin:20px 0; }
+  output { display:block; white-space:pre-wrap; }
+</style>
+<h1>手机生图同步回归</h1>
+<p>使用隔离图片库与模拟任务；任务查询持续报错。</p>
+<output id="checks">等待检查</output>
+<div id="chat"></div>
+<p id="notice" role="status"></p>
+<script type="module">
+  import { randomUUID } from '../../src/crypto-compat.js';
+  import { createChatLink } from '../../src/chat-link.js';
+  import { openChatStore } from '../../src/chat-storage.js';
+  import { bindImageSlots } from '../../src/chat.js';
+
+  const account = `fixture-mobile-sync:${randomUUID()}`;
+  const message = { mes:'已有配图：image###a quiet lake###\n新配图：image###a quiet mountain###',
+    name:'测试', send_date:'fixture', swipe_id:0 };
+  const context = { chat:[message], chatId:'mobile-sync', characterId:0,
+    characters:[{ avatar:'fixture.png' }], eventTypes:{}, eventSource:{ on() {}, removeListener() {} } };
+  const settings = { enabled:true, auto:false, inline:true, cacheLocation:'browser', characterTheme:'gemini',
+    triggerPrefix:'image###', triggerSuffix:'###', assistant:{ autoPrompt:false } };
+  const article = document.createElement('article');
+  article.className = 'mes'; article.setAttribute('mesid', '0');
+  article.innerHTML = '<div class="mes_block"><div class="mes_text"></div><div class="mes_buttons"></div></div>';
+  article.querySelector('.mes_text').textContent = message.mes;
+  document.querySelector('#chat').append(article);
+  const slots = await bindImageSlots(context, message);
+  const png = await (await fetch('/dist/assets/lake.jpg')).blob();
+  if (!png.type.startsWith('image/')) throw new Error('Fixture image missing');
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(`linghuashi-drawings-v1:st:${encodeURIComponent(account)}`, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore('drawings', { keyPath:'id' });
+      request.result.createObjectStore('meta', { keyPath:'key' });
+    };
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  async function saveImage(id) {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('drawings', 'readwrite');
+      tx.objectStore('drawings').put({ id, title:'模拟湖畔配图', blob:png, thumbnail:png,
+        width:1216, height:832, createdAt:Date.now(), snapshot:{ provider:'novelai',
+          params:{ positive:'a quiet lake', seed:42 } } });
+      tx.oncomplete = resolve; tx.onabort = () => reject(tx.error);
+    });
+  }
+  await saveImage('first-image');
+  const setup = await openChatStore(account);
+  const existing = randomUUID();
+  await setup.reserve(slots[0].binding, existing);
+  await setup.update(slots[0].binding.id, existing, { status:'completed', savedIds:['first-image'] });
+  setup.close();
+  let serverImages = [];
+  let serverRecord = { binding:slots[0].binding, requestId:existing, status:'running', savedIds:[], updatedAt:2 };
+  const serverTask = { id:randomUUID(), status:'running', createdAt:1, savedIds:[],
+    plan:{ chatRequestId:existing, chatBinding:slots[0].binding, storageLocation:'server' } };
+  const serverStore = await openChatStore(`${account}:server`, { mode:() => 'server',
+    async request(action, body) {
+      if (action === 'task/list') return { rows:[serverTask] };
+      if (action === 'chat/list') return [serverRecord];
+      if (action === 'list') return { rows:serverImages };
+      if (action === 'chat/update') return serverRecord = { ...serverRecord, ...body.value, updatedAt:3 };
+      throw new Error(`Unexpected mock action: ${action}`);
+    },
+  });
+  await serverStore.sync(slots[0].binding.chatKey);
+  await serverStore.get(slots[0].binding.id);
+  await serverStore.image('late-image', 'server');
+  serverImages = [{ id:'late-image', title:'模拟服务器图片', width:1200, height:800,
+    createdAt:3, bytes:png.size, mime:png.type, thumbBytes:png.size, thumbMime:png.type }];
+  await serverStore.update(slots[0].binding.id, existing, { status:'completed', savedIds:['late-image'] });
+  const refreshedCacheShowsImage = Boolean(await serverStore.image('late-image', 'server'));
+  await serverStore.sync(slots[0].binding.chatKey);
+  const staleTaskCannotHideCompleted = (await serverStore.get(slots[0].binding.id)).status === 'completed';
+  serverStore.close();
+  let link, submissions = 0, sawProgress = false;
+  const checks = () => {
+    const cards = [...document.querySelectorAll('.linghuashi-chat-images')];
+    document.querySelector('#checks').textContent = JSON.stringify({
+      submissions, sawProgress, refreshedCacheShowsImage, staleTaskCannotHideCompleted,
+      secureContext:window.isSecureContext, viewport:document.documentElement.clientWidth,
+      pictures:cards.flatMap((card) => [...card.shadowRoot.querySelectorAll('.picture-entry')]).length,
+      statuses:cards.map((card) => card.shadowRoot.querySelector('.status')?.textContent),
+    }, null, 2);
+  };
+  link = createChatLink({ account, getContext:() => context, settings:() => settings,
+    open() {}, notice(text) { document.querySelector('#notice').textContent = text; },
+    async storageRequest(action) {
+      if (action === 'task/list') throw new TypeError('模拟局域网任务查询失败');
+      throw new Error(`Unexpected action: ${action}`);
+    },
+    async send(type, data) {
+      if (type !== 'linghuashi:chat-generate') return;
+      submissions++;
+      await link.receive({ type:'linghuashi:chat-task', requestId:data.requestId, status:'running', phase:'submitting' });
+      setTimeout(() => {
+        sawProgress = [...document.querySelectorAll('.linghuashi-chat-images')].some((card) =>
+          Boolean(card.shadowRoot.querySelector('.generation-transition')));
+        checks();
+      }, 500);
+      setTimeout(async () => {
+        await saveImage('new-image');
+        await link.receive({ type:'linghuashi:chat-task', requestId:data.requestId,
+          status:'completed', savedIds:['new-image'] });
+        setTimeout(checks, 200);
+      }, 1800);
+    },
+  });
+  setTimeout(checks, 500);
+  window.addEventListener('pagehide', () => { link.destroy(); db.close(); }, { once:true });
+</script>
+</html>

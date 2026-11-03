@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生图工坊同步回归</title>
+<div id="plugin-root"></div>
+<div id="overlay-root"></div>
+<div id="toast-root" role="status"></div>
+<output id="fixture-checks" style="position:fixed;left:0;bottom:0;z-index:10000;background:white;font:11px monospace"></output>
+<script type="module">
+  import '../../src/styles/plugin.css';
+  import { createBrowserTaskRequest } from '../../src/task-persistence.js';
+  import { randomUUID } from '../../src/crypto-compat.js';
+  const account = `fixture-workspace-sync:${randomUUID()}`;
+  const ref = `tavern:${randomUUID()}`;
+  const tasks = createBrowserTaskRequest(`${account}:tasks`);
+  window.__LINGHUASHI_ENV__ = {
+    mode:'extension', account, chat:{ name:'隔离测试', count:0 }, releaseState:{ status:'current', release:null },
+    ui:{ settingsVersion:1, page:'generate', enabled:true, confirm:false, cacheLocation:'browser', characterTheme:'gemini',
+      experience:{ level:'full', dismissed:true, goal:'manual' }, provider:'openai',
+      openaiEndpoint:'https://fixture.invalid', openaiPath:'/images/generations', openaiTimeout:180,
+      openai:{ model:'gpt-image-1', positive:'a quiet lake', negative:'', size:'1024x1024', n:1 },
+      connections:{ openai:{ endpoint:'https://fixture.invalid', path:'/images/generations', keyRef:ref, timeout:180 } },
+    },
+  };
+  let submissions = 0, focused, focusPreserved = true;
+  const originalFetch = window.fetch.bind(window);
+  const image = await (await originalFetch('/dist/assets/lake.jpg')).arrayBuffer();
+  const bytes = new Uint8Array(image), chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += 32768) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 32768)));
+  }
+  const encoded = btoa(chunks.join(''));
+  window.fetch = async (url, options) => {
+    if (!String(url).startsWith('https://fixture.invalid/')) return originalFetch(url, options);
+    if (options?.method !== 'POST') return new Response(JSON.stringify({ data:[{ id:'gpt-image-1' }] }), { headers:{ 'Content-Type':'application/json' } });
+    submissions++;
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    return new Response(JSON.stringify({ data:[{ b64_json:encoded }] }), { headers:{ 'Content-Type':'application/json' } });
+  };
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    let value, error, type;
+    if (data?.type === 'linghuashi:secret-request') {
+      type = 'linghuashi:secret-result'; value = data.action === 'read' ? 'fixture-key' : ref;
+    } else if (data?.type === 'linghuashi:storage-request') {
+      type = 'linghuashi:storage-result';
+      try { value = await tasks(data.action, data.body); } catch (failure) { error = failure.message; }
+    } else if (data?.type === 'linghuashi:state') type = 'linghuashi:state-result';
+    else return;
+    window.postMessage({ type, requestId:data.requestId, value, error }, location.origin);
+  });
+  document.addEventListener('input', (event) => {
+    if (event.target.matches('textarea[data-openai="positive"]')) focused = event.target;
+  });
+  const { normalizeConfig } = await import('../../src/config.js');
+  const { mountPlugin, restoreCredentials } = await import('../../src/ui/plugin.js');
+  await restoreCredentials();
+  mountPlugin(document.querySelector('#plugin-root'), normalizeConfig({ surface:'console', state:'ready', theme:'light' }));
+  setInterval(() => {
+    if (focused && !focused.isConnected) focusPreserved = false;
+    document.querySelector('#fixture-checks').textContent = JSON.stringify({
+      submissions, focusPreserved, completed:document.querySelector('.task-row')?.textContent.includes('已完成') || false,
+      imageLoaded:Boolean(document.querySelector('.result-frame .image-open img')?.naturalWidth),
+      secureContext:window.isSecureContext, viewport:document.documentElement.clientWidth,
+    });
+  }, 100);
+</script>
+</html>

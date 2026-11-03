@@ -37,6 +37,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   const processor = getContext().streamingProcessor;
   let generating = processor?.isFinished === false && !processor.isStopped;
   let renderTimer;
+  let localRender = false;
   let observer;
   let channel;
   let dialogSession;
@@ -60,13 +61,17 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   });
 
   const isCurrent = (entry) => bindingIsCurrent(entry, getContext(), settings());
-  const scheduledRender = () => {
+  const scheduledRender = (local = false) => {
     clearTimeout(renderTimer);
+    localRender ||= local === true;
     if (destroyed || generating) return;
-    renderTimer = setTimeout(() => { void reconcileSafely(); }, 60);
+    renderTimer = setTimeout(() => {
+      const local = localRender; localRender = false;
+      void reconcileSafely(local);
+    }, 60);
   };
-  async function reconcileSafely() {
-    try { await reconcile(); }
+  async function reconcileSafely(local = false) {
+    try { await reconcile(local); }
     catch {
       if (destroyed) return;
       for (const card of document.querySelectorAll('.linghuashi-chat-images')) {
@@ -100,7 +105,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     }
   }
 
-  async function reconcile() {
+  async function reconcile(local = false) {
     if (destroyed || generating) return;
     const turn = ++revision;
     await ready;
@@ -108,8 +113,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     const context = getContext();
     const options = settings();
     const chatKey = chatIdentity(context);
-    if (options.enabled && chatKey && !await syncRecords(chatKey,
-      ['server', 'local'].includes(options.cacheLocation) ? 'server' : 'browser')) return;
+    // A slow background storage check must not hide progress already received here.
+    if (!local && options.enabled && chatKey) await syncRecords(chatKey,
+      ['server', 'local'].includes(options.cacheLocation) ? 'server' : 'browser');
     if (turn !== revision || destroyed) return;
     const assistant = normalizeAssistant(options.assistant);
     if (!options.auto && !assistant.autoPrompt) pendingReplies.clear();
@@ -520,7 +526,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       const requestId = randomUUID();
       const current = { ...entry, requestId, quickImage: true, groupId, storageLocation: row.storageLocation,
         record: { status: 'preparing', requestId }, invalidated: false };
-      requests.set(requestId, current); scheduledRender();
+      requests.set(requestId, current); scheduledRender(true);
       await new Promise((resolve) => {
         current.release = resolve;
         Promise.resolve(send('linghuashi:chat-image-generate', { requestId, binding: entry.binding,
@@ -563,7 +569,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (draftPlan) await store.update(entry.binding.id, requestId, { status: 'preparing', assistant: draftPlan });
       requests.set(requestId, current);
       channel?.postMessage({ id: entry.binding.id });
-      scheduledRender();
+      scheduledRender(true);
       await new Promise((resolve) => {
         current.release = resolve;
         Promise.resolve(send(draftPlan ? 'linghuashi:chat-draft-generate' : smart ? 'linghuashi:chat-assist' : 'linghuashi:chat-generate', {
@@ -663,7 +669,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
         entry.record = { ...data };
         if (!CHAT_PENDING.has(data.status)) { entry.release?.(); requests.delete(data.requestId); }
       }
-      scheduledRender(); return;
+      scheduledRender(true); return;
     }
     if (entry && data.type === 'linghuashi:chat-draft' && data.plan) {
       if (!isCurrent(entry) || ['queued', 'running', 'completed'].includes(entry.record?.status)) return;
@@ -688,7 +694,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       const finished = [...requests.values()].filter((item) => !CHAT_PENDING.has(item.record?.status));
       for (const old of finished.slice(0, Math.max(0, finished.length - 50))) requests.delete(old.requestId);
     }
-    scheduledRender();
+    scheduledRender(true);
   }
 
   const context = getContext();
@@ -740,6 +746,12 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   const syncTimer = setInterval(() => {
     if (settings().enabled && document.visibilityState === 'visible') scheduledRender();
   }, 15000);
+  const resume = () => {
+    if (settings().enabled && document.visibilityState !== 'hidden') scheduledRender();
+  };
+  window.addEventListener('pageshow', resume);
+  window.addEventListener('online', resume);
+  document.addEventListener('visibilitychange', resume);
   return {
     receive,
     read: (action, data, signal) => reader.receive(action, data, signal),
@@ -774,6 +786,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     refresh: scheduledRender,
     destroy() {
       destroyed = true; revision++; clearTimeout(renderTimer); clearInterval(syncTimer); observer?.disconnect(); removeCards();
+      window.removeEventListener('pageshow', resume);
+      window.removeEventListener('online', resume);
+      document.removeEventListener('visibilitychange', resume);
       reader.destroy();
       dialogSession?.controller.abort();
       channel?.close(); store?.close();

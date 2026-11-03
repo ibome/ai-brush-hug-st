@@ -102,6 +102,8 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
   const withTask = (row, id) => {
     const task = taskRecords.get(id);
     if (!task || row && row.requestId !== task.plan.chatRequestId && row.updatedAt > task.createdAt) return row;
+    if (row?.requestId === task.plan.chatRequestId && row.status === 'completed'
+      && ['paused', 'queued', 'running'].includes(task.status)) return row;
     const queuedHere = task.status === 'paused' && task.stage === 'waiting' && ownsRequest(task.plan.chatRequestId);
     return { ...row, binding: task.plan.chatBinding, requestId: task.plan.chatRequestId, taskId: task.id,
       status: queuedHere ? 'queued' : ['paused', 'uncertain'].includes(task.status) ? 'failed' : task.status,
@@ -173,6 +175,10 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
       const row = location === 'server' && serverRequest
         ? await serverRequest('chat/update', { id, requestId, value }) : await local.update(id, requestId, value);
       if (row && location === 'server') syncedRecords.set(id, row);
+      if (row) {
+        browserRows = null; serverRows = null;
+        if (taskRecords.get(id)?.plan.chatRequestId === requestId) taskRecords.delete(id);
+      }
       return remember(row, location);
     },
     async image(id, location = serverImages.has(id) ? 'server' : 'browser') {

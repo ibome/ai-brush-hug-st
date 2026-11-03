@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.5&build=20261103-task-retention",
+  "js": "dist/index.js?ver=0.26.6&build=20261104-mobile-generation-sync",
   "author": "小波",
-  "version": "0.26.5",
+  "version": "0.26.6",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

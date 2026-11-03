@@ -103,6 +103,7 @@ import '../styles/generation-transition.css';
 import { createFloatingMenu } from './floating-menu.js';
 import { GenerationQueue, GenerationError, buildNovelAIRequest, submitGeneration, downloadResults, cancelComfyPending } from '../generation.js';
 import { canRecoverGeneration } from '../generation-recovery.js';
+import { createTaskImageSync, startGenerationPolling } from '../generation-sync.js';
 import { TaskPersistence, createBrowserTaskRequest } from '../task-persistence.js';
 import '../styles/tasks.css';
 import { validBinding } from '../chat.js';
@@ -262,6 +263,7 @@ const viewerUI = { ids: [], index: 0, details: true, zoom: false, imageId: '', c
 let chatImageOpenRevision = 0;
 let imageEditorUI = null;
 let activeJobId = null;
+let generationSubmitting = false;
 let generationVerified = null;
 const verifiedImages = new Set(), verifiedAssistant = new Set();
 const pageScrolls = new Map();
@@ -643,6 +645,8 @@ const taskQueue = new GenerationQueue({
   changed: () => {
     const job = taskQueue.jobs.find((item) => item.id === activeJobId);
     if (job) runtimeState = ({ queued: 'queued', running: 'generating', completed: 'success', failed: 'error', cancelled: 'ready', paused: 'ready', uncertain: 'error' })[job.status] || 'ready';
+    if (job?.savedIds?.some((id) => drawings.some((row) => row.id === id))
+      && !['queued', 'running'].includes(job.status)) runtimeState = 'success';
     for (const item of taskQueue.jobs) reportChatTask(item);
     externalTaskService.report(chatPost);
     try {
@@ -654,10 +658,28 @@ const taskQueue = new GenerationQueue({
     } catch (error) {
       comicPanel.fail(new Error(`图片已保留在绘图管理，漫画关联暂未更新：${error.message}`));
     }
+    void syncTaskImages().catch((error) => {
+      taskError = `图片已保存，显示暂未同步：${error.message}`;
+      if (host) render();
+    });
     if (host) render();
   },
   cancel: cancelComfyPending,
   persistence: taskPersistence,
+});
+const syncTaskImages = createTaskImageSync({
+  tasks: () => taskQueue.jobs, images: () => drawings, location: () => state.cacheLocation,
+  ready: () => libraryReady,
+  reload: (refresh) => reloadDrawings(refresh),
+  select: (jobs) => {
+    const current = jobs.find((job) => job.id === activeJobId);
+    if (current?.savedIds.some((id) => drawings.some((row) => row.id === id))) {
+      activeDrawingId = current.savedIds.find((id) => drawings.some((row) => row.id === id));
+      if (!['queued', 'running'].includes(current.status)) runtimeState = 'success';
+      render();
+    }
+  },
+  notify: notifyImagesChanged,
 });
 const externalTaskService = createExtensionTaskService({
   queue: taskQueue, state: () => state,
@@ -993,6 +1015,7 @@ const statusData = () => ({
   error: { label: '生成失败', icon: 'circle-alert', class: 'danger' },
 })[runtimeState];
 const statusBadge = () => {
+  if (generationSubmitting) return `<span class="ui-status accent">${icon('loader-circle', 'spin')}准备提交</span>`;
   if (runtimeState === 'ready') return readinessBadge(setupReadiness().image);
   const item = statusData();
   return `<span class="ui-status ${item.class}">${icon(item.icon, runtimeState === 'generating' ? 'spin' : '')}${item.label}</span>`;
@@ -1201,7 +1224,8 @@ function experienceToolbar() {
 
 function primaryPageAction() {
   if (state.page === 'generate') return button('sparkles', !state.enabled ? '插件已关闭'
-    : ['queued', 'generating'].includes(runtimeState) ? '加入队列' : '生成图像', 'generate', 'primary', !state.enabled ? 'disabled' : '');
+    : generationSubmitting ? '准备提交…' : ['queued', 'generating'].includes(runtimeState) ? '加入队列' : '生成图像',
+    'generate', 'primary', !state.enabled || generationSubmitting ? 'disabled' : '');
   if (state.page === 'assistant') {
     if (assistantUI.busy) return button('square', '取消', 'assistant-cancel', 'secondary');
     return button(currentAssistantPlan()?.positive.trim() ? 'image-plus' : 'sparkles',
@@ -1958,6 +1982,9 @@ function updateTriggerFormat() {
 
 function resultMedia(chat = false) {
   const job = taskQueue.jobs.find((item) => item.id === activeJobId);
+  if (generationSubmitting && !['queued', 'generating'].includes(runtimeState)) {
+    return renderGenerationTransition({ theme: state.characterTheme, task: { status: 'preparing' } });
+  }
   if (runtimeState === 'error') return `<div class="result-placeholder result-error">${chibi('sad', 'status-mascot')}<strong>${job?.saved ? '图片已保存，图库刷新失败' : job && canRecoverGeneration(job) ? '图片任务需要继续处理' : '生成未完成'}</strong><span>${esc(job?.error || '服务暂时没有响应')}</span>${renderFailureActions(failureActions({ ...job,
     message: job?.error, phase: job?.failurePhase || job?.phase }), job?.id)}</div>`;
   if (runtimeState === 'queued' || runtimeState === 'generating') {
@@ -1987,15 +2014,34 @@ function renderGenerate() {
         ${novelai ? renderNovelAIParameters(state, novelaiAdvancedOpen) : openai ? renderOpenAIParameters(state, openaiModels, openaiAdvancedOpen, { ...openaiModelUI, loading: connectionStatus.tone === 'pending' }) : state.provider === 'sdwebui' ? renderSDWebUIParameters(state, sdwebuiProbe, sdwebuiAdvancedOpen) : renderComfyWorkflow(state, comfyProbe, comfyExpanded)}
         ${renderCharacterSelection(state, currentChat(), { frozen: Boolean(state.characterSceneOverride?.entries?.length) })}
       </section>
-      <section class="result-area">
+      ${renderGenerationResult()}
+    </div>${renderTasks()}`;
+}
+
+function renderGenerationResult() {
+  return `<section class="result-area">
         <div class="field-heading"><h2>生成结果</h2>${statusBadge()}</div>
-        <div class="result-frame${runtimeState === 'queued' || runtimeState === 'generating' ? ' result-frame--pending' : ''}">${resultMedia()}</div>
+        <div class="result-frame${generationSubmitting || runtimeState === 'queued' || runtimeState === 'generating' ? ' result-frame--pending' : ''}">${resultMedia()}</div>
         <div class="result-actions"><span>${activeDrawing()?.demo ? '示例图片' : activeDrawing() ? '当前图片' : ''}</span><div>${iconButton('star', '收藏图片', 'favorite', `aria-pressed="${activeDrawing()?.favorite || false}"`)}${iconButton('arrow-down-to-line', '下载图片', 'download')}${iconButton('expand', '查看大图', 'viewer')}</div></div>
         ${renderResultDetails()}
         <div class="recent-heading"><h2>最近图片</h2><button type="button" class="text-button" data-page="gallery">绘图管理${icon('arrow-right')}</button></div>
         <div class="recent-images">${drawings.slice(0, 3).map((item) => `<button type="button" data-drawing="${item.id}" class="${activeDrawingId === item.id ? 'selected' : ''}" aria-label="查看${esc(item.title)}"><img src="${item.thumbSrc}" alt="${esc(item.title)}" /></button>`).join('')}</div>
-      </section>
-    </div>${renderTasks()}`;
+      </section>`;
+}
+
+function refreshGenerationStatus() {
+  if (state.page !== 'generate' || config.surface !== 'console') return;
+  const result = host.querySelector('.result-area');
+  if (result) result.outerHTML = renderGenerationResult();
+  const tasks = host.querySelector('.generation-tasks');
+  if (tasks) tasks.outerHTML = renderTasks();
+  const primary = host.querySelector('[data-page-primary]');
+  if (primary) primary.innerHTML = primaryPageAction();
+  const count = host.querySelector('.plugin-nav > [data-page="gallery"] small');
+  if (count) count.textContent = state.history.length;
+  for (const node of [host.querySelector('.result-area'), host.querySelector('.generation-tasks'), primary]) {
+    if (node) paintIcons(node);
+  }
 }
 
 function taskPhase(phase) {
@@ -2961,6 +3007,11 @@ function render(force = false) {
   }
   if (!force && advancedPanel.ui.painting) return;
   const editing = document.activeElement;
+  if (!force && samePage && state.page === 'generate' && config.surface === 'console'
+    && host.contains(editing) && editing?.matches('input, textarea')
+    && !['checkbox', 'radio', 'range', 'color', 'file', 'button', 'submit', 'reset'].includes(editing.type)) {
+    refreshGenerationStatus(); return;
+  }
   // Replacing a focused input closes mobile keyboards even if focus is restored afterward.
   if (!force && samePage && state.page === 'connection' && config.surface === 'console'
     && host.contains(editing) && editing?.matches('input, textarea')
@@ -2972,7 +3023,9 @@ function render(force = false) {
   }
   if (!force && host.dataset.renderedPage === state.page
     && editing?.matches('[data-advanced-field], [data-vibe-field], [data-lora-field], [data-mask-brush]')
-    && !['checkbox', 'select-one'].includes(editing.type)) return;
+    && !['checkbox', 'select-one'].includes(editing.type)) {
+    refreshGenerationStatus(); return;
+  }
   if (!force && host.dataset.renderedPage === 'settings' && state.page === 'settings'
     && editing?.matches('[data-backup-field="password"]')) return;
   if (!force && host.dataset.renderedPage === 'styles' && state.page === 'styles'
@@ -3868,8 +3921,8 @@ async function runGeneration(job) {
     connectionStatus = { message: '图片已返回 · 生图已验证', tone: 'success' };
   }
   job.failurePhase = 'refreshing';
-  await reloadDrawings();
-  if (job.plan.imageEdit) notifyImagesChanged();
+  notifyImagesChanged();
+  await reloadDrawings(true);
   toast(`已${job.plan.snapshot.novelaiProcessing ? '处理' : '生成'}并保存 ${job.imageCount} 张图片`);
   delete job.rows;
   } finally { stopProgress(); delete job.preparePayload; }
@@ -4446,6 +4499,7 @@ async function refreshTasks() {
     }
     taskError = '';
     taskQueue.restore(result.rows);
+    await syncTaskImages();
   } catch (error) { taskError = `任务记录暂时无法读取：${error.message}`; }
   finally { taskRefreshing = false; if (host) render(); }
   })();
@@ -4454,10 +4508,13 @@ async function refreshTasks() {
 
 function generate() {
   if (document.getElementById('overlay-root').childElementCount) { toast('请先处理当前窗口'); return; }
+  if (generationSubmitting) return;
   generationIssue = '';
+  generationSubmitting = true;
+  render();
   void advancedPanel.beforeGenerate().then(() => enqueueGeneration()).catch((error) => {
     generationIssue = error.message; render(true); revealSetting('.generation-issue');
-  });
+  }).finally(() => { generationSubmitting = false; render(); });
 }
 
 function openViewer(imageId) {
@@ -4500,14 +4557,26 @@ export function mountPlugin(root, next) {
   if (state.page === 'assistant' && state.assistant.source === 'tavern' && isInstalled()) void fetchAssistantModels(false);
   if (state.page === 'characters') void refreshProfileCards();
   tasksReady = refreshTasks();
-  const taskSync = setInterval(() => { void refreshTasks(); }, 8000);
-  window.addEventListener('pagehide', () => clearInterval(taskSync), { once: true });
+  startGenerationPolling({
+    refresh: refreshTasks, window, document,
+    resumed: async () => {
+      await libraryReady;
+      await reloadDrawings(true);
+      notifyImagesChanged();
+    },
+  });
   if (typeof BroadcastChannel !== 'undefined') {
-    const imageSync = new BroadcastChannel(`linghuashi-chat:${currentAccount()}`);
-    imageSync.onmessage = (event) => {
-      if (event.data?.type === 'images-changed') void libraryReady.then(() => reloadDrawings()).catch((error) => toast(error.message));
+    let imageSync;
+    const connect = () => {
+      if (imageSync) return;
+      imageSync = new BroadcastChannel(`linghuashi-chat:${currentAccount()}`);
+      imageSync.onmessage = (event) => {
+        if (event.data?.type === 'images-changed') void libraryReady.then(() => reloadDrawings(true)).catch((error) => toast(error.message));
+      };
     };
-    window.addEventListener('pagehide', () => imageSync.close(), { once: true });
+    connect();
+    window.addEventListener('pageshow', connect);
+    window.addEventListener('pagehide', () => { imageSync?.close(); imageSync = null; });
   }
   host.addEventListener('click', async (event) => {
     const target = event.target.closest('button');
