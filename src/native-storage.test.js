@@ -103,6 +103,40 @@ function memoryIndex() {
     removed.forEach((id) => rows.delete(id)); entries.forEach((row) => rows.set(row.id, structuredClone(row)));
   } };
 }
+test('fast chat reads use only the requested account file before gallery recovery', async () => {
+  const f = memory(), a = f.native('fast');
+  await a('chat/reserve', { binding: bound, requestId: 'existing-job' });
+  f.calls.length = 0; f.reads.length = 0;
+  const fresh = f.native('fast');
+  assert.equal((await fresh('chat/get', { id: bound.id, fast: true })).status, 'preparing');
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(f.reads.map((row) => row.path), [`user/files/linghuashi-chat-${bound.id}.json`]);
+  assert.equal((await fresh('chat/list', { chatKey: bound.chatKey }))[0].requestId, 'existing-job');
+});
+
+test('fast missing records do not bypass the authoritative duplicate check before submission', async () => {
+  const f = memory(), a = f.native('fast');
+  await a('add', addition('saved-without-chat-file', { chatBinding: bound, chatRequestId: 'existing-job' }));
+  const fresh = f.native('fast');
+  assert.equal(await fresh('chat/get', { id: bound.id, fast: true }), null);
+  assert.equal(await fresh('chat/reserve', { binding: bound, requestId: 'new-job' }), null);
+  assert.equal((await fresh('chat/get', { id: bound.id })).savedIds[0], 'saved-without-chat-file');
+});
+
+test('chat list reads association files only for the requested chat', async () => {
+  const f = memory(), a = f.native('scoped');
+  const other = { ...bound, id: 'c'.repeat(64), chatKey: 'other-chat' };
+  await a('chat/reserve', { binding: bound, requestId: 'first-job' });
+  await a('chat/reserve', { binding: other, requestId: 'other-job' });
+  await a('add', addition('first-image', { chatBinding: bound }));
+  await a('add', addition('other-image', { chatBinding: other }));
+  f.reads.length = 0;
+  const result = await a('chat/list', { chatKey: bound.chatKey });
+  assert.deepEqual(result.map((row) => row.binding.id), [bound.id]);
+  assert.ok(!f.reads.some((row) => row.path.endsWith(`linghuashi-chat-${other.id}.json`)));
+  assert.equal((await a('backup/chats')).rows.length, 2);
+});
+
 test('native chapter files are hashed, account isolated and never passed to image endpoints', async () => {
   const f = memory(), a = f.native('a'), b = f.native('b');
   const record = { format: 'linghuashi-comic-chapter', version: 1, project: { id: 'chapter-one', panels: [], source: 'garden' } };

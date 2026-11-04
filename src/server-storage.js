@@ -175,8 +175,10 @@ export function createStorageRequest(getHeaders, { account = 'default-user', req
     }
     if (action === 'chat/get' || action === 'chat/reserve' || action === 'chat/update') {
       const id = body.binding?.id || body.id;
-      const local = await native('chat/get', { id });
+      if (action !== 'chat/get' && nativeChats.has(id)) return native(action, body);
+      const local = await native('chat/get', { id, ...(body.fast === true ? { fast: true } : {}) });
       if (local) nativeChats.add(id);
+      if (action === 'chat/get') return nativeChats.has(id) || !available ? local : enhanced(action, body);
       if (nativeChats.has(id) || !available) return native(action, body);
       return enhanced(action, body);
     }

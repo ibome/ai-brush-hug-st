@@ -14,6 +14,7 @@ import { generationTransitionState } from './generation-transition.js';
 import { apiError } from './extension-api.js';
 import { createChatReader } from './chat-reader.js';
 import { canRecoverGeneration, unusableGenerationResponse, taskCapacityIssue } from './generation-recovery.js';
+import { createChatRenderQueue } from './chat-render-queue.js';
 
 const labels = {
   preparing: '准备生图', confirming: '等待确认提示词', queued: '排队中', running: '正在生图',
@@ -28,6 +29,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   const listeners = [];
   const objectURLs = new Set();
   const pendingReplies = new Set();
+  const preparingSlots = new Set();
   const replacements = [];
   const anchorSplits = [];
   let store;
@@ -36,12 +38,13 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   let stopped = false;
   const processor = getContext().streamingProcessor;
   let generating = processor?.isFinished === false && !processor.isStopped;
-  let renderTimer;
-  let localRender = false;
+  let activeProcessor = generating ? processor : null;
   let observer;
   let channel;
   let dialogSession;
+  let backgroundSync;
   const imageOperations = new Set();
+  const imageLoads = new Map();
   const versionSelections = new Map();
   const ready = openChatStore(account, {
     mode: () => ['server', 'local'].includes(settings().cacheLocation) ? 'server' : 'browser', request: storageRequest,
@@ -51,7 +54,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   });
   const syncRecords = createChatSync((chatKey) => store.sync(chatKey));
   const reader = createChatReader({
-    getContext, settings, isBusy: () => generating,
+    getContext, settings, isBusy: isGenerating,
     load: async (key) => {
       await ready;
       return store ? store.readerData(key) : { records: [], images: [], warnings: ['图片存储不可用，只能读取正文'] };
@@ -61,15 +64,37 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   });
 
   const isCurrent = (entry) => bindingIsCurrent(entry, getContext(), settings());
-  const scheduledRender = (local = false) => {
-    clearTimeout(renderTimer);
-    localRender ||= local === true;
-    if (destroyed || generating) return;
-    renderTimer = setTimeout(() => {
-      const local = localRender; localRender = false;
-      void reconcileSafely(local);
-    }, 60);
-  };
+  function isGenerating() {
+    const current = getContext().streamingProcessor;
+    if (generating && current?.isFinished === false && !current.isStopped) activeProcessor = current;
+    if (generating && current && current === activeProcessor
+      && (current.isFinished === true || current.isStopped === true)) generating = false;
+    return generating;
+  }
+  const renderQueue = createChatRenderQueue(reconcileSafely, { blocked: isGenerating });
+  const scheduledRender = renderQueue.schedule;
+  function syncInBackground(chatKey, location) {
+    const key = JSON.stringify([chatKey, location]), now = Date.now();
+    if (backgroundSync?.key === key && now - backgroundSync.at < 5000) return;
+    backgroundSync = { key, at: now };
+    void syncRecords(chatKey, location).then((changed) => {
+      if (changed && !destroyed && chatIdentity(getContext()) === chatKey) scheduledRender(true);
+    });
+  }
+  function loadImagesInBackground(location) {
+    let state = imageLoads.get(location);
+    if (state?.active || state && Date.now() < state.retryAt) return state;
+    state = { active: true, failed: false, retryAt: 0 };
+    imageLoads.set(location, state);
+    void store.loadImages(location).then(() => {
+      state.active = false;
+      if (!destroyed) scheduledRender(true);
+    }, () => {
+      state.active = false; state.failed = true; state.retryAt = Date.now() + 15000;
+      if (!destroyed) scheduledRender(true);
+    });
+    return state;
+  }
   async function reconcileSafely(local = false) {
     try { await reconcile(local); }
     catch {
@@ -106,17 +131,14 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   }
 
   async function reconcile(local = false) {
-    if (destroyed || generating) return;
+    if (destroyed || isGenerating()) return;
     const turn = ++revision;
     await ready;
-    if (turn !== revision || destroyed || generating || !store) return;
+    if (turn !== revision || destroyed || isGenerating() || !store) return;
     const context = getContext();
     const options = settings();
     const chatKey = chatIdentity(context);
-    // A slow background storage check must not hide progress already received here.
-    if (!local && options.enabled && chatKey) await syncRecords(chatKey,
-      ['server', 'local'].includes(options.cacheLocation) ? 'server' : 'browser');
-    if (turn !== revision || destroyed) return;
+    const readRecord = (id) => store.get(id, { fast: true });
     const assistant = normalizeAssistant(options.assistant);
     if (!options.auto && !assistant.autoPrompt) pendingReplies.clear();
     const visible = new Map();
@@ -130,7 +152,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           const smart = await bindSmartSlot(context, message);
           if (smart) {
             slots.push(smart);
-            const parent = await store.get(smart.binding.id);
+            const parent = await readRecord(smart.binding.id);
             for (let index = 1; index < illustrationPlans(parent?.assistant).length; index++) {
               const child = await bindSmartSlot(context, message, index);
               if (child) slots.push(child);
@@ -140,9 +162,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
         for (const slot of slots) {
           let entry = entries.get(slot.binding.id);
           if (!entry || entry.message !== message) {
-            entry = { ...slot, message, text, record: await store.get(slot.binding.id) };
+            entry = { ...slot, message, text, record: await readRecord(slot.binding.id) };
             entries.set(slot.binding.id, entry);
-          } else entry.record = await store.get(slot.binding.id);
+          } else entry.record = await readRecord(slot.binding.id);
           if (entry.binding.kind === 'smart') entry.prompt = entry.record?.assistant?.positive || '';
           if (bindingIsCurrent(entry, context, options)) visible.set(entry.binding.id, { entry, node });
         }
@@ -243,6 +265,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     } finally {
       observeChat();
     }
+    // Recognize tags before doing a complete task/gallery scan on a slow device.
+    if (!local && options.enabled && chatKey) syncInBackground(chatKey,
+      ['server', 'local'].includes(options.cacheLocation) ? 'server' : 'browser');
     if ((options.auto || assistant.autoPrompt) && !stopped) {
       for (const { entry } of visible.values()) {
         const smart = entry.binding.kind === 'smart';
@@ -295,8 +320,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     section.className = 'slot';
     section.dataset.slot = entry.binding.id;
     const record = entry.record;
-    const owned = requests.has(record?.requestId);
-    const pending = CHAT_PENDING.has(record?.status);
+    const checking = preparingSlots.has(entry.binding.id);
+    const owned = checking || requests.has(record?.requestId);
+    const pending = checking || CHAT_PENDING.has(record?.status);
     section.innerHTML = `<header><strong>${smart ? `灵画师 · 智能配图${entry.binding.slot ? ` ${entry.index + 1}` : ''}` : `灵画师 · 配图 ${entry.index + 1}`}</strong><span class="status"></span><div class="actions"></div></header><details><summary>提示词</summary><p class="prompt"></p></details>`;
     section.querySelector('.prompt').textContent = entry.prompt;
     if (smart && !record) {
@@ -306,7 +332,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     }
     if (record?.assistant?.scene) section.querySelector('.prompt').textContent =
       `${record.assistant.scene}\n\n${record.assistant.positive}\n\n负面：${record.assistant.negative || '未填写'}`;
-    section.querySelector('.status').textContent = pending && !owned
+    section.querySelector('.status').textContent = checking ? '正在核对已有任务' : pending && !owned
       ? record?.taskId ? '其他页面执行中，等待同步' : '任务记录待核对'
       : (record?.status === 'preparing' ? generationTransitionState(record)?.title : pending ? phases[record?.phase] : '')
         || labels[record?.status] || '等待生成';
@@ -322,7 +348,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     if (taskCapacityIssue(record?.error)) command('查看待处理任务', 'list-todo', () => {
       open('generate'); void send('linghuashi:chat-task-records', {});
     });
-    if (pending && !owned && record?.taskId) command('查看任务', 'list-checks', () => open('generate'));
+    if (checking) command('核对任务中', 'loader-circle', () => {}, true);
+    else if (pending && !owned && record?.taskId) command('查看任务', 'list-checks', () => open('generate'));
     else if (pending && owned) command('取消', 'x', () => send('linghuashi:chat-cancel', { requestId: record.requestId }), record.phase === 'saving');
     else {
       if (record?.status === 'failed' && record.recoverable && !unusableGenerationResponse(record)) {
@@ -348,7 +375,12 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     }
     if (record?.savedIds?.length) {
       command('绘图管理', 'images', () => { open('gallery'); send('linghuashi:chat-view', { id: record.savedIds[0] }); });
-      if (options.inline !== false) {
+      if (options.inline !== false && !store.imagesFresh(record.storageLocation)) loadImagesInBackground(record.storageLocation);
+      if (options.inline !== false && !store.imagesReady(record.storageLocation)) {
+        const loading = loadImagesInBackground(record.storageLocation);
+        section.querySelector('.status').textContent = loading.failed
+          ? '图片记录暂时无法读取，稍后自动重试' : '正在读取已保存图片';
+      } else if (options.inline !== false) {
         const pictures = document.createElement('div');
         pictures.className = 'pictures';
         section.prepend(pictures);
@@ -358,8 +390,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           let row;
           let versions;
           try {
-            row = await store.image(id, record.storageLocation);
-            if (row) versions = await store.versions(row.id, record.storageLocation);
+            row = await store.image(id, record.storageLocation, { fast: true });
+            if (row) versions = await store.versions(row.id, record.storageLocation, { fast: true });
           }
           catch { imageReadFailed = true; break; }
           if (turn !== revision || destroyed) return container;
@@ -407,7 +439,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       const placeholder = document.createElement('div');
       placeholder.className = 'generation-placeholder';
       placeholder.innerHTML = renderGenerationTransition({ theme: options.characterTheme,
-        task: { ...record, progress: owned ? entry.progress : undefined }, remote: !owned });
+        task: { ...record, ...(checking ? { status: 'preparing' } : {}), progress: owned ? entry.progress : undefined }, remote: !owned });
       section.prepend(placeholder);
     }
     shadow.append(section);
@@ -544,7 +576,10 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     const smart = entry.binding.kind === 'smart';
     const assistant = normalizeAssistant(settings().assistant);
     if (!store || !isCurrent(entry) || (automatic && !(smart ? assistant.autoPrompt : settings().auto))) return;
+    if (preparingSlots.has(entry.binding.id)) return;
     if ([...requests.values()].some((item) => item.binding.id === entry.binding.id && CHAT_PENDING.has(item.record?.status))) return;
+    preparingSlots.add(entry.binding.id);
+    scheduledRender(true);
     const execute = async (lock) => {
       if (destroyed || !isCurrent(entry)) return;
       if (!lock && navigator.locks) { notice('这个配图任务已在其他标签页运行'); return; }
@@ -568,6 +603,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       const current = { ...entry, requestId, record, invalidated: false };
       if (draftPlan) await store.update(entry.binding.id, requestId, { status: 'preparing', assistant: draftPlan });
       requests.set(requestId, current);
+      preparingSlots.delete(entry.binding.id);
       channel?.postMessage({ id: entry.binding.id });
       scheduledRender(true);
       await new Promise((resolve) => {
@@ -584,9 +620,12 @@ export function createChatLink({ account, getContext, settings, send, open, noti
         });
       });
     };
-    if (navigator.locks) {
-      await navigator.locks.request(`linghuashi:${account}:${entry.binding.id}`, { ifAvailable: true }, execute);
-    } else await execute(true);
+    try {
+      if (navigator.locks) {
+        await navigator.locks.request(`linghuashi:${account}:${entry.binding.id}`, { ifAvailable: true }, execute);
+      } else await execute(true);
+    } catch (error) { notice(error.message || '任务记录暂时无法读取，请稍后重试'); }
+    finally { if (preparingSlots.delete(entry.binding.id)) scheduledRender(true); }
   }
 
   function openDraft(entry) {
@@ -705,9 +744,11 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   on('GENERATION_STARTED', (type, _options, dryRun) => {
     if (!dryRun && type !== 'quiet') {
       stopped = false; generating = true;
+      const current = getContext().streamingProcessor;
+      activeProcessor = current?.isFinished === false && !current.isStopped ? current : null;
       // Tavern owns the message DOM while streaming. Invalidate any in-flight
       // render so a late storage response cannot replace its text or images.
-      revision++; clearTimeout(renderTimer);
+      revision++; renderQueue.pause();
     }
   });
   on('GENERATION_STOPPED', () => { stopped = true; generating = false; pendingReplies.clear(); scheduledRender(); });
@@ -742,12 +783,15 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     channel = new BroadcastChannel(`linghuashi-chat:${account}`);
     channel.onmessage = scheduledRender;
   }
-  void reconcileSafely();
+  scheduledRender();
   const syncTimer = setInterval(() => {
     if (settings().enabled && document.visibilityState === 'visible') scheduledRender();
   }, 15000);
   const resume = () => {
-    if (settings().enabled && document.visibilityState !== 'hidden') scheduledRender();
+    if (settings().enabled && document.visibilityState !== 'hidden') {
+      backgroundSync = null;
+      scheduledRender();
+    }
   };
   window.addEventListener('pageshow', resume);
   window.addEventListener('online', resume);
@@ -783,9 +827,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       scheduledRender();
       return { binding: slot.binding };
     },
-    refresh: scheduledRender,
+    refresh(local = false) { backgroundSync = null; scheduledRender(local); },
     destroy() {
-      destroyed = true; revision++; clearTimeout(renderTimer); clearInterval(syncTimer); observer?.disconnect(); removeCards();
+      destroyed = true; revision++; renderQueue.destroy(); clearInterval(syncTimer); observer?.disconnect(); removeCards();
       window.removeEventListener('pageshow', resume);
       window.removeEventListener('online', resume);
       document.removeEventListener('visibilitychange', resume);

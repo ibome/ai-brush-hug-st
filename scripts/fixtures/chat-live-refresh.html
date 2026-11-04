@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>聊天配图实时刷新回归</title>
+<style>
+  body { margin:20px auto; padding:0 16px; max-width:720px; font:15px/1.6 system-ui; color:#23443b; background:#f7faf9; }
+  h1 { font-size:21px; } output { display:block; white-space:pre-wrap; } .mes { margin:20px 0; }
+</style>
+<h1>聊天配图实时刷新回归</h1>
+<p>隔离存储和模拟任务，聊天正文持续发生无关更新。</p>
+<output id="checks">等待检查</output>
+<div id="chat"></div>
+<p id="notice" role="status"></p>
+<script type="module">
+  import { randomUUID } from '../../src/crypto-compat.js';
+  import { createChatLink } from '../../src/chat-link.js';
+  import { bindImageSlots } from '../../src/chat.js';
+
+  const parameters = new URLSearchParams(location.search);
+  const account = `fixture-chat-live:${randomUUID()}`;
+  const message = { mes:'湖边微风轻拂。image###a quiet lake, soft daylight###', name:'测试', send_date:'fixture', swipe_id:0 };
+  const handlers = new Map();
+  const context = { chat:[message], chatId:'live-refresh', characterId:0, characters:[{ avatar:'fixture.png' }],
+    eventTypes:{ GENERATION_STARTED:'started', GENERATION_ENDED:'ended', MESSAGE_RECEIVED:'received' },
+    eventSource:{ on(type, handler) { handlers.set(type, handler); }, removeListener(type) { handlers.delete(type); } } };
+  const settings = { enabled:true, auto:false, inline:true, cacheLocation:'server', characterTheme:'deepseek',
+    triggerPrefix:'image###', triggerSuffix:'###', assistant:{ autoPrompt:false } };
+  const article = document.createElement('article');
+  article.className = 'mes'; article.setAttribute('mesid', '0');
+  article.innerHTML = '<div class="mes_block"><div class="mes_text"></div><div class="mes_buttons"></div></div>';
+  article.querySelector('.mes_text').textContent = message.mes;
+  const decoration = document.createElement('span'); decoration.className = 'other-extension-status';
+  article.querySelector('.mes_text').prepend(decoration);
+  document.querySelector('#chat').append(article);
+  const slot = (await bindImageSlots(context, message))[0];
+  let record, saved = false, submissions = 0, updates = 0, sawProgress = false, mutations = 0, firstCardMs;
+  let sawPicture = false, lostPicture = false;
+  const startedAt = performance.now();
+  if (parameters.has('existing')) {
+    saved = true;
+    record = { binding:slot.binding, requestId:randomUUID(), status:'completed', savedIds:['fixture-lake'], updatedAt:Date.now() };
+  }
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const slow = parameters.has('slow');
+  let mutationTimer;
+  const checks = () => {
+    const card = document.querySelector('.linghuashi-chat-images');
+    const shadow = card?.shadowRoot;
+    if (shadow && firstCardMs == null) firstCardMs = Math.round(performance.now() - startedAt);
+    const progress = Boolean(shadow?.querySelector('.generation-transition'));
+    const pictures = shadow?.querySelectorAll('.picture-entry').length || 0;
+    if (sawPicture && !pictures) lostPicture = true;
+    sawPicture ||= pictures > 0;
+    sawProgress ||= progress;
+    document.querySelector('#checks').textContent = JSON.stringify({
+      submissions, updates, saved, sawProgress, mutations, firstCardMs, lostPicture,
+      status:shadow?.querySelector('.status')?.textContent,
+      pictures,
+      decoded:Boolean(shadow?.querySelector('.picture img')?.naturalWidth),
+      secureContext:window.isSecureContext, viewport:document.documentElement.clientWidth,
+    }, null, 2);
+  };
+  const link = createChatLink({ account, getContext:() => context, settings:() => settings,
+    open() {}, notice(text) { document.querySelector('#notice').textContent = text; },
+    async storageRequest(action, body) {
+      if (parameters.has('scan-slow') && ['task/list', 'chat/list', 'list'].includes(action)) await delay(3000);
+      if (slow && ['chat/get', 'chat/list', 'task/list', 'list'].includes(action)) await delay(250);
+      if (action === 'task/list') return { rows:[] };
+      if (action === 'chat/list') return record ? [structuredClone(record)] : [];
+      if (action === 'chat/get') return structuredClone(record);
+      if (action === 'chat/reserve') {
+        record = { binding:body.binding, requestId:body.requestId, status:'preparing', savedIds:[], updatedAt:Date.now() };
+        return structuredClone(record);
+      }
+      if (action === 'chat/update') {
+        updates++;
+        record = { ...record, ...body.value, updatedAt:Date.now() };
+        return structuredClone(record);
+      }
+      if (action === 'list') return { rows:saved ? [{
+        id:'fixture-lake', nativeStorage:1, extension:'jpg', thumbExtension:'jpg',
+        title:'模拟湖畔配图', width:1200, height:800, bytes:100, thumbBytes:100,
+        mime:'image/jpeg', thumbMime:'image/jpeg', createdAt:Date.now(),
+        chatBinding:slot.binding, chatRequestId:record.requestId,
+      }] : [] };
+      throw new Error(`Unexpected action: ${action}`);
+    },
+    send(type, data) {
+      if (type !== 'linghuashi:chat-generate') return;
+      submissions++;
+      if (parameters.has('mutations')) mutationTimer = setInterval(() => {
+        decoration.textContent = `界面状态 ${++mutations}`;
+      }, 20);
+      if (parameters.has('streaming')) {
+        context.streamingProcessor = { isFinished:false, isStopped:false };
+        handlers.get('started')?.('normal', {}, false);
+      }
+      setTimeout(async () => {
+        await link.receive({ type:'linghuashi:chat-task', requestId:data.requestId, status:'running', phase:'submitting' });
+      }, 150);
+      setTimeout(async () => {
+        saved = true;
+        if (context.streamingProcessor) context.streamingProcessor.isFinished = true;
+        await link.receive({ type:'linghuashi:chat-task', requestId:data.requestId, status:'completed', savedIds:['fixture-lake'] });
+      }, 1800);
+    },
+  });
+  const checkTimer = setInterval(checks, 50);
+  window.addEventListener('pagehide', () => {
+    clearInterval(mutationTimer); clearInterval(checkTimer); link.destroy();
+  }, { once:true });
+</script>
+</html>

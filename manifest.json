@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.6&build=20261104-mobile-generation-sync",
+  "js": "dist/index.js?ver=0.26.7&build=20261105-chat-live-refresh",
   "author": "小波",
-  "version": "0.26.6",
+  "version": "0.26.7",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

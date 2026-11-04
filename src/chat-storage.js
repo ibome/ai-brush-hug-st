@@ -87,16 +87,40 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
   const serverImages = new Set();
   let syncedChat;
   let syncedRecords = new Map();
+  const fastRecords = new Map();
+  const writes = new Map();
+  let writeClock = 0;
   let taskRecords = new Map();
   let allTasks = [];
   let browserRows;
   let serverRows;
+  const imageSnapshots = new Map();
+  const freshImages = new Set();
+  const invalidateImages = (keepLoading = false) => {
+    if (!keepLoading || freshImages.has('browser')) browserRows = null;
+    if (!keepLoading || freshImages.has('server')) serverRows = null;
+    if (!keepLoading) imageSnapshots.clear();
+    freshImages.clear();
+  };
   const imageRows = (location) => {
     if (location === 'server' && serverRequest) {
-      serverRows ||= serverRequest('list').then((result) => result.rows.map((row) => serverDrawing(row, account)));
+      if (!serverRows) {
+        const pending = serverRequest('list').then((result) => {
+          const rows = result.rows.map((row) => serverDrawing(row, account));
+          if (serverRows === pending) { imageSnapshots.set('server', rows); freshImages.add('server'); }
+          return rows;
+        }).catch((error) => { if (serverRows === pending) serverRows = null; throw error; });
+        serverRows = pending;
+      }
       return serverRows;
     }
-    browserRows ||= requestResult(db.transaction('drawings', 'readonly').objectStore('drawings').getAll());
+    if (!browserRows) {
+      const pending = requestResult(db.transaction('drawings', 'readonly').objectStore('drawings').getAll()).then((rows) => {
+        if (browserRows === pending) { imageSnapshots.set('browser', rows); freshImages.add('browser'); }
+        return rows;
+      }).catch((error) => { if (browserRows === pending) browserRows = null; throw error; });
+      browserRows = pending;
+    }
     return browserRows;
   };
   const withTask = (row, id) => {
@@ -122,7 +146,7 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
   };
   return {
     async readerData(chatKey) {
-      browserRows = null; serverRows = null;
+      invalidateImages();
       const results = await Promise.allSettled([
         Promise.all([requestResult(db.transaction('meta', 'readonly').objectStore('meta').getAll()), imageRows('browser')]),
         serverRequest ? Promise.all([serverRequest('chat/list', { chatKey }), imageRows('server')]) : Promise.resolve([[], []]),
@@ -141,7 +165,8 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
       return { records, images, warnings };
     },
     async sync(chatKey) {
-      browserRows = null; serverRows = null;
+      const started = writeClock;
+      invalidateImages(true);
       if (serverRequest && chatKey) {
         const tasks = await serverRequest('task/list');
         allTasks = tasks.rows.filter((task) => task.plan.chatBinding?.chatKey === chatKey);
@@ -150,12 +175,24 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
       } else { allTasks = []; taskRecords.clear(); }
       if (mode() !== 'server' || !serverRequest || !chatKey) { syncedChat = null; return; }
       const rows = await serverRequest('chat/list', { chatKey });
+      const next = new Map(rows.map((row) => [row.binding.id, row]));
+      // A scan started before a local task report must not restore its old status.
+      for (const [id, row] of syncedRecords) {
+        if (writes.get(id) > started && row.binding.chatKey === chatKey) next.set(id, row);
+      }
       syncedChat = chatKey;
-      syncedRecords = new Map(rows.map((row) => [row.binding.id, row]));
+      syncedRecords = next;
+      fastRecords.clear();
     },
-    async get(id) {
+    async get(id, { fast = false } = {}) {
       if (mode() === 'server' && serverRequest) {
-        const row = syncedRecords.get(id) || await serverRequest('chat/get', { id });
+        let row;
+        if (syncedRecords.has(id)) row = syncedRecords.get(id);
+        else if (fast && fastRecords.has(id)) row = fastRecords.get(id);
+        else {
+          row = await serverRequest('chat/get', { id, ...(fast ? { fast: true } : {}) });
+          if (fast) fastRecords.set(id, row);
+        }
         if (row) return remember(withTask(row, id), 'server');
       }
       const row = withTask(await local.get(id), id);
@@ -167,26 +204,37 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
       const row = location === 'server'
         ? await serverRequest('chat/reserve', { binding, requestId, force, previousRequestId: records.get(binding.id)?.requestId })
         : await local.reserve(binding, requestId, force);
-      if (row && location === 'server') syncedRecords.set(binding.id, row);
+      if (row && location === 'server') {
+        writes.set(binding.id, ++writeClock);
+        syncedRecords.set(binding.id, row);
+      }
       return remember(row, location);
     },
     async update(id, requestId, value) {
       const location = locations.get(id) || mode();
       const row = location === 'server' && serverRequest
         ? await serverRequest('chat/update', { id, requestId, value }) : await local.update(id, requestId, value);
-      if (row && location === 'server') syncedRecords.set(id, row);
+      if (row && location === 'server') {
+        writes.set(id, ++writeClock);
+        syncedRecords.set(id, row);
+      }
       if (row) {
-        browserRows = null; serverRows = null;
+        invalidateImages();
         if (taskRecords.get(id)?.plan.chatRequestId === requestId) taskRecords.delete(id);
       }
       return remember(row, location);
     },
-    async image(id, location = serverImages.has(id) ? 'server' : 'browser') {
-      const row = currentDrawing(await imageRows(location), id);
+    async image(id, location = serverImages.has(id) ? 'server' : 'browser', { fast = false } = {}) {
+      const rows = fast && imageSnapshots.has(location) ? imageSnapshots.get(location) : await imageRows(location);
+      const row = currentDrawing(rows, id);
       return row ? { ...row, storageLocation: location } : null;
     },
-    async versions(id, location) {
-      return groupVersions(await imageRows(location), id).map((row) => ({ ...row, storageLocation: location }));
+    imagesReady: (location) => imageSnapshots.has(location),
+    imagesFresh: (location) => freshImages.has(location),
+    loadImages: imageRows,
+    async versions(id, location, { fast = false } = {}) {
+      const rows = fast && imageSnapshots.has(location) ? imageSnapshots.get(location) : await imageRows(location);
+      return groupVersions(rows, id).map((row) => ({ ...row, storageLocation: location }));
     },
     imageTask(bindingId, groupId, location) {
       return allTasks.filter((task) => task.plan.chatBinding?.id === bindingId && task.plan.imageEdit?.groupId === groupId
@@ -201,12 +249,12 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
         if (!rows.some((row) => row.id === id)) throw new Error('图片已经删除，请刷新聊天');
         return rows.map((row) => row.id === id ? { ...row, favorite } : row);
       });
-      browserRows = null; serverRows = null;
+      invalidateImages();
     },
     async selectVersion(id, location) {
       if (location === 'server') await serverRequest('version/select', { id });
       else await changeImages((rows) => selectVersion(rows, id));
-      browserRows = null; serverRows = null;
+      invalidateImages();
     },
     close: local.close,
   };

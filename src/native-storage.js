@@ -186,10 +186,14 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
     snapshot = resolveVersions(rows.filter(Boolean)); lastList = now();
     return clone(snapshot);
   }
-  async function getChat(id, rows) {
+  async function getChat(id, rows, fast = false) {
     validId(id);
     let row = await readJSON(chatName(id));
     if (row && !binding(row.binding)) throw new Error('聊天关联文件格式无效');
+    if (fast) {
+      if (row) chats.set(id, row);
+      return row;
+    }
     const pictures = (rows || await list()).filter((item) => item.chatBinding?.id === id && !item.version?.parentId)
       .sort((a, b) => a.createdAt - b.createdAt);
     const latest = pictures.at(-1);
@@ -381,9 +385,13 @@ export function createNativeStorage({ api, read, account, now = Date.now, locks 
         || !originals.has(row.nativePath.split('/').at(-1))) missing.push(row.id);
       return { missing, orphans: pendingFiles, pendingFiles };
     }
-    if (action === 'chat/get') return getChat(body.id);
+    if (action === 'chat/get') return getChat(body.id, undefined, body.fast === true);
     if (action === 'chat/list' || action === 'backup/chats') {
-      const rows = await list(), ids = new Set([...chats.keys(), ...rows.map((row) => row.chatBinding?.id).filter(Boolean)]);
+      const rows = await list();
+      const relevant = (row) => row.binding?.chatKey === body.chatKey || row.chatBinding?.chatKey === body.chatKey;
+      const known = [...chats.values()].filter((row) => action === 'backup/chats' || relevant(row));
+      const pictures = rows.filter((row) => action === 'backup/chats' || relevant(row));
+      const ids = new Set([...known.map((row) => row.binding.id), ...pictures.map((row) => row.chatBinding?.id).filter(Boolean)]);
       const found = await mapLimit([...ids], (id) => getChat(id, rows));
       const result = found.filter((row) => row && (action === 'backup/chats' || row.binding.chatKey === body.chatKey));
       return action === 'backup/chats' ? { rows: result } : result;
