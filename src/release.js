@@ -1,6 +1,6 @@
 export const RELEASE = Object.freeze({
-  version: '0.26.8',
-  build: '20261105-passive-refresh',
+  version: '0.26.9',
+  build: '20261106-preset-reroll',
   repository: 'ibome/ai-brush-hug-st',
   url: 'https://github.com/ibome/ai-brush-hug-st',
   storageProtocol: 2,

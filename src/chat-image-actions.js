@@ -1,5 +1,6 @@
 import { nativeCharacterPrompts } from './character-profiles.js';
 import { canRecoverGeneration } from './generation-recovery.js';
+import { chatPromptText, createChatPromptStyle, inferChatPromptStyle, normalizeChatPromptStyle } from './chat-prompt-style.js';
 
 export function chatImageTaskBusy(task) {
   return ['queued', 'preparing', 'confirming', 'running', 'paused'].includes(task?.status)
@@ -35,7 +36,7 @@ export function chatImagePromptText(row) {
   return sections.filter(Boolean).join('\n\n');
 }
 
-export function applyChatImageStyle(draft, current, samplePrompt = '') {
+export function applyChatImageStyle(draft, current, samplePrompt = '', sourcePrompt = '') {
   if (draft.provider !== current?.provider) throw new Error('画风配置与原图的生图模式不一致');
   const next = structuredClone(draft);
   const params = next.params || next.config?.params;
@@ -44,11 +45,19 @@ export function applyChatImageStyle(draft, current, samplePrompt = '') {
   for (const key of ['artist', 'negative']) {
     if (typeof style[key] === 'string') params[key] = style[key];
   }
+  const recorded = normalizeChatPromptStyle(next.chatPromptStyle, params.positive)
+    || inferChatPromptStyle(params.positive, sourcePrompt, samplePrompt);
+  let scene = recorded?.scene || params.positive || '';
   const examplePrefix = samplePrompt.trim() && `${samplePrompt.trim()}, `;
-  if (examplePrefix && params.positive?.startsWith(examplePrefix)) {
-    const scene = params.positive.slice(examplePrefix.length).trim();
-    if (scene) params.positive = scene;
+  if (!recorded && examplePrefix && scene.startsWith(examplePrefix)) {
+    scene = scene.slice(examplePrefix.length).trim() || scene;
   }
+  const prefix = current.characterScene?.applied ? current.characterScene.basePositive : style.positive;
+  const currentPrefix = inferChatPromptStyle(prefix, scene, samplePrompt)?.prefix
+    ?? createChatPromptStyle(prefix, '', samplePrompt).prefix;
+  if (!recorded && currentPrefix && scene.startsWith(`${currentPrefix}, `)) scene = scene.slice(currentPrefix.length + 2);
+  next.chatPromptStyle = createChatPromptStyle(currentPrefix, scene);
+  params.positive = chatPromptText(next.chatPromptStyle);
   return next;
 }
 
@@ -58,7 +67,14 @@ export function applyChatImageEdit(draft, edits, randomize = false, seed = () =>
   if (edits !== undefined) {
     if (!edits || ['positive', 'negative'].some((key) => typeof edits[key] !== 'string' || edits[key].length > 32000)
       || !edits.positive.trim()) throw new Error('请填写正向提示词，单栏最多 32000 字符');
+    const previousStyle = normalizeChatPromptStyle(next.chatPromptStyle, params.positive);
     params.positive = edits.positive.trim(); params.negative = edits.negative.trim();
+    if (previousStyle) {
+      const prefix = previousStyle.prefix && `${previousStyle.prefix}, `;
+      next.chatPromptStyle = prefix && params.positive.startsWith(prefix)
+        ? createChatPromptStyle(previousStyle.prefix, params.positive.slice(prefix.length))
+        : createChatPromptStyle('', params.positive);
+    }
   }
   if (randomize) {
     const fresh = (previous) => {

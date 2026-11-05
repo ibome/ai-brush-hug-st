@@ -19,6 +19,7 @@ import { scrubBackup } from '../backup-config.js';
 import { normalizeProcessing, processingTitle } from '../novelai-processing.js';
 import { extensionMetadata } from '../extension-api.js';
 import { SDWEBUI_DEFAULTS, normalizeSDWebUI } from '../sdwebui.js';
+import { normalizeChatPromptStyle } from '../chat-prompt-style.js';
 
 const DB_NAME = storageKey('linghuashi-drawings-v1');
 const MAX_IMAGE = 20 * 1024 * 1024;
@@ -42,6 +43,10 @@ const transactionDone = (transaction) => new Promise((resolve, reject) => {
 export function normalizeSnapshot(value) {
   if (!record(value)) return null;
   const characters = value.characterScene ? { characterScene: normalizeCharacterScene(value.characterScene) } : {};
+  const promptStyle = normalizeChatPromptStyle(value.chatPromptStyle, (value.params || value.config?.params)?.positive)
+    || (characters.characterScene?.applied
+      ? normalizeChatPromptStyle(value.chatPromptStyle, characters.characterScene.basePositive) : null);
+  if (promptStyle) characters.chatPromptStyle = promptStyle;
   const external = extensionMetadata(value.extensionRequest);
   if (external) characters.extensionRequest = external;
   const processing = value.provider === 'novelai' ? normalizeProcessing(value.novelaiProcessing) : null;

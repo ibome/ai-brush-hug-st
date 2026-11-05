@@ -11,6 +11,7 @@ import { extensionCapabilities, extensionPresets, prepareExtensionSnapshot, publ
 import { imageEditDraft, prepareImageEdit, imageEditMessages, applyImageRewrite, drawingSeed } from '../image-edit.js';
 import { applyChatImageEdit, applyChatImageStyle, chatImageBelongsTo } from '../chat-image-actions.js';
 import { blockingChatWindow, waitForChatWindow, mergeChatPrompt } from '../chat-preparation.js';
+import { createChatPromptStyle, inferChatPromptStyle } from '../chat-prompt-style.js';
 import { renderImageEditor } from './image-editor.js';
 import { NovelAIProcessingPanel } from './novelai-processing.js';
 import { processingSnapshot, prepareProcessingSource, validateProcessingDraft, buildProcessingRequest,
@@ -4055,7 +4056,9 @@ export function receiveChatCommand(data) {
   if (data.type === 'linghuashi:chat-image-generate') {
     if (!validBinding(data.binding) || !validImageId(data.imageId)
       || !/^[a-f0-9-]{36}$/.test(data.requestId || '') || chatRequests.has(data.requestId)
-      || !['browser', 'server'].includes(data.storageLocation)) return;
+      || !['browser', 'server'].includes(data.storageLocation)
+      || data.styleMode !== undefined && !['current', 'original'].includes(data.styleMode)
+      || data.prompt !== undefined && (typeof data.prompt !== 'string' || data.prompt.length > 32000)) return;
     if (chatInbox.length >= 32) {
       chatPost('linghuashi:chat-task', { requestId: data.requestId, imageId: data.imageId, status: 'failed', error: '生图队列已满，请稍后重试' }); return;
     }
@@ -4228,8 +4231,9 @@ async function enqueueChatImage(request) {
     const parent = rows.find((row) => row.id === request.imageId);
     if (!chatImageBelongsTo(parent, request.binding) || !await validateChatRequest(request)) throw new Error('原消息或图片已变化，请重新打开配图');
     let original = imageEditDraft(parent.snapshot);
-    if (request.randomize === true && request.edits === undefined) {
-      original = applyChatImageStyle(original, captureSnapshot({ ...state, provider: original.provider }), samples[0].prompt);
+    if (request.randomize === true && request.edits === undefined && request.styleMode !== 'original') {
+      original = applyChatImageStyle(original, captureSnapshot({ ...state, provider: original.provider }),
+        samples[0].prompt, request.prompt);
     }
     const draft = applyChatImageEdit(original, request.edits, request.randomize === true);
     const snapshot = prepareImageEdit(draft), relation = editRelation(parent, request.edits ? '聊天修改提示词' : '聊天再画一张');
@@ -4381,7 +4385,11 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
         params.negative = snapshot.characterScene.baseNegative;
         delete snapshot.characterScene.applied;
       }
+      snapshot.chatPromptStyle = createChatPromptStyle(params.positive, request.prompt, samples[0].prompt);
       params.positive = mergeChatPrompt(params.positive, request.prompt, samples[0].prompt);
+    } else {
+      const promptStyle = inferChatPromptStyle(params.positive, assistantPlan.positive, samples[0].prompt);
+      if (promptStyle) snapshot.chatPromptStyle = promptStyle;
     }
     if (params.positive.length > 32000) { report('failed', '合并后的提示词超过 32000 字符'); return; }
   }

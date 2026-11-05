@@ -46,7 +46,7 @@ export function appendImageTools({ container, row, versions, task, pending, them
   ];
   for (const [glyph, label, action, disabled] of actions) {
     const button = quickButton(glyph, label, () => onAction(action), disabled);
-    if (action === 'repeat') button.title = '再画一张：保留原图场景，使用当前画师串和负面提示词';
+    if (action === 'repeat') button.title = '再画一张：保留原图场景，使用当前预设的正向提示词、画师串和负面提示词';
     if (action === 'favorite') button.setAttribute('aria-pressed', String(Boolean(row.favorite)));
     tools.append(button);
   }
@@ -55,13 +55,14 @@ export function appendImageTools({ container, row, versions, task, pending, them
   summary.title = '更多操作'; summary.setAttribute('aria-label', '更多操作'); summary.innerHTML = icon('more-horizontal');
   const menu = document.createElement('div'); menu.setAttribute('role', 'group'); menu.setAttribute('aria-label', '更多图片操作');
   for (const [glyph, label, action, needsSnapshot] of [
+    ['refresh-cw', '沿用原图画风再画一张', 'repeat-original', true],
     ['copy', '复制提示词', 'copy', true], ['replace', '导入生图参数', 'restore', true],
     ['sliders-horizontal', '完整参数编辑', 'edit', true], ['image-plus', '图生图', 'source', true],
     ['brush', '局部重绘', 'inpaint', true], ['wand-sparkles', '图片增强', 'enhance', false],
     ['images', '绘图管理', 'view', false],
   ]) {
     const button = document.createElement('button'); button.type = 'button';
-    button.disabled = needsSnapshot && !row.snapshot;
+    button.disabled = needsSnapshot && !row.snapshot || action === 'repeat-original' && pending;
     button.innerHTML = `${icon(glyph)}<span>${label}</span>`;
     button.addEventListener('click', () => { more.open = false; onAction(action); }); menu.append(button);
   }

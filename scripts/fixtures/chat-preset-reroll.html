@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>聊天切换预设重绘回归</title>
+<style>
+  body { margin: 16px; font: 14px/1.6 system-ui; }
+  #plugin-root { height: 620px; }
+  #calls { display: block; white-space: pre-wrap; }
+</style>
+<h1>聊天切换预设重绘回归</h1>
+<p>隔离账号与模拟图片接口，不提交真实生图请求。</p>
+<div id="chat"></div>
+<p id="notice" role="status"></p>
+<button id="legacy">模拟旧版图片参数</button>
+<output id="calls">[]</output>
+<div id="plugin-root"></div>
+<div id="overlay-root"></div>
+<div id="toast-root" role="status"></div>
+<script type="module">
+  import '../../src/styles/plugin.css';
+  import { createBrowserTaskRequest } from '../../src/task-persistence.js';
+  import { randomUUID } from '../../src/crypto-compat.js';
+  import { createChatLink } from '../../src/chat-link.js';
+  const account = `fixture-preset-reroll:${randomUUID()}`, ref = `tavern:${randomUUID()}`;
+  const tasks = createBrowserTaskRequest(`${account}:tasks`);
+  const model = 'nai-diffusion-4-5-full', endpoint = 'https://fixture.invalid';
+  const presets = [
+    { id:'watercolor', name:'水彩画风', params:{ model, positive:'watercolor, soft lighting', artist:'watercolor artist', negative:'watercolor negative' } },
+    { id:'lineart', name:'线稿画风', params:{ model, positive:'clean line art', artist:'line artist', negative:'line negative' } },
+  ];
+  const settings = { enabled:true, auto:false, inline:true, cacheLocation:'browser', characterTheme:'gemini',
+    triggerPrefix:'image###', triggerSuffix:'###', assistant:{ autoPrompt:false } };
+  window.__LINGHUASHI_ENV__ = {
+    mode:'extension', account, chat:{ name:'隔离测试', count:1 }, releaseState:{ status:'current', release:null },
+    ui:{ settingsVersion:1, page:'generate', ...settings, confirm:false,
+      experience:{ level:'full', dismissed:true, goal:'manual' }, provider:'openai',
+      openaiEndpoint:endpoint, openaiPath:'/images/generations', openaiTimeout:180,
+      openai:{ model, positive:'oil painting', artist:'oil artist', negative:'old negative', n:1, extra:'{"seed":17}' },
+      openaiPresets:presets,
+      connections:{ openai:{ endpoint, path:'/images/generations', keyRef:ref, timeout:180 } },
+    },
+  };
+  const originalFetch = window.fetch.bind(window);
+  const bytes = new Uint8Array(await (await originalFetch('/dist/assets/lake.jpg')).arrayBuffer());
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += 32768) chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 32768)));
+  const encoded = btoa(chunks.join('')), calls = [];
+  window.fetch = async (url, options) => {
+    if (!String(url).startsWith(endpoint)) return originalFetch(url, options);
+    if (options?.method !== 'POST') return Response.json({ data:[{ id:model }] });
+    calls.push(JSON.parse(options.body));
+    document.querySelector('#calls').textContent = JSON.stringify(calls, null, 2);
+    return Response.json({ data:[{ b64_json:encoded }] });
+  };
+  let link;
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    let value, error, type;
+    if (data?.type === 'linghuashi:secret-request') {
+      type = 'linghuashi:secret-result'; value = data.action === 'read' ? 'fixture-key' : ref;
+    } else if (data?.type === 'linghuashi:storage-request') {
+      type = 'linghuashi:storage-result';
+      try { value = await tasks(data.action, data.body); } catch (failure) { error = failure.message; }
+    } else if (data?.type === 'linghuashi:state') type = 'linghuashi:state-result';
+    else if (data?.type === 'linghuashi:chat-validate') {
+      receiveChatCommand({ type:'linghuashi:chat-valid', validationId:data.validationId, valid:true }); return;
+    } else if (data?.type === 'linghuashi:chat-task') { await link?.receive(data); return; }
+    else return;
+    window.postMessage({ type, requestId:data.requestId, value, error }, location.origin);
+  });
+  const message = { mes:'湖畔微风。image###a quiet lake, moonlight###', name:'测试', send_date:'fixture', swipe_id:0 };
+  const context = { chat:[message], chatId:'preset-reroll', characterId:0, characters:[{ avatar:'fixture.png' }],
+    eventTypes:{}, eventSource:{ on() {}, removeListener() {} } };
+  const article = document.createElement('article'); article.className = 'mes'; article.setAttribute('mesid', '0');
+  article.innerHTML = '<div class="mes_block"><div class="mes_text"></div><div class="mes_buttons"></div></div>';
+  article.querySelector('.mes_text').textContent = message.mes; document.querySelector('#chat').append(article);
+  const { normalizeConfig } = await import('../../src/config.js');
+  const { mountPlugin, restoreCredentials, receiveChatCommand } = await import('../../src/ui/plugin.js');
+  await restoreCredentials();
+  mountPlugin(document.querySelector('#plugin-root'), normalizeConfig({ surface:'console', state:'ready', theme:'light' }));
+  link = createChatLink({ account, getContext:() => context, settings:() => settings, open() {},
+    notice(text) { document.querySelector('#notice').textContent = text; },
+    storageRequest:tasks, send(type, data) { receiveChatCommand({ type, ...data }); },
+  });
+  document.querySelector('#legacy').addEventListener('click', async () => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(`linghuashi-drawings-v1:st:${encodeURIComponent(account)}`, 1);
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('drawings', 'readwrite'), store = tx.objectStore('drawings');
+      store.openCursor().onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (!cursor) return;
+        const row = cursor.value; delete row.snapshot.chatPromptStyle; cursor.update(row); cursor.continue();
+      };
+      tx.oncomplete = resolve; tx.onabort = () => reject(tx.error);
+    });
+    db.close(); document.querySelector('#legacy').textContent = '已切换旧版参数记录';
+  });
+  window.addEventListener('pagehide', () => link.destroy(), { once:true });
+</script>
+</html>
