@@ -82,7 +82,7 @@ import '../styles/profile-ai.css';
 import { CONNECTION_PROVIDERS, normalizeConnection, normalizeConnections, resolvePresetConnection,
   saveConnectionProfile, deleteConnectionProfile, setCurrentConnection } from '../connections.js';
 import { emptyArtist, normalizeArtistLibrary, saveArtist, importArtistLibrary, applyArtist } from '../artist-library.js';
-import { renderArtists, renderArtistQuickPick } from './artists.js';
+import { renderArtists, renderArtistDirectory, renderArtistQuickPick } from './artists.js';
 import { renderNamedConnections, renderPresetBinding } from './named-connections.js';
 import '../styles/artists.css';
 import { normalizeTagLibrary, allTagTemplates } from '../tag-library.js';
@@ -660,9 +660,9 @@ const taskQueue = new GenerationQueue({
     }
     void syncTaskImages().catch((error) => {
       taskError = `图片已保存，显示暂未同步：${error.message}`;
-      if (host) render();
+      refreshBackgroundStatus();
     });
-    if (host) render();
+    refreshBackgroundStatus();
   },
   cancel: cancelComfyPending,
   persistence: taskPersistence,
@@ -676,7 +676,7 @@ const syncTaskImages = createTaskImageSync({
     if (current?.savedIds.some((id) => drawings.some((row) => row.id === id))) {
       activeDrawingId = current.savedIds.find((id) => drawings.some((row) => row.id === id));
       if (!['queued', 'running'].includes(current.status)) runtimeState = 'success';
-      render();
+      refreshBackgroundStatus();
     }
   },
   notify: notifyImagesChanged,
@@ -1211,7 +1211,17 @@ function refreshSetupSummary() {
   const readiness = setupReadiness(), summary = setupSummary(), signature = JSON.stringify([readiness, summary]);
   if (node.dataset.signature === signature) return;
   setupExpanded = node.querySelector('details')?.open ?? setupExpanded;
-  node.dataset.signature = signature; node.innerHTML = renderReadiness(readiness, summary, setupExpanded);
+  node.dataset.signature = signature;
+  const html = renderReadiness(readiness, summary, setupExpanded);
+  const current = node.querySelector('[data-setup-readiness]');
+  if (current) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    for (const selector of ['summary', '.setup-facts', '.setup-checklist']) {
+      const target = current.querySelector(selector);
+      if (target) target.innerHTML = template.content.querySelector(selector).innerHTML;
+    }
+  } else node.innerHTML = html;
   paintIcons(node);
 }
 
@@ -2031,17 +2041,35 @@ function renderGenerationResult() {
 
 function refreshGenerationStatus() {
   if (state.page !== 'generate' || config.surface !== 'console') return;
-  const result = host.querySelector('.result-area');
-  if (result) result.outerHTML = renderGenerationResult();
-  const tasks = host.querySelector('.generation-tasks');
-  if (tasks) tasks.outerHTML = renderTasks();
+  replaceStatusHTML('.result-area', renderGenerationResult(), true);
+  replaceStatusHTML('.generation-tasks', renderTasks(), true);
   const primary = host.querySelector('[data-page-primary]');
-  if (primary) primary.innerHTML = primaryPageAction();
+  if (primary) replaceStatusHTML('[data-page-primary]', primaryPageAction());
   const count = host.querySelector('.plugin-nav > [data-page="gallery"] small');
-  if (count) count.textContent = state.history.length;
-  for (const node of [host.querySelector('.result-area'), host.querySelector('.generation-tasks'), primary]) {
-    if (node) paintIcons(node);
-  }
+  if (count && count.textContent !== String(state.history.length)) count.textContent = String(state.history.length);
+}
+
+const statusMarkup = new WeakMap();
+function replaceStatusHTML(selector, html, outer = false) {
+  const node = host?.querySelector(selector);
+  if (!node || statusMarkup.get(node) === html) return;
+  if (outer) node.outerHTML = html;
+  else node.innerHTML = html;
+  const updated = host.querySelector(selector);
+  if (updated) { statusMarkup.set(updated, html); paintIcons(updated); }
+}
+
+function refreshBackgroundStatus() {
+  if (!host || !config || rendering) return;
+  // Polling and result synchronization never rebuild a settings form or reading view.
+  refreshGenerationStatus();
+  if (state.page === 'assistant') refreshAssistantStatus();
+  if (state.page === 'comic') comicPanel.refreshStatus();
+  if (state.page === 'batch') workbenchPanel.refreshStatus(host);
+  if (state.page === 'connection') { updateConnectionStatus(); updateCredentialStatus(); }
+  const count = host.querySelector('.plugin-nav [data-page="gallery"] small');
+  if (count && count.textContent !== String(state.history.length)) count.textContent = String(state.history.length);
+  refreshSaveStatus();
 }
 
 function taskPhase(phase) {
@@ -2996,6 +3024,13 @@ function applyTokens() {
 function render(force = false) {
   if (!config || rendering) return;
   const samePage = host.dataset.renderedPage === state.page && host.dataset.renderedSurface === config.surface;
+  const editing = document.activeElement;
+  if (!force && samePage && host.contains(editing)
+    && (editing?.matches('textarea, input:not([type]), input[type="text"], input[type="password"], input[type="url"], input[type="search"], input[type="number"], input[type="email"], [contenteditable="true"]')
+      || editing?.isContentEditable)) {
+    refreshBackgroundStatus();
+    return;
+  }
   // Background task polling must not replace the mobile form or its native picker.
   if (!force && samePage && state.page === 'assistant' && config.surface === 'console') {
     refreshAssistantStatus();
@@ -3006,7 +3041,6 @@ function render(force = false) {
     comicPanel.refreshStatus(); return;
   }
   if (!force && advancedPanel.ui.painting) return;
-  const editing = document.activeElement;
   if (!force && samePage && state.page === 'generate' && config.surface === 'console'
     && host.contains(editing) && editing?.matches('input, textarea')
     && !['checkbox', 'radio', 'range', 'color', 'file', 'button', 'submit', 'reset'].includes(editing.type)) {
@@ -3077,6 +3111,13 @@ function render(force = false) {
     floatingMenu.update({ characterTheme: state.characterTheme, theme: config.theme });
   }
   paintIcons();
+  for (const [selector, html] of [
+    ['.result-area', renderGenerationResult], ['.generation-tasks', renderTasks],
+    ['[data-page-primary]', primaryPageAction],
+  ]) {
+    const node = host.querySelector(selector);
+    if (node && state.page === 'generate') statusMarkup.set(node, html());
+  }
   // Restore both navigation axes after icons establish the final button sizes.
   const restoredNavigation = host.querySelector('.plugin-nav');
   if (restoredNavigation) {
@@ -3186,7 +3227,8 @@ export function applyHostContext(chat) {
     if (profileUI.scope === 'chat' && !profileUI.dirty) loadProfileDraft();
     if (state.page === 'characters') void refreshProfileCards();
   }
-  render(changed);
+  if (changed) render(true);
+  else refreshBackgroundStatus();
 }
 
 function toast(message) {
@@ -3209,6 +3251,11 @@ async function reloadDrawings(refresh = false) {
       .filter(([key]) => !key.startsWith(`${location}:`) || existingIds.has(key.slice(location.length + 1)))));
     const next = hydrateDrawings(rows, drawings).map((row) => ({ ...row, rating: reviewValue(state.drawingReviews, location, row.id) })).sort((left, right) => right.createdAt - left.createdAt);
     const previous = drawings;
+    const contentSignature = (items) => JSON.stringify(items.map((row) => [
+      row.id, row.title, row.favorite, row.rating, row.width, row.height, row.version,
+      row.createdAt, row.blob?.size, row.thumbnail?.size, row.snapshot,
+    ]));
+    const changed = contentSignature(previous) !== contentSignature(next) || drawingUI.loading || Boolean(drawingUI.error);
     const selectedGroups = new Set(previous.filter((row) => drawingUI.selection.has(row.id)).map(versionGroupId));
     drawings = next;
     state.history = drawings.map((item) => item.id);
@@ -3228,12 +3275,13 @@ async function reloadDrawings(refresh = false) {
     drawingUI.loading = false;
     drawingUI.error = '';
     const editingGallery = state.page === 'gallery' && document.activeElement?.closest('[data-drawing-filters]');
-    if (!editingGallery) render();
+    if (state.page === 'gallery' && !editingGallery && changed) render();
     else {
+      refreshBackgroundStatus();
       const status = host.querySelector('[data-gallery-index-status]');
       if (status) status.textContent = galleryIndexStatus(drawingUI.index);
     }
-    if (document.querySelector('.drawing-viewer')) {
+    if (changed && document.querySelector('.drawing-viewer')) {
       viewerUI.ids = viewerUI.ids.filter((id) => currentDrawing(drawings, id));
       viewerUI.index = Math.min(viewerUI.index, viewerUI.ids.length - 1);
       if (viewerUI.ids.length) showDrawingViewer();
@@ -4501,7 +4549,7 @@ async function refreshTasks() {
     taskQueue.restore(result.rows);
     await syncTaskImages();
   } catch (error) { taskError = `任务记录暂时无法读取：${error.message}`; }
-  finally { taskRefreshing = false; if (host) render(); }
+  finally { taskRefreshing = false; refreshBackgroundStatus(); }
   })();
   return taskRefreshWork;
 }
@@ -5047,10 +5095,7 @@ export function mountPlugin(root, next) {
     }
     if (event.target.matches('[data-artist-search]')) {
       artistUI.search = event.target.value;
-      const position = event.target.selectionStart;
-      render(true);
-      const input = host.querySelector('[data-artist-search]');
-      input.focus(); if (input.type !== 'search') input.setSelectionRange(position, position);
+      replaceStatusHTML('.artist-directory', renderArtistDirectory(state, artistUI));
       return;
     }
     if (event.target.dataset.profileField && profileUI.draft) {

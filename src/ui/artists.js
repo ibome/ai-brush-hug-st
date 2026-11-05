@@ -4,11 +4,16 @@ const command = (name, title, action, extra = '') => `<button type="button" clas
 const field = (label, content) => `<label class="ui-field"><span>${label}</span>${content}</label>`;
 const targets = { all: '通用', novelai: 'NovelAI', openai: 'OpenAI兼容', comfyui: 'ComfyUI', sdwebui: 'SDWebUI' };
 
-export function renderArtists(state, ui) {
+export function renderArtistDirectory(state, ui) {
   const query = ui.search.trim().toLocaleLowerCase();
   const entries = state.artistLibrary.filter((entry) => (!ui.favoriteOnly || entry.favorite)
     && (!ui.category || entry.category === ui.category)
     && [entry.name, entry.category, entry.artist].join(' ').toLocaleLowerCase().includes(query));
+  return entries.length ? entries.map((entry) => `<button type="button" data-artist-select="${esc(entry.id)}" aria-pressed="${ui.draft?.id === entry.id}">
+      ${entry.preview ? `<img src="${entry.preview}" alt="" width="64" height="64" loading="lazy" />` : `<span class="artist-preview-empty">${icon('palette')}</span>`}<span><strong>${esc(entry.name)} ${entry.favorite ? '★' : ''}</strong><small>${esc(entry.category || targets[entry.target])}</small></span>${icon('chevron-right')}</button>`).join('') : '<p class="artist-empty">暂无匹配的画师串</p>';
+}
+
+export function renderArtists(state, ui) {
   const categories = [...new Set(state.artistLibrary.map((entry) => entry.category).filter(Boolean))];
   const value = ui.draft;
   return `<div class="page-heading"><div><h1>画师串库</h1><p>${state.artistLibrary.length} 个画风配方</p></div><div class="heading-actions">${command('plus', '新建', 'artist-new')}${command('copy-plus', '保存当前画风', 'artist-capture')}</div></div>
@@ -16,8 +21,7 @@ export function renderArtists(state, ui) {
       <select data-artist-category aria-label="分类筛选"><option value="">全部分类</option>${categories.map((name) => `<option ${name === ui.category ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>
       <label class="artist-check"><input type="checkbox" data-artist-favorites ${ui.favoriteOnly ? 'checked' : ''} />仅收藏</label>
       ${command('upload', '导入', 'artist-import')}${command('download', '导出', 'artist-export')}</div>
-    <div class="artist-workspace"><section class="artist-directory" aria-label="画师串列表">${entries.length ? entries.map((entry) => `<button type="button" data-artist-select="${esc(entry.id)}" aria-pressed="${value?.id === entry.id}">
-      ${entry.preview ? `<img src="${entry.preview}" alt="" width="64" height="64" loading="lazy" />` : `<span class="artist-preview-empty">${icon('palette')}</span>`}<span><strong>${esc(entry.name)} ${entry.favorite ? '★' : ''}</strong><small>${esc(entry.category || targets[entry.target])}</small></span>${icon('chevron-right')}</button>`).join('') : '<p class="artist-empty">暂无匹配的画师串</p>'}</section>
+    <div class="artist-workspace"><section class="artist-directory" aria-label="画师串列表">${renderArtistDirectory(state, ui)}</section>
     <section class="artist-editor" aria-label="画师串编辑">${value ? `
       <div class="artist-form-grid">${field('名称', `<input data-artist-field="name" maxlength="40" value="${esc(value.name)}" />`)}${field('分类', `<input data-artist-field="category" maxlength="40" value="${esc(value.category)}" />`)}</div>
       <div class="artist-form-grid">${field('适用模式', `<select data-artist-field="target">${Object.entries(targets).map(([id, title]) => `<option value="${id}" ${value.target === id ? 'selected' : ''}>${title}</option>`).join('')}</select>`)}<label class="artist-check"><input type="checkbox" data-artist-field="favorite" ${value.favorite ? 'checked' : ''} />收藏</label></div>

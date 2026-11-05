@@ -219,7 +219,7 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
         syncedRecords.set(id, row);
       }
       if (row) {
-        invalidateImages();
+        invalidateImages(true);
         if (taskRecords.get(id)?.plan.chatRequestId === requestId) taskRecords.delete(id);
       }
       return remember(row, location);

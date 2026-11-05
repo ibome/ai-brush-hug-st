@@ -10,6 +10,7 @@
 <h1>聊天配图实时刷新回归</h1>
 <p>隔离存储和模拟任务，聊天正文持续发生无关更新。</p>
 <output id="checks">等待检查</output>
+<button id="check-stability">检查卡片稳定与进度更新</button>
 <div id="chat"></div>
 <p id="notice" role="status"></p>
 <script type="module">
@@ -107,6 +108,41 @@
     },
   });
   const checkTimer = setInterval(checks, 50);
+  document.querySelector('#check-stability').onclick = async () => {
+    clearInterval(checkTimer);
+    const card = document.querySelector('.linghuashi-chat-images');
+    if (!card) return;
+    const prompt = card.shadowRoot.querySelector('.slot > details');
+    const menu = card.shadowRoot.querySelector('.quick-more');
+    prompt.open = true;
+    if (menu) menu.open = true;
+    const image = card.shadowRoot.querySelector('.picture img');
+    for (let index = 0; index < 8; index++) {
+      link.refresh(true); await delay(100);
+    }
+    const unchanged = document.querySelector('.linghuashi-chat-images');
+    const retained = {
+      cardPreserved:unchanged === card,
+      imagePreserved:unchanged?.shadowRoot.querySelector('.picture img') === image,
+      promptPreserved:prompt.isConnected && prompt.open,
+      menuPreserved:!menu || menu.isConnected && menu.open,
+    };
+    const original = record;
+    if (record) {
+      record = { ...record, status:'failed', error:'fixture state change' };
+      await link.receive({ type:'linghuashi:chat-task', binding:slot.binding, requestId:record.requestId,
+        status:'failed', error:record.error, savedIds:record.savedIds });
+      await delay(300);
+    }
+    const updated = document.querySelector('.linghuashi-chat-images');
+    document.querySelector('#checks').textContent = JSON.stringify({
+      ...retained, updated:Boolean(updated?.shadowRoot.textContent.includes('fixture state change')),
+      updatedPromptOpen:Boolean(updated?.shadowRoot.querySelector('.slot > details')?.open),
+      updatedMenuOpen:!menu || Boolean(updated?.shadowRoot.querySelector('.quick-more')?.open),
+      submissions,
+    }, null, 2);
+    record = original;
+  };
   window.addEventListener('pagehide', () => {
     clearInterval(mutationTimer); clearInterval(checkTimer); link.destroy();
   }, { once:true });

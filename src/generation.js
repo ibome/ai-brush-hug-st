@@ -368,18 +368,26 @@ export class GenerationQueue {
   }
 
   restore(rows) {
+    let changed = false;
     for (const row of rows) {
       const existing = this.jobs.find((job) => job.id === row.id);
       if (existing && !existing.remote && (existing.executing || ['queued', 'running'].includes(existing.status))) continue;
       const value = { ...row, plan: structuredClone(row.plan), execution: row.execution || (existing?.execution?.bytes ? existing.execution : undefined),
-        remote: row.status === 'running', controller: new AbortController() };
+        remote: row.status === 'running' };
+      if (existing && Object.entries(value).every(([key, next]) =>
+        existing[key] === next || JSON.stringify(existing[key]) === JSON.stringify(next))) continue;
+      value.controller = new AbortController();
       value.notify = () => this.changed();
       if (existing) Object.assign(existing, value);
       else this.jobs.push(value);
+      changed = true;
     }
     const ids = new Set(rows.map((row) => row.id));
+    const previousLength = this.jobs.length;
     this.jobs = this.jobs.filter((job) => ids.has(job.id) || (!job.remote && ACTIVE.has(job.status)));
-    this.changed();
+    changed ||= previousLength !== this.jobs.length;
+    if (changed) this.changed();
+    return changed;
   }
 
   cancel(id) {

@@ -32,6 +32,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   const preparingSlots = new Set();
   const replacements = [];
   const anchorSplits = [];
+  let mountedCards = new Map();
+  let mountedLayout = new Map();
   let store;
   let destroyed = false;
   let revision = 0;
@@ -119,6 +121,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     document.querySelectorAll('.linghuashi-chat-images,.linghuashi-smart-entry,.linghuashi-message-quick').forEach((node) => node.remove());
     for (const url of objectURLs) URL.revokeObjectURL(url);
     objectURLs.clear();
+    mountedCards.clear();
+    mountedLayout.clear();
   }
 
   async function updateRecord(entry, value) {
@@ -186,9 +190,13 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (!byNode.has(value.node)) byNode.set(value.node, []);
       byNode.get(value.node).push(value.entry);
     }
-    const urls = new Set();
-    const cards = new Map(await Promise.all([...visible.values()].map(async ({ entry }) =>
-      [entry.binding.id, await createCard(entry, options, urls, turn)])));
+    const cardURLs = new Map();
+    const cards = new Map(await Promise.all([...visible.values()].map(async ({ entry }) => {
+      const urls = new Set();
+      cardURLs.set(entry.binding.id, urls);
+      return [entry.binding.id, await createCard(entry, options, urls, turn)];
+    })));
+    const urls = new Set([...cardURLs.values()].flatMap((values) => [...values]));
     if (turn !== revision || destroyed) {
       for (const url of urls) URL.revokeObjectURL(url);
       return;
@@ -197,6 +205,34 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     // replacements do not trigger the observer or interrupt Tavern rendering.
     observer?.disconnect();
     try {
+      const layout = new Map([...byNode].map(([node, rows]) => [node, {
+        text: node.querySelector('.mes_text'),
+        signature: JSON.stringify([options.inline !== false, options.characterTheme,
+          rows.map((entry) => [entry.binding.id, entry.record?.assistant?.anchor])]),
+      }]));
+      const reuseLayout = layout.size === mountedLayout.size && cards.size === mountedCards.size
+        && [...layout].every(([node, value]) => node.isConnected
+          && mountedLayout.get(node)?.text === value.text
+          && mountedLayout.get(node)?.signature === value.signature)
+        && [...mountedCards.values()].every(({ card }) => card.isConnected);
+      if (reuseLayout) {
+        for (const [id, card] of cards) {
+          const previous = mountedCards.get(id), nextURLs = cardURLs.get(id);
+          if (previous.card.renderSignature === card.renderSignature) {
+            for (const url of nextURLs) URL.revokeObjectURL(url);
+            cards.set(id, previous.card);
+            continue;
+          }
+          preserveCardFolds(previous.card, card);
+          card.dataset.placement = previous.card.dataset.placement;
+          previous.card.replaceWith(card);
+          for (const replacement of replacements) if (replacement.element === previous.card) replacement.element = card;
+          for (const split of anchorSplits) if (split.card === previous.card) split.card = card;
+          for (const url of previous.urls) { URL.revokeObjectURL(url); objectURLs.delete(url); }
+          for (const url of nextURLs) objectURLs.add(url);
+          mountedCards.set(id, { card, urls: nextURLs });
+        }
+      } else {
       const openedMenus = new Set([...document.querySelectorAll('.linghuashi-chat-images')].flatMap((card) =>
         [...card.shadowRoot.querySelectorAll('.picture-entry[data-image]')].filter((picture) =>
           picture.querySelector('.quick-more')?.open).map((picture) => picture.dataset.image)));
@@ -255,6 +291,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           (node.querySelector('.mes_buttons') || node.querySelector('.mes_block'))?.append(quick);
         }
       }
+      mountedCards = new Map([...cards].map(([id, card]) => [id, { card, urls: cardURLs.get(id) }]));
+      mountedLayout = layout;
+      }
       for (const [key, selection] of versionSelections) {
         if (selection.saving) continue;
         const displayed = [...cards.values()].some((card) =>
@@ -286,6 +325,18 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       }
     }
     if (!generating) pendingReplies.clear();
+  }
+
+  function preserveCardFolds(previous, next) {
+    const prompt = previous.shadowRoot.querySelector('.slot > details');
+    const updated = next.shadowRoot.querySelector('.slot > details');
+    if (prompt && updated) updated.open = prompt.open;
+    for (const picture of previous.shadowRoot.querySelectorAll('.picture-entry[data-image]')) {
+      const id = picture.dataset.image;
+      const target = [...next.shadowRoot.querySelectorAll('.picture-entry[data-image]')].find((node) => node.dataset.image === id);
+      const menu = target?.querySelector('.quick-more');
+      if (menu) menu.open = Boolean(picture.querySelector('.quick-more')?.open);
+    }
   }
 
   async function createCard(entry, options, urls, turn) {
@@ -323,6 +374,11 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     const checking = preparingSlots.has(entry.binding.id);
     const owned = checking || requests.has(record?.requestId);
     const pending = checking || CHAT_PENDING.has(record?.status);
+    const signature = [entry.prompt, options.characterTheme,
+      document.getElementById('linghuashi-extension-host')?.dataset.theme,
+      checking, owned, pending, entry.progress,
+      record && [record.status, record.phase, record.error, record.recoverable,
+        record.taskId, record.requestId, record.savedIds, record.assistant]];
     section.innerHTML = `<header><strong>${smart ? `灵画师 · 智能配图${entry.binding.slot ? ` ${entry.index + 1}` : ''}` : `灵画师 · 配图 ${entry.index + 1}`}</strong><span class="status"></span><div class="actions"></div></header><details><summary>提示词</summary><p class="prompt"></p></details>`;
     section.querySelector('.prompt').textContent = entry.prompt;
     if (smart && !record) {
@@ -419,6 +475,10 @@ export function createChatLink({ account, getContext, settings, send, open, noti
             remote: savedTask.status === 'running',
             recoverable: canRecoverGeneration(savedTask) });
           const taskPending = Boolean(active || chatImageTaskBusy(savedTask));
+          signature.push([row.id, row.title, row.width, row.height, row.favorite, Boolean(row.snapshot),
+            versions.map((version) => [version.id, version.version]),
+            task && [task.id, task.status, task.phase, task.progress, task.error, task.remote, task.recoverable, Boolean(task.execution)],
+            taskPending, versionSelections.get(versionKey)]);
           appendImageTools({ container: picture, row, versions, task, pending: taskPending || pending, theme: options.characterTheme,
             onAction: (action) => { void imageAction(entry, row, action, task); },
             onVersion: (versionId) => { void selectImageVersion(entry, row, versionId); } });
@@ -444,6 +504,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     }
     shadow.append(section);
     paintIcons(shadow);
+    signature.push(section.querySelector('.status').textContent, section.querySelectorAll('.picture-entry').length);
+    container.renderSignature = JSON.stringify(signature);
     return container;
   }
 

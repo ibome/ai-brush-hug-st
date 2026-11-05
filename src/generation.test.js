@@ -24,6 +24,43 @@ const eventually = async (check) => {
 };
 const plan = () => ({ provider: 'openai', model: 'test', headers: { Authorization: 'test-secret' }, body: {}, timeout: 5 });
 
+test('unchanged task polling preserves jobs and emits only real additions, progress and removals', () => {
+  let changes = 0;
+  const queue = new GenerationQueue({ settings: () => ({}), run: async () => {}, changed: () => changes++ });
+  const row = { id:'remote', status:'running', phase:'generating', savedIds:[], plan:plan(), createdAt:1 };
+  assert.equal(queue.restore([row]), true);
+  const current = queue.jobs[0], controller = current.controller;
+  for (let index = 0; index < 5; index++) assert.equal(queue.restore([structuredClone(row)]), false);
+  assert.equal(changes, 1);
+  assert.equal(queue.jobs[0], current);
+  assert.equal(current.controller, controller);
+  const completed = { ...row, status:'completed', savedIds:['image'], phase:'done' };
+  assert.equal(queue.restore([completed]), true);
+  assert.equal(current.status, 'completed');
+  assert.deepEqual(current.savedIds, ['image']);
+  assert.equal(changes, 2);
+  assert.equal(queue.restore([structuredClone(completed)]), false);
+  assert.equal(queue.restore([]), true);
+  assert.equal(changes, 3);
+  assert.equal(queue.jobs.length, 0);
+});
+
+test('polling cannot overwrite an active locally owned task or discard retained result bytes', () => {
+  let changes = 0;
+  const queue = new GenerationQueue({ settings: () => ({}), run: async () => {}, changed: () => changes++ });
+  const local = queue.add(plan(), { id:'local', defer:true });
+  assert.equal(queue.restore([{ id:'local', plan:plan(), status:'paused' }]), false);
+  assert.equal(local.status, 'queued');
+  assert.equal(queue.restore([]), false);
+  const bytes = new Uint8Array([1, 2, 3]);
+  local.status = 'failed'; local.execution = { bytes };
+  queue.restore([{ id:'local', plan:plan(), status:'failed' }]);
+  const count = changes;
+  assert.equal(queue.restore([{ id:'local', plan:plan(), status:'failed' }]), false);
+  assert.equal(local.execution.bytes, bytes);
+  assert.equal(changes, count);
+});
+
 test('missing advanced assets fail before submission marker and provider request', async () => {
   const current = job();
   let checkpoints = 0, calls = 0;

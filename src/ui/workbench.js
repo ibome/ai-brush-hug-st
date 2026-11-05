@@ -14,8 +14,6 @@ export class WorkbenchPanel {
   html() {
     const draft = normalizeWorkbench(this.getDraft()), ui = this.ui, snapshot = this.getSnapshot();
     const params = snapshot.params || snapshot.config.params, openaiSeed = snapshot.provider === 'openai' && !/nai-diffusion/i.test(params.model);
-    const jobs = this.jobs().filter((job) => job.plan.snapshot?.experiment);
-    const groups = [...new Map([...jobs].reverse().map((job) => [job.plan.snapshot.experiment.id, job.plan.snapshot.experiment])).values()].slice(0, 8);
     const preview = ui.preview, selected = preview?.rows[ui.row] || preview?.rows[0];
     const selectedParams = selected?.snapshot.params || selected?.snapshot.config?.params;
     return `<div class="page-heading"><div><h1>组合生图</h1><p>${esc(snapshot.provider === 'comfyui' ? snapshot.config.name : params.model)}</p></div></div>
@@ -44,14 +42,25 @@ export class WorkbenchPanel {
           field(({ positive: '正向提示词', negative: '负面提示词', artist: '画师／风格' })[key], `<textarea readonly rows="4">${esc(selectedParams[key])}</textarea>`)).join('')}
           ${selected?.artistIds.length ? `${field('保存画师组合名称', '<input data-batch-candidate-name maxlength="40" />')}${button('save', '保存到画师串库', 'save-candidate')}` : ''}
         </div></div></section>` : ''}
-      ${groups.length ? `<section class="batch-runs"><h2>最近组合任务</h2>${groups.map((group) => {
+      <section class="batch-runs">${this.runsHTML()}</section></section>`;
+  }
+  runsHTML() {
+    const jobs = this.jobs().filter((job) => job.plan.snapshot?.experiment);
+    const groups = [...new Map([...jobs].reverse().map((job) => [job.plan.snapshot.experiment.id, job.plan.snapshot.experiment])).values()].slice(0, 8);
+    return groups.length ? `<h2>最近组合任务</h2>${groups.map((group) => {
         const rows = jobs.filter((job) => job.plan.snapshot.experiment.id === group.id);
         const queued = rows.filter((row) => row.status === 'queued').length, paused = rows.filter((row) => row.status === 'paused' && row.stage === 'waiting').length;
         return `<div><span><strong>${group.mode === 'explore' ? '画风探索' : '组合批量'} · ${new Date(group.createdAt).toLocaleString()}</strong>
           <small>${rows.filter((row) => row.status === 'completed').length} 完成 · ${queued} 等待 · ${paused} 暂停 · ${rows.filter((row) => row.status === 'running').length} 运行</small></span>
           ${button('pause', '暂停等待任务', 'pause', `data-batch-id="${group.id}" ${queued ? '' : 'disabled'}`)}
           ${button('play', '继续等待任务', 'resume', `data-batch-id="${group.id}" ${paused ? '' : 'disabled'}`)}</div>`;
-      }).join('')}</section>` : ''}</section>`;
+      }).join('')}` : '';
+  }
+  refreshStatus(container) {
+    const root = container.querySelector('.batch-runs'), html = this.runsHTML();
+    if (root && this.runsMarkup !== html) {
+      root.innerHTML = html; this.runsMarkup = html; paintIcons(root);
+    }
   }
   update(key, value) {
     const draft = normalizeWorkbench({ ...this.getDraft(), [key]: value });
@@ -64,6 +73,7 @@ export class WorkbenchPanel {
   bind(container) {
     const root = container.querySelector('[data-batch-root]');
     if (!root) return;
+    this.runsMarkup = this.runsHTML();
     root.addEventListener('input', (event) => {
       const target = event.target;
       if (!target.dataset.batchField) return;

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>后台更新与输入保护回归</title>
+<div id="plugin-root"></div>
+<div id="overlay-root"></div>
+<div id="toast-root" role="status"></div>
+<aside style="position:fixed;right:0;bottom:0;z-index:10000;max-width:330px;background:#fff;color:#172b27;font:11px/1.5 monospace">
+  <button id="check-edit">检查输入与后台状态变化</button>
+  <button id="check-read">检查阅读与后台空查询</button>
+  <output id="checks" style="display:block;white-space:pre-wrap">等待检查</output>
+</aside>
+<script type="module">
+  import '../../src/styles/plugin.css';
+  import { randomUUID } from '../../src/crypto-compat.js';
+  import { captureSnapshot } from '../../src/ui/drawings.js';
+  const account = `fixture-passive-refresh:${randomUUID()}`;
+  const ref = `tavern:${randomUUID()}`;
+  const page = new URLSearchParams(location.search).get('page') || 'settings';
+  window.__LINGHUASHI_ENV__ = {
+    mode:'extension', account, chat:{ name:'隔离测试', count:0 },
+    releaseState:{ status:'current', release:null },
+    ui:{ settingsVersion:1, page, enabled:true, confirm:false, cacheLocation:'browser', characterTheme:'gemini',
+      experience:{ level:'full', dismissed:true, goal:'manual' }, provider:'openai',
+      openaiEndpoint:'https://fixture.invalid', openaiPath:'/images/generations', openaiTimeout:180,
+      openai:{ model:'gpt-image-1', positive:'a quiet lake', negative:'', size:'1024x1024', n:1 },
+      connections:{ openai:{ endpoint:'https://fixture.invalid', path:'/images/generations', keyRef:ref, timeout:180 } },
+      characterProfiles:{ profiles:[{ id:'fixture-profile', name:'Fixture', enabled:true, tags:'short hair' }] },
+    },
+  };
+  let rows = [], queries = 0, hostChanges = 0;
+  const originalInterval = window.setInterval.bind(window);
+  window.setInterval = (fn, ms, ...args) => originalInterval(fn, ms === 8000 ? 200 : ms, ...args);
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (url, options) => String(url).startsWith('https://fixture.invalid/')
+    ? Promise.resolve(new Response(JSON.stringify({ data:[{ id:'gpt-image-1' }] }),
+      { headers:{ 'Content-Type':'application/json' } })) : originalFetch(url, options);
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    let value, type;
+    if (data?.type === 'linghuashi:secret-request') {
+      type = 'linghuashi:secret-result'; value = data.action === 'read' ? 'fixture-key' : ref;
+    } else if (data?.type === 'linghuashi:storage-request') {
+      type = 'linghuashi:storage-result';
+      if (data.action === 'task/list') { queries++; value = { rows:structuredClone(rows) }; }
+      else value = {};
+    } else if (data?.type === 'linghuashi:assistant-request') {
+      type = 'linghuashi:assistant-result'; value = { characters:[], models:[] };
+    } else if (data?.type === 'linghuashi:state') type = 'linghuashi:state-result';
+    else return;
+    window.postMessage({ type, requestId:data.requestId, value }, location.origin);
+  });
+  const { normalizeConfig } = await import('../../src/config.js');
+  const { mountPlugin, restoreCredentials } = await import('../../src/ui/plugin.js');
+  await restoreCredentials();
+  const host = document.querySelector('#plugin-root');
+  mountPlugin(host, normalizeConfig({ surface:'console', state:'ready', theme:'light' }));
+  const observer = new MutationObserver((changes) => {
+    hostChanges += changes.filter((change) => change.target === host && change.type === 'childList').length;
+  });
+  observer.observe(host, { childList:true });
+  async function check(editing) {
+    const candidates = [...host.querySelectorAll('textarea, input, select')].filter((node) =>
+      !node.disabled && node.getBoundingClientRect().height > 0 && !['checkbox','radio','file','color','range'].includes(node.type));
+    const input = candidates.find((node) => node.matches('textarea,input:not([type]),input[type="text"],input[type="url"],input[type="search"]')) || candidates[0];
+    const content = host.querySelector('.plugin-content'), navigation = host.querySelector('.plugin-nav');
+    const fold = [...host.querySelectorAll('details')].find((node) => node.getBoundingClientRect().height > 0);
+    if (fold) fold.open = true;
+    if (editing && input) {
+      input.focus({ preventScroll:true });
+      if (input.matches('input,textarea') && !['number'].includes(input.type)) {
+        input.value = 'test draft'; input.dispatchEvent(new InputEvent('input', { bubbles:true }));
+        try { input.setSelectionRange(2, 5); } catch {}
+      }
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles:true, data:'wen' }));
+    } else document.querySelector('#check-read').focus({ preventScroll:true });
+    if (content) content.scrollTop = Math.min(240, content.scrollHeight - content.clientHeight);
+    if (navigation) navigation.scrollLeft = 150;
+    const before = { input, value:input?.value, start:input?.selectionStart, end:input?.selectionEnd,
+      content, top:content?.scrollTop, navigation, left:navigation?.scrollLeft, queries, hostChanges };
+    if (editing) rows = [{ id:'fixture-task', status:'running', phase:'generating', createdAt:1, savedIds:[],
+      plan:{ provider:'openai', model:'fixture-model', storageLocation:'browser',
+        snapshot:captureSnapshot(window.__LINGHUASHI_ENV__.ui) } }];
+    document.querySelector('#checks').textContent = '检查中';
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (editing) { rows[0].status = 'completed'; rows[0].phase = 'done'; }
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    const result = {
+      page:host.dataset.renderedPage, editing, polls:queries - before.queries, viewport:document.documentElement.clientWidth,
+      shellPreserved:hostChanges === before.hostChanges,
+      inputPreserved:!editing || Boolean(input?.isConnected && document.activeElement === input),
+      draftPreserved:!editing || input?.value === before.value,
+      selectionPreserved:!editing || input?.selectionStart === before.start && input?.selectionEnd === before.end,
+      scrollPreserved:content === host.querySelector('.plugin-content') && Math.abs(content.scrollTop - before.top) <= 1,
+      scrollTop:before.top,
+      navigationPreserved:navigation === host.querySelector('.plugin-nav') && Math.abs(navigation.scrollLeft - before.left) <= 1,
+      foldPreserved:!fold || fold.isConnected && fold.open,
+      taskUpdated:page !== 'generate' || host.querySelector('.generation-tasks')?.textContent.includes('已完成'),
+    };
+    if (editing && input) input.dispatchEvent(new CompositionEvent('compositionend', { bubbles:true, data:'wen' }));
+    document.querySelector('#checks').textContent = JSON.stringify(result, null, 2);
+  }
+  document.querySelector('#check-edit').onclick = () => check(true);
+  document.querySelector('#check-read').onclick = () => check(false);
+</script>
+</html>

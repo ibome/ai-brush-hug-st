@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.7&build=20261105-chat-live-refresh",
+  "js": "dist/index.js?ver=0.26.8&build=20261105-passive-refresh",
   "author": "小波",
-  "version": "0.26.7",
+  "version": "0.26.8",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }
