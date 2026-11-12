@@ -64,6 +64,11 @@
   window.__LINGHUASHI_ENV__.ui.novelai.advanced.vibes.push({
     id: randomUUID(), name: '水彩参考.webp', image: asset, enabled: true, information: 1, strength: 0.6, encodings: {},
   });
+  if (parameters.get('references') === '2') {
+    window.__LINGHUASHI_ENV__.ui.novelai.advanced.vibes.push({
+      id: randomUUID(), name: '第二张参考.webp', image: asset, enabled: true, information: 1, strength: 0.6, encodings: {},
+    });
+  }
   const { normalizeConfig } = await import('../../src/config.js');
   const { mountPlugin, restoreCredentials } = await import('../../src/ui/plugin.js');
   await restoreCredentials();

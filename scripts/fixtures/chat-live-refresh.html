@@ -17,6 +17,7 @@
   import { randomUUID } from '../../src/crypto-compat.js';
   import { createChatLink } from '../../src/chat-link.js';
   import { bindImageSlots } from '../../src/chat.js';
+  import { selectVersion } from '../../server/linghuashi-storage/image-versions.mjs';
 
   const parameters = new URLSearchParams(location.search);
   const account = `fixture-chat-live:${randomUUID()}`;
@@ -27,6 +28,12 @@
     eventSource:{ on(type, handler) { handlers.set(type, handler); }, removeListener(type) { handlers.delete(type); } } };
   const settings = { enabled:true, auto:false, inline:true, cacheLocation:'server', characterTheme:'deepseek',
     triggerPrefix:'image###', triggerSuffix:'###', assistant:{ autoPrompt:false } };
+  settings.characterTheme = parameters.get('theme') || settings.characterTheme;
+  if (parameters.has('dark')) {
+    const host = document.createElement('div');
+    host.id = 'linghuashi-extension-host'; host.dataset.theme = 'dark'; document.body.append(host);
+    document.body.style.cssText = 'background:#19191c;color:#e4e4e8';
+  }
   const article = document.createElement('article');
   article.className = 'mes'; article.setAttribute('mesid', '0');
   article.innerHTML = '<div class="mes_block"><div class="mes_text"></div><div class="mes_buttons"></div></div>';
@@ -41,7 +48,18 @@
   if (parameters.has('existing')) {
     saved = true;
     record = { binding:slot.binding, requestId:randomUUID(), status:'completed', savedIds:['fixture-lake'], updatedAt:Date.now() };
+    if (parameters.has('multiple')) record.savedIds.push('fixture-second');
   }
+  let rows = ['fixture-lake', ...(parameters.has('versions') ? ['fixture-lake-v2'] : []),
+    ...(parameters.has('multiple') ? ['fixture-second'] : [])].map((id, index) => ({
+      id, nativeStorage:1, extension:'jpg', thumbExtension:'jpg',
+      title:'模拟湖畔配图', width:1200, height:800, bytes:100, thumbBytes:100,
+      mime:'image/jpeg', thumbMime:'image/jpeg', createdAt:index + 1,
+      chatBinding:slot.binding, snapshot:{ provider:'novelai', params:{ positive:'a quiet lake', negative:'blur', seed:7 } },
+      version:{ groupId:id === 'fixture-lake-v2' ? 'fixture-lake' : id, number:id === 'fixture-lake-v2' ? 2 : 1 },
+  }));
+  const calls = [], opened = [];
+  let imageRequest;
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const slow = parameters.has('slow');
   let mutationTimer;
@@ -63,7 +81,7 @@
     }, null, 2);
   };
   const link = createChatLink({ account, getContext:() => context, settings:() => settings,
-    open() {}, notice(text) { document.querySelector('#notice').textContent = text; },
+    open(page) { opened.push(page); }, notice(text) { document.querySelector('#notice').textContent = text; },
     async storageRequest(action, body) {
       if (parameters.has('scan-slow') && ['task/list', 'chat/list', 'list'].includes(action)) await delay(3000);
       if (slow && ['chat/get', 'chat/list', 'task/list', 'list'].includes(action)) await delay(250);
@@ -79,15 +97,27 @@
         record = { ...record, ...body.value, updatedAt:Date.now() };
         return structuredClone(record);
       }
-      if (action === 'list') return { rows:saved ? [{
-        id:'fixture-lake', nativeStorage:1, extension:'jpg', thumbExtension:'jpg',
-        title:'模拟湖畔配图', width:1200, height:800, bytes:100, thumbBytes:100,
-        mime:'image/jpeg', thumbMime:'image/jpeg', createdAt:Date.now(),
-        chatBinding:slot.binding, chatRequestId:record.requestId,
-      }] : [] };
+      if (action === 'list') return { rows:saved ? rows.map((row) => ({ ...row, chatRequestId:record.requestId })) : [] };
+      if (action === 'favorite') {
+        rows = rows.map((row) => row.id === body.id ? { ...row, favorite:body.favorite } : row);
+        return {};
+      }
+      if (action === 'version/select') {
+        await delay(200);
+        rows = selectVersion(rows, body.id); return {};
+      }
       throw new Error(`Unexpected action: ${action}`);
     },
     send(type, data) {
+      calls.push({ type, ...data });
+      if (type === 'linghuashi:chat-image-generate') {
+        imageRequest = data;
+        queueMicrotask(() => { void link.receive({ type:'linghuashi:chat-task', ...data, status:'running', phase:'submitting' }); });
+        return;
+      }
+      if (type === 'linghuashi:chat-cancel' && imageRequest?.requestId === data.requestId) {
+        void link.receive({ type:'linghuashi:chat-task', ...imageRequest, status:'cancelled' }); return;
+      }
       if (type !== 'linghuashi:chat-generate') return;
       submissions++;
       if (parameters.has('mutations')) mutationTimer = setInterval(() => {
@@ -107,14 +137,22 @@
       }, 1800);
     },
   });
+  window.__chatControls = {
+    calls, opened,
+    refresh(changes = {}) { Object.assign(settings, changes); link.refresh(true); },
+    status(value) { return link.receive({ type:'linghuashi:chat-task', binding:slot.binding,
+      requestId:record.requestId, savedIds:record.savedIds, ...value }); },
+  };
   const checkTimer = setInterval(checks, 50);
   document.querySelector('#check-stability').onclick = async () => {
     clearInterval(checkTimer);
     const card = document.querySelector('.linghuashi-chat-images');
     if (!card) return;
-    const prompt = card.shadowRoot.querySelector('.slot > details');
+    const controls = card.shadowRoot.querySelector('.image-controls');
+    const prompt = card.shadowRoot.querySelector('.prompt-details');
     const menu = card.shadowRoot.querySelector('.quick-more');
     prompt.open = true;
+    if (controls) controls.open = true;
     if (menu) menu.open = true;
     const image = card.shadowRoot.querySelector('.picture img');
     for (let index = 0; index < 8; index++) {
@@ -126,6 +164,7 @@
       imagePreserved:unchanged?.shadowRoot.querySelector('.picture img') === image,
       promptPreserved:prompt.isConnected && prompt.open,
       menuPreserved:!menu || menu.isConnected && menu.open,
+      controlsPreserved:!controls || controls.isConnected && controls.open,
     };
     const original = record;
     if (record) {
@@ -137,8 +176,9 @@
     const updated = document.querySelector('.linghuashi-chat-images');
     document.querySelector('#checks').textContent = JSON.stringify({
       ...retained, updated:Boolean(updated?.shadowRoot.textContent.includes('fixture state change')),
-      updatedPromptOpen:Boolean(updated?.shadowRoot.querySelector('.slot > details')?.open),
+      updatedPromptOpen:Boolean(updated?.shadowRoot.querySelector('.prompt-details')?.open),
       updatedMenuOpen:!menu || Boolean(updated?.shadowRoot.querySelector('.quick-more')?.open),
+      updatedControlsOpen:!controls || Boolean(updated?.shadowRoot.querySelector('.image-controls')?.open),
       submissions,
     }, null, 2);
     record = original;

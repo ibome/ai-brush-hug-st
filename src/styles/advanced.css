@@ -23,7 +23,13 @@
 .vibe-item > img { width: 64px; height: 80px; object-fit: contain; background: var(--soft); border-radius: 5px; }
 .vibe-item .advanced-check { margin-top: 0; }
 .vibe-actions { margin: 0; }
-.vibe-actions > .vibe-status { font-size: 11px; color: var(--secondary); flex: 0 0 100%; overflow-wrap: anywhere; }
+.vibe-status { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 12px; min-width: 0; font-size: 12px; line-height: 1.6; color: var(--secondary); overflow-wrap: anywhere; }
+.vibe-status-label { display: flex; align-items: center; gap: 5px; }
+.vibe-status-label svg { width: 15px; height: 15px; flex-shrink: 0; }
+.vibe-status-detail { font-size: 11px; }
+.vibe-status[data-state="ready"], .vibe-status[data-state="pending"] { color: var(--accent); }
+.vibe-status[data-state="stale"], .vibe-status[data-state="missing"] { color: var(--warning); }
+.vibe-status[data-state="failed"] { color: var(--danger); }
 .vibe-actions > .ui-button { min-height: 36px; max-width: 100%; white-space: normal; }
 .advanced-reference-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .advanced-reference-list > div { display: flex; gap: 8px; align-items: center; min-width: 0; }

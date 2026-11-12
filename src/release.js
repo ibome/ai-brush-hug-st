@@ -1,6 +1,6 @@
 export const RELEASE = Object.freeze({
-  version: '0.26.10',
-  build: '20261112-vibe-encoding',
+  version: '0.26.11',
+  build: '20261112-chat-controls',
   repository: 'ibome/ai-brush-hug-st',
   url: 'https://github.com/ibome/ai-brush-hug-st',
   storageProtocol: 2,

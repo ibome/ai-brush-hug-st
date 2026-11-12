@@ -11,18 +11,24 @@ const button = (glyph, label, command, attributes = '') => `<button type="button
 const tool = (glyph, label, command, attributes = '') => `<button type="button" class="ui-icon-button" title="${label}" aria-label="${label}" data-advanced-command="${command}" ${attributes}>${icon(glyph)}</button>`;
 const field = (label, body) => `<label class="ui-field"><span>${label}</span>${body}</label>`;
 const range = (key, label, value) => field(`${label} · ${value}`, `<input type="range" min="0" max="1" step="0.01" data-advanced-field="${key}" value="${value}" aria-label="${label}" />`);
+const vibeSignature = (entry, key) => JSON.stringify([key, entry.information, entry.image?.id, entry.encodings[key]?.asset.id]);
 const vibeStatus = (entry, key) => {
-  if (key === 'v3') return entry.image ? '当前模型可用' : '请添加原图';
-  if (!key) return '当前模型不支持编码';
-  if (entry.encodings[key]?.information === entry.information) return '当前模型可用';
-  if (!entry.image) return '缺少匹配编码，请重新添加原图';
-  return entry.encodings[key] ? '提取量已变更，请重新编码' : '需为当前模型编码参考图';
+  if (key === 'v3' && entry.image) return { state: 'ready', label: '无需编码', detail: '当前模型可直接使用原图', glyph: 'circle-check' };
+  if (!key) return { state: 'unsupported', label: '不支持编码', detail: '当前模型不支持画风参考编码', glyph: 'circle-alert' };
+  if (key !== 'v3' && entry.encodings[key]?.information === entry.information) {
+    return { state: 'ready', label: '已编码', detail: '当前模型可用', glyph: 'circle-check' };
+  }
+  if (!entry.image) return { state: 'missing', label: '缺少原图', detail: '缺少匹配编码，请重新添加原图', glyph: 'image-off' };
+  return entry.encodings[key]
+    ? { state: 'stale', label: '待重新编码', detail: '提取量已变更，请重新编码', glyph: 'circle-alert' }
+    : { state: 'unencoded', label: '未编码', detail: '需为当前模型编码参考图', glyph: 'clock-3' };
 };
 
 export class AdvancedPanel {
   constructor({ id = 'main', assets, getSnapshot, update, render, encode, gallery = () => [], useDrawing, disabled = () => false, getVibeLibrary, setVibeLibrary }) {
     Object.assign(this, { id, assets, getSnapshot, update, rerender: render, encode, gallery, useDrawing, disabled, getVibeLibrary, setVibeLibrary });
-    this.ui = { busy: false, error: '', encodingId: '', brush: 48, eraser: false, sourceId: '', maskId: '', painting: false, strokes: [], redo: [], dirty: false, bitmap: null };
+    this.ui = { busy: false, error: '', encodingId: '', encodingSignature: '', brush: 48, eraser: false, sourceId: '', maskId: '', painting: false, strokes: [], redo: [], dirty: false, bitmap: null };
+    this.vibeFailures = new Map();
     this.urls = new Set();
   }
   html() {
@@ -69,8 +75,42 @@ export class AdvancedPanel {
     const drawings = this.gallery();
     return drawings.length ? `<select data-advanced-gallery="${kind}" aria-label="从绘图管理选择${kind === 'source' ? '底图' : '参考图'}"><option value="">从绘图管理选择</option>${drawings.slice(0, 100).map((row) => `<option value="${esc(row.id)}">${esc(row.title)}</option>`).join('')}</select>` : '';
   }
+  vibeState(entry, key) {
+    const signature = vibeSignature(entry, key), status = vibeStatus(entry, key);
+    if (this.ui.encodingId === entry.id && this.ui.encodingSignature === signature) {
+      return { state: 'pending', label: '正在编码', detail: '正在编码参考图…', glyph: 'loader-circle' };
+    }
+    const failure = this.vibeFailures.get(entry.id);
+    return failure?.signature === signature
+      ? { state: 'failed', label: '编码失败', detail: `${failure.message}${status.state === 'ready' ? '；原编码仍可用于当前模型' : ''}`, glyph: 'circle-alert' }
+      : status;
+  }
+  vibeStatusHTML(entry, key) {
+    const status = this.vibeState(entry, key);
+    return `<div class="vibe-status" role="status" aria-live="polite" aria-atomic="true" data-state="${status.state}">
+      <span class="vibe-status-label">${icon(status.glyph, status.state === 'pending' ? 'spin' : '')}<strong>${status.label}</strong></span>
+      <span class="vibe-status-detail">${esc(status.detail)}</span></div>`;
+  }
+  vibeEncodeHTML(entry, key) {
+    if (key === 'v3') return '';
+    const status = this.vibeState(entry, key), pending = status.state === 'pending';
+    const label = pending ? '正在编码…' : status.state === 'failed' ? '重试编码' : status.state === 'ready' ? '重新编码' : '编码参考图';
+    return button(pending ? 'loader-circle' : 'scan', label, 'vibe-encode',
+      `title="${label}（可能消耗额度）" data-vibe-id="${entry.id}" ${entry.image && key ? '' : 'disabled'}`);
+  }
+  refreshVibeRow(target) {
+    const snapshot = this.getSnapshot(), entry = advancedOf(snapshot).vibes.find((row) => row.id === target.dataset.vibeId);
+    const row = target.closest('[data-vibe-row]');
+    if (!entry || !row) return;
+    const key = vibeModelKey(snapshot.params.model);
+    const status = row.querySelector('.vibe-status'), command = row.querySelector('[data-advanced-command="vibe-encode"]');
+    if (status) status.outerHTML = this.vibeStatusHTML(entry, key);
+    if (command) command.outerHTML = this.vibeEncodeHTML(entry, key);
+    paintIcons(row);
+  }
   vibeHTML(advanced, model) {
     const key = vibeModelKey(model);
+    for (const id of this.vibeFailures.keys()) if (!advanced.vibes.some((entry) => entry.id === id)) this.vibeFailures.delete(id);
     return `<div class="advanced-upload-actions">${button('image-plus', '添加画风参考', 'vibe-upload')}${button('upload', '导入 .naiv4vibe', 'vibefile-upload')}</div>
       ${this.getVibeLibrary ? `<details class="vibe-library" ${this.ui.vibeOpen ? 'open' : ''}><summary>Vibe 素材库 · ${this.getVibeLibrary().length}</summary>
         <div class="vibe-library-tools"><input type="search" data-vibe-library-search aria-label="搜索 Vibe 素材" maxlength="200" value="${esc(this.ui.vibeSearch || '')}" placeholder="名称、分类、模型" />
@@ -83,12 +123,12 @@ export class AdvancedPanel {
             ${tool('trash-2', '删除素材库条目', 'vibe-library-delete', `data-vibe-id="${row.id}"`)}</div>`).join('') || '<p>暂无匹配素材</p>'}</div></details>` : ''}
       <label class="advanced-check"><input type="checkbox" data-advanced-field="normalizeStrength" ${advanced.normalizeStrength ? 'checked' : ''} />总参考强度超过 1 时自动归一化</label>
       <div class="vibe-list">${advanced.vibes.map((entry) => {
-        const encoding = this.ui.encodingId === entry.id;
         return `<div class="vibe-item" data-vibe-row="${entry.id}"><img data-vibe-preview="${entry.id}" alt="画风参考预览" />
           <div><label class="advanced-check"><input type="checkbox" data-vibe-field="enabled" data-vibe-id="${entry.id}" ${entry.enabled ? 'checked' : ''} /><input aria-label="参考名称" data-vibe-field="name" data-vibe-id="${entry.id}" maxlength="80" value="${esc(entry.name)}" /></label>
+            ${this.vibeStatusHTML(entry, key)}
             <div class="two-field-row">${field('参考强度', `<input type="number" min="0" max="1" step="0.01" data-vibe-field="strength" data-vibe-id="${entry.id}" value="${entry.strength}" />`)}
             ${field('信息提取量', `<input type="number" min="0" max="1" step="0.01" data-vibe-field="information" data-vibe-id="${entry.id}" value="${entry.information}" />`)}</div>
-            <div class="vibe-actions"><span class="vibe-status" role="status">${encoding ? '正在编码参考图…' : vibeStatus(entry, key)}</span>${key === 'v3' ? '' : button(encoding ? 'loader-circle' : 'scan', encoding ? '正在编码…' : '编码参考图', 'vibe-encode', `title="编码参考图（可能消耗额度）" data-vibe-id="${entry.id}" ${entry.image && key ? '' : 'disabled'}`)}
+            <div class="vibe-actions">${this.vibeEncodeHTML(entry, key)}
               ${this.setVibeLibrary ? tool('bookmark-plus', '保存当前名称、强度和编码到素材库', 'vibe-library-save', `data-vibe-id="${entry.id}"`) : ''}
               ${tool('download', '导出 .naiv4vibe', 'vibe-export', `data-vibe-id="${entry.id}" ${Object.keys(entry.encodings).length ? '' : 'disabled'}`)}${tool('trash-2', '移除画风参考', 'vibe-remove', `data-vibe-id="${entry.id}"`)}</div>
           </div></div>`;
@@ -146,6 +186,7 @@ export class AdvancedPanel {
         if (!entry) return;
         entry[target.dataset.vibeField] = target.type === 'checkbox' ? target.checked : target.type === 'number' ? Number(target.value) : target.value;
         this.apply(advanced);
+        if (target.dataset.vibeField === 'information') this.refreshVibeRow(target);
       } else if (target.dataset.loraNode) {
         const snapshot = this.getSnapshot(), key = target.dataset.loraField, node = snapshot.config.graph[target.dataset.loraNode];
         if (!node || !['lora_name', 'strength_model', 'strength_clip'].includes(key)) return;
@@ -179,8 +220,7 @@ export class AdvancedPanel {
         const snapshot = this.getSnapshot(), entry = advancedOf(snapshot).vibes.find((row) => row.id === target.dataset.vibeId);
         if (entry) {
           target.value = entry[target.dataset.vibeField];
-          const status = target.closest('[data-vibe-row]')?.querySelector('.vibe-status');
-          if (status) status.textContent = vibeStatus(entry, vibeModelKey(snapshot.params.model));
+          this.refreshVibeRow(target);
         }
       }
       else if (target.dataset.advancedField && ['text', 'number', 'range'].includes(target.type)) return;
@@ -191,13 +231,19 @@ export class AdvancedPanel {
   }
   async perform(operation, { encodingId = '' } = {}) {
     if (this.ui.busy || this.disabled()) return;
-    this.ui.busy = true; this.ui.error = ''; this.ui.encodingId = encodingId; this.rerender();
+    const snapshot = encodingId ? this.getSnapshot() : null;
+    const entry = snapshot && advancedOf(snapshot).vibes.find((row) => row.id === encodingId);
+    const signature = entry ? vibeSignature(entry, vibeModelKey(snapshot.params.model)) : '';
+    if (encodingId) this.vibeFailures.delete(encodingId);
+    this.ui.busy = true; this.ui.error = ''; this.ui.encodingId = encodingId; this.ui.encodingSignature = signature; this.rerender();
     try { await operation(); }
     catch (error) {
-      this.ui.error = encodingId && error?.name === 'TimeoutError' ? '编码服务识别超时，请检查当前设备网络，或在接口配置填写服务地址'
+      const message = encodingId && error?.name === 'TimeoutError' ? '编码服务识别超时，请检查当前设备网络，或在接口配置填写服务地址'
         : error?.message || (encodingId ? '参考图编码未完成，请核对 NovelAI 接口配置后重试' : '操作失败，请重试');
+      if (signature) this.vibeFailures.set(encodingId, { signature, message });
+      else this.ui.error = message;
     }
-    finally { this.ui.busy = false; this.ui.encodingId = ''; this.rerender(); }
+    finally { this.ui.busy = false; this.ui.encodingId = ''; this.ui.encodingSignature = ''; this.rerender(); }
   }
   async command(command, target) {
     if (/-upload$/.test(command)) { this.root.querySelector(`[data-advanced-file="${command.replace('-upload', '')}"]`)?.click(); return; }

@@ -48,6 +48,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   const imageOperations = new Set();
   const imageLoads = new Map();
   const versionSelections = new Map();
+  const cardFolds = new Map();
   const ready = openChatStore(account, {
     mode: () => ['server', 'local'].includes(settings().cacheLocation) ? 'server' : 'browser', request: storageRequest,
     ownsRequest: (id) => requests.has(id),
@@ -185,6 +186,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     for (const [id] of entries) {
       if (!visible.has(id) && ![...requests.values()].some((entry) => entry.binding.id === id)) entries.delete(id);
     }
+    for (const id of cardFolds.keys()) if (!visible.has(id)) cardFolds.delete(id);
     const byNode = new Map();
     for (const value of visible.values()) {
       if (!byNode.has(value.node)) byNode.set(value.node, []);
@@ -233,13 +235,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           mountedCards.set(id, { card, urls: nextURLs });
         }
       } else {
-      const openedMenus = new Set([...document.querySelectorAll('.linghuashi-chat-images')].flatMap((card) =>
-        [...card.shadowRoot.querySelectorAll('.picture-entry[data-image]')].filter((picture) =>
-          picture.querySelector('.quick-more')?.open).map((picture) => picture.dataset.image)));
-      for (const card of cards.values()) {
-        for (const picture of card.shadowRoot.querySelectorAll('.picture-entry[data-image]')) {
-          if (openedMenus.has(picture.dataset.image)) picture.querySelector('.quick-more').open = true;
-        }
+      for (const [id, card] of cards) {
+        const previous = mountedCards.get(id)?.card;
+        if (previous) preserveCardFolds(previous, card);
       }
       removeCards();
       for (const url of urls) objectURLs.add(url);
@@ -328,14 +326,22 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   }
 
   function preserveCardFolds(previous, next) {
-    const prompt = previous.shadowRoot.querySelector('.slot > details');
-    const updated = next.shadowRoot.querySelector('.slot > details');
-    if (prompt && updated) updated.open = prompt.open;
-    for (const picture of previous.shadowRoot.querySelectorAll('.picture-entry[data-image]')) {
-      const id = picture.dataset.image;
-      const target = [...next.shadowRoot.querySelectorAll('.picture-entry[data-image]')].find((node) => node.dataset.image === id);
-      const menu = target?.querySelector('.quick-more');
-      if (menu) menu.open = Boolean(picture.querySelector('.quick-more')?.open);
+    const id = next.shadowRoot.querySelector('.slot').dataset.slot;
+    // Image index reloads can temporarily remove the controls from a card.
+    const folds = cardFolds.get(id) || new Map();
+    cardFolds.set(id, folds);
+    for (const selector of ['.prompt-details', '.image-controls']) {
+      const before = previous.shadowRoot.querySelector(selector);
+      const after = next.shadowRoot.querySelector(selector);
+      if (before) folds.set(selector, before.open);
+      if (after && folds.has(selector)) after.open = folds.get(selector);
+    }
+    for (const group of previous.shadowRoot.querySelectorAll('.image-controls-group')) {
+      folds.set(group.dataset.versionGroup, Boolean(group.querySelector('.quick-more')?.open));
+    }
+    for (const group of next.shadowRoot.querySelectorAll('.image-controls-group')) {
+      const menu = group.querySelector('.quick-more');
+      if (menu) menu.open = folds.get(group.dataset.versionGroup) || false;
     }
   }
 
@@ -379,7 +385,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       checking, owned, pending, entry.progress,
       record && [record.status, record.phase, record.error, record.recoverable,
         record.taskId, record.requestId, record.savedIds, record.assistant]];
-    section.innerHTML = `<header><strong>${smart ? `灵画师 · 智能配图${entry.binding.slot ? ` ${entry.index + 1}` : ''}` : `灵画师 · 配图 ${entry.index + 1}`}</strong><span class="status"></span><div class="actions"></div></header><details><summary>提示词</summary><p class="prompt"></p></details>`;
+    section.innerHTML = `<header><strong>${smart ? `灵画师 · 智能配图${entry.binding.slot ? ` ${entry.index + 1}` : ''}` : `灵画师 · 配图 ${entry.index + 1}`}</strong><span class="status"></span><div class="actions"></div></header><details class="prompt-details"><summary>提示词</summary><p class="prompt"></p></details>`;
     section.querySelector('.prompt').textContent = entry.prompt;
     if (smart && !record) {
       section.querySelector('strong').hidden = true;
@@ -440,6 +446,10 @@ export function createChatLink({ account, getContext, settings, send, open, noti
         const pictures = document.createElement('div');
         pictures.className = 'pictures';
         section.prepend(pictures);
+        const controls = document.createElement('details');
+        controls.className = 'image-controls';
+        controls.innerHTML = `<summary title="展开或收起图片操作">${icon('sliders-horizontal')}<span>图片操作</span>${icon('chevron-down', 'controls-chevron')}</summary><div class="image-controls-body"></div>`;
+        const controlsBody = controls.querySelector('.image-controls-body');
         let imageReadFailed = false;
         const displayed = new Set();
         for (const id of record.savedIds.slice(0, 32)) {
@@ -468,6 +478,11 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           const picture = document.createElement('div'); picture.className = 'picture-entry'; picture.dataset.image = row.id;
           const versionKey = `${row.storageLocation}:${groupId}`;
           picture.dataset.versionGroup = versionKey; picture.append(button);
+          const controlsGroup = document.createElement('div');
+          controlsGroup.className = 'image-controls-group';
+          controlsGroup.dataset.versionGroup = versionKey;
+          controlsGroup.dataset.image = row.id;
+          controlsBody.append(controlsGroup);
           const active = [...requests.values()].find((request) => request.quickImage && request.groupId === groupId
             && request.storageLocation === record.storageLocation && CHAT_PENDING.has(request.record?.status));
           const savedTask = store.imageTask(entry.binding.id, groupId, record.storageLocation);
@@ -479,12 +494,25 @@ export function createChatLink({ account, getContext, settings, send, open, noti
             versions.map((version) => [version.id, version.version]),
             task && [task.id, task.status, task.phase, task.progress, task.error, task.remote, task.recoverable, Boolean(task.execution)],
             taskPending, versionSelections.get(versionKey)]);
-          appendImageTools({ container: picture, row, versions, task, pending: taskPending || pending, theme: options.characterTheme,
+          appendImageTools({ container: picture, controlsContainer: controlsGroup, row, versions, task, pending: taskPending || pending, theme: options.characterTheme,
             onAction: (action) => { void imageAction(entry, row, action, task); },
             onVersion: (versionId) => { void selectImageVersion(entry, row, versionId); } });
           const selection = versionSelections.get(versionKey);
-          if (selection && (selection.saving || selection.id !== row.id)) markVersionPending(picture);
+          if (selection && (selection.saving || selection.id !== row.id)) markVersionPending(picture, controlsGroup);
           pictures.append(picture);
+        }
+        if (pictures.childElementCount) {
+          if (controlsBody.childElementCount > 1) {
+            [...controlsBody.children].forEach((group, index) => {
+              const label = document.createElement('strong');
+              label.className = 'image-controls-label'; label.textContent = `图片 ${index + 1}`;
+              group.prepend(label);
+            });
+          }
+          const header = section.querySelector('header');
+          if (record.status === 'completed' && !record.error && !imageReadFailed) controlsBody.append(header);
+          controlsBody.append(...section.querySelectorAll(':scope > .prompt-details, :scope > .prompt'));
+          pictures.after(controls);
         }
         if (imageReadFailed) {
           section.querySelector('.status').textContent = '图片记录暂时无法读取，请稍后刷新';
@@ -530,9 +558,13 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     }
   }
 
-  function markVersionPending(picture) {
+  function markVersionPending(picture, controlsGroup) {
     picture.setAttribute('aria-busy', 'true');
-    picture.querySelectorAll('button,select').forEach((control) => { control.disabled = true; });
+    controlsGroup ||= [...(picture.closest('.slot')?.querySelectorAll('.image-controls-group') || [])]
+      .find((group) => group.dataset.versionGroup === picture.dataset.versionGroup);
+    for (const target of [picture, controlsGroup]) {
+      target?.querySelectorAll('button,select').forEach((control) => { control.disabled = true; });
+    }
     if (picture.querySelector('.version-pending')) return;
     const status = document.createElement('p');
     status.className = 'prompt version-pending'; status.setAttribute('role', 'status');

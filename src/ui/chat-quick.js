@@ -25,7 +25,7 @@ export function quickButton(glyph, label, action, disabled = false) {
   return button;
 }
 
-export function appendImageTools({ container, row, versions, task, pending, theme, onAction, onVersion }) {
+export function appendImageTools({ container, controlsContainer = container, row, versions, task, pending, theme, onAction, onVersion }) {
   const transition = generationTransitionState(task, { remote: task?.remote === true });
   if (transition) {
     const panel = document.createElement('div');
@@ -66,7 +66,7 @@ export function appendImageTools({ container, row, versions, task, pending, them
     button.innerHTML = `${icon(glyph)}<span>${label}</span>`;
     button.addEventListener('click', () => { more.open = false; onAction(action); }); menu.append(button);
   }
-  more.append(summary, menu); tools.append(more); container.append(tools);
+  more.append(summary, menu); tools.append(more); controlsContainer.append(tools);
   if (versions.length > 1) {
     const bar = document.createElement('div'); bar.className = 'quick-version';
     const index = versions.findIndex((version) => version.id === row.id);
@@ -79,7 +79,7 @@ export function appendImageTools({ container, row, versions, task, pending, them
     choice.addEventListener('change', () => onVersion(choice.value));
     bar.append(quickButton('chevron-left', '上一个版本', () => onVersion(versions[index - 1].id), index <= 0),
       choice, quickButton('chevron-right', '下一个版本', () => onVersion(versions[index + 1].id), index >= versions.length - 1));
-    container.append(bar);
+    controlsContainer.append(bar);
   }
   if (task && !transition && !['completed', 'cancelled'].includes(task.status)) {
     const status = document.createElement('div'); status.className = 'quick-image-status'; status.setAttribute('role', 'status');
