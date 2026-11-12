@@ -185,14 +185,31 @@ export async function applyNovelAIAdvanced(body, snapshot, readBase64) {
 }
 
 export async function encodeVibe({ endpoint, key, model, image, information = 1, signal, fetcher = fetch }) {
-  const response = await fetcher(`${endpoint.replace(/\/+$/, '')}/ai/encode-vibe`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key.trim()}` },
-    body: JSON.stringify({ model, image, information_extracted: information }),
-    credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal,
-  });
-  if (!response.ok) throw new Error(response.status === 404 ? '此接口不支持 Vibe 编码，可导入已编码文件或切换接口'
-    : `Vibe 编码被拒绝（HTTP ${response.status}），请检查权限与额度`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length < 100 || bytes.length > 4 * 1024 * 1024 || /json|text\/|html/.test(response.headers.get('content-type') || '')) throw new Error('接口未返回有效的 Vibe 编码');
-  return new Blob([bytes], { type: 'application/octet-stream' });
+  try {
+    const response = await fetcher(`${endpoint.replace(/\/+$/, '')}/ai/encode-vibe`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key.trim()}` },
+      body: JSON.stringify({ model, image, information_extracted: information }),
+      credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal,
+    });
+    if (!response.ok) {
+      const reason = [404, 405].includes(response.status)
+        ? '此接口不支持 Vibe 编码，可导入已编码文件或切换接口'
+        : response.status === 401 ? 'Vibe 编码鉴权未通过，请核对当前服务的秘钥'
+          : response.status === 403 ? 'Vibe 编码被拒绝，请核对编码权限、出口 IP 或服务限制'
+            : response.status === 429 ? 'Vibe 编码受到频率或额度限制，请核对余额并稍后重试'
+              : response.status >= 500 ? 'Vibe 编码服务暂时异常，请稍后重试或联系服务提供方'
+                : 'Vibe 编码被拒绝，请检查模型、权限与额度';
+      throw new Error(`${reason}（HTTP ${response.status}）`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length < 100 || bytes.length > 4 * 1024 * 1024 || /json|text\/|html/i.test(response.headers.get('content-type') || '')) throw new Error('接口未返回有效的 Vibe 编码，请向服务提供方确认编码支持');
+    return new Blob([bytes], { type: 'application/octet-stream' });
+  } catch (error) {
+    if (signal?.reason?.name === 'TimeoutError' || error?.name === 'TimeoutError') {
+      throw new Error('Vibe 编码请求超时，请检查当前设备网络或稍后重试；服务可能已处理本次请求，请勿连续点击');
+    }
+    if (signal?.aborted || error?.name === 'AbortError') throw new Error('Vibe 编码请求已取消');
+    if (error instanceof TypeError) throw new Error('Vibe 编码请求未取得可读取响应，请检查当前设备代理、跨域和编码接口支持；普通生图成功不代表编码接口可用');
+    throw error;
+  }
 }

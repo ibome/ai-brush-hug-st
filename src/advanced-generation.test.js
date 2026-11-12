@@ -103,6 +103,44 @@ test('Vibe encoding validates binary response instead of accepting an error JSON
   await assert.rejects(encodeVibe({ endpoint: 'https://fixture.test', key: 'fixture', fetcher: async () =>
     new Response(JSON.stringify({ error: 'x'.repeat(200) }), { headers: { 'content-type': 'application/json' } }) }), /有效/);
 });
+test('Vibe encoding explains HTTP failures without exposing remote response bodies', async () => {
+  const messages = new Map([[401, /鉴权/], [403, /权限/], [404, /不支持/], [405, /不支持/],
+    [429, /频率或额度/], [503, /服务暂时异常/]]);
+  for (const [status, message] of messages) {
+    let calls = 0;
+    await assert.rejects(encodeVibe({ endpoint: 'https://fixture.test', key: 'fixture', fetcher: async () => {
+      calls++;
+      return new Response('private upstream response', { status });
+    } }), (error) => {
+      assert.match(error.message, message);
+      assert.match(error.message, new RegExp(`HTTP ${status}`));
+      assert.doesNotMatch(error.message, /private upstream response/);
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+test('Vibe network failure and timeout identify the encoding operation without disclosing credentials', async () => {
+  let calls = 0;
+  await assert.rejects(encodeVibe({ endpoint: 'https://fixture.test', key: 'private-key', fetcher: async () => {
+    calls++;
+    throw new TypeError('private-key at https://fixture.test/private-path');
+  } }), (error) => {
+    assert.match(error.message, /Vibe 编码.*代理、跨域/);
+    assert.doesNotMatch(error.message, /private-key|private-path/);
+    return true;
+  });
+  assert.equal(calls, 1);
+  const controller = new AbortController();
+  controller.abort(new DOMException('fixture timeout', 'TimeoutError'));
+  await assert.rejects(encodeVibe({ endpoint: 'https://fixture.test', key: 'fixture', signal: controller.signal,
+    fetcher: async () => { throw controller.signal.reason; } }), /编码请求超时.*勿连续点击/);
+});
+test('Vibe response download failures are reported as encoding network failures', async () => {
+  await assert.rejects(encodeVibe({ endpoint: 'https://fixture.test', key: 'fixture', fetcher: async () => ({
+    ok: true, arrayBuffer: async () => { throw new TypeError('fixture truncated response'); },
+  }) }), /编码请求未取得可读取响应/);
+});
 test('Comfy templates use native input and mask nodes', () => {
   assert.equal(comfyTemplate('text')['5'].class_type, 'EmptyLatentImage');
   assert.equal(comfyTemplate('image')['5'].class_type, 'VAEEncode');

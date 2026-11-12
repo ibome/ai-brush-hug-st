@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.9&build=20261106-preset-reroll",
+  "js": "dist/index.js?ver=0.26.10&build=20261112-vibe-encoding",
   "author": "小波",
-  "version": "0.26.9",
+  "version": "0.26.10",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

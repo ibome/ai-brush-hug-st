@@ -11,11 +11,18 @@ const button = (glyph, label, command, attributes = '') => `<button type="button
 const tool = (glyph, label, command, attributes = '') => `<button type="button" class="ui-icon-button" title="${label}" aria-label="${label}" data-advanced-command="${command}" ${attributes}>${icon(glyph)}</button>`;
 const field = (label, body) => `<label class="ui-field"><span>${label}</span>${body}</label>`;
 const range = (key, label, value) => field(`${label} · ${value}`, `<input type="range" min="0" max="1" step="0.01" data-advanced-field="${key}" value="${value}" aria-label="${label}" />`);
+const vibeStatus = (entry, key) => {
+  if (key === 'v3') return entry.image ? '当前模型可用' : '请添加原图';
+  if (!key) return '当前模型不支持编码';
+  if (entry.encodings[key]?.information === entry.information) return '当前模型可用';
+  if (!entry.image) return '缺少匹配编码，请重新添加原图';
+  return entry.encodings[key] ? '提取量已变更，请重新编码' : '需为当前模型编码参考图';
+};
 
 export class AdvancedPanel {
   constructor({ id = 'main', assets, getSnapshot, update, render, encode, gallery = () => [], useDrawing, disabled = () => false, getVibeLibrary, setVibeLibrary }) {
     Object.assign(this, { id, assets, getSnapshot, update, rerender: render, encode, gallery, useDrawing, disabled, getVibeLibrary, setVibeLibrary });
-    this.ui = { busy: false, error: '', brush: 48, eraser: false, sourceId: '', maskId: '', painting: false, strokes: [], redo: [], dirty: false, bitmap: null };
+    this.ui = { busy: false, error: '', encodingId: '', brush: 48, eraser: false, sourceId: '', maskId: '', painting: false, strokes: [], redo: [], dirty: false, bitmap: null };
     this.urls = new Set();
   }
   html() {
@@ -76,12 +83,12 @@ export class AdvancedPanel {
             ${tool('trash-2', '删除素材库条目', 'vibe-library-delete', `data-vibe-id="${row.id}"`)}</div>`).join('') || '<p>暂无匹配素材</p>'}</div></details>` : ''}
       <label class="advanced-check"><input type="checkbox" data-advanced-field="normalizeStrength" ${advanced.normalizeStrength ? 'checked' : ''} />总参考强度超过 1 时自动归一化</label>
       <div class="vibe-list">${advanced.vibes.map((entry) => {
-        const ready = key === 'v3' ? Boolean(entry.image) : entry.encodings[key]?.information === entry.information;
+        const encoding = this.ui.encodingId === entry.id;
         return `<div class="vibe-item" data-vibe-row="${entry.id}"><img data-vibe-preview="${entry.id}" alt="画风参考预览" />
           <div><label class="advanced-check"><input type="checkbox" data-vibe-field="enabled" data-vibe-id="${entry.id}" ${entry.enabled ? 'checked' : ''} /><input aria-label="参考名称" data-vibe-field="name" data-vibe-id="${entry.id}" maxlength="80" value="${esc(entry.name)}" /></label>
             <div class="two-field-row">${field('参考强度', `<input type="number" min="0" max="1" step="0.01" data-vibe-field="strength" data-vibe-id="${entry.id}" value="${entry.strength}" />`)}
             ${field('信息提取量', `<input type="number" min="0" max="1" step="0.01" data-vibe-field="information" data-vibe-id="${entry.id}" value="${entry.information}" />`)}</div>
-            <div class="vibe-actions"><span>${ready ? '当前模型可用' : '需编码当前模型与提取量'}</span>${key === 'v3' ? '' : tool('scan', '编码参考图（可能消耗额度）', 'vibe-encode', `data-vibe-id="${entry.id}" ${entry.image && key ? '' : 'disabled'}`)}
+            <div class="vibe-actions"><span class="vibe-status" role="status">${encoding ? '正在编码参考图…' : vibeStatus(entry, key)}</span>${key === 'v3' ? '' : button(encoding ? 'loader-circle' : 'scan', encoding ? '正在编码…' : '编码参考图', 'vibe-encode', `title="编码参考图（可能消耗额度）" data-vibe-id="${entry.id}" ${entry.image && key ? '' : 'disabled'}`)}
               ${this.setVibeLibrary ? tool('bookmark-plus', '保存当前名称、强度和编码到素材库', 'vibe-library-save', `data-vibe-id="${entry.id}"`) : ''}
               ${tool('download', '导出 .naiv4vibe', 'vibe-export', `data-vibe-id="${entry.id}" ${Object.keys(entry.encodings).length ? '' : 'disabled'}`)}${tool('trash-2', '移除画风参考', 'vibe-remove', `data-vibe-id="${entry.id}"`)}</div>
           </div></div>`;
@@ -172,10 +179,8 @@ export class AdvancedPanel {
         const snapshot = this.getSnapshot(), entry = advancedOf(snapshot).vibes.find((row) => row.id === target.dataset.vibeId);
         if (entry) {
           target.value = entry[target.dataset.vibeField];
-          const key = vibeModelKey(snapshot.params.model), ready = key === 'v3' ? Boolean(entry.image)
-            : entry.encodings[key]?.information === entry.information;
-          const status = target.closest('[data-vibe-row]')?.querySelector('.vibe-actions > span');
-          if (status) status.textContent = ready ? '当前模型可用' : '需编码当前模型与提取量';
+          const status = target.closest('[data-vibe-row]')?.querySelector('.vibe-status');
+          if (status) status.textContent = vibeStatus(entry, vibeModelKey(snapshot.params.model));
         }
       }
       else if (target.dataset.advancedField && ['text', 'number', 'range'].includes(target.type)) return;
@@ -184,12 +189,15 @@ export class AdvancedPanel {
     void this.previews(root);
     if (root.querySelector('[data-mask-canvas]')) void this.bindMask(root);
   }
-  async perform(operation) {
+  async perform(operation, { encodingId = '' } = {}) {
     if (this.ui.busy || this.disabled()) return;
-    this.ui.busy = true; this.ui.error = ''; this.rerender();
+    this.ui.busy = true; this.ui.error = ''; this.ui.encodingId = encodingId; this.rerender();
     try { await operation(); }
-    catch (error) { this.ui.error = error.message || '操作失败，请重试'; }
-    finally { this.ui.busy = false; this.rerender(); }
+    catch (error) {
+      this.ui.error = encodingId && error?.name === 'TimeoutError' ? '编码服务识别超时，请检查当前设备网络，或在接口配置填写服务地址'
+        : error?.message || (encodingId ? '参考图编码未完成，请核对 NovelAI 接口配置后重试' : '操作失败，请重试');
+    }
+    finally { this.ui.busy = false; this.ui.encodingId = ''; this.rerender(); }
   }
   async command(command, target) {
     if (/-upload$/.test(command)) { this.root.querySelector(`[data-advanced-file="${command.replace('-upload', '')}"]`)?.click(); return; }
@@ -254,7 +262,7 @@ export class AdvancedPanel {
         this.update(snapshot); return;
       }
       this.apply(advanced);
-    });
+    }, { encodingId: command === 'vibe-encode' ? target.dataset.vibeId : '' });
   }
   async upload(kind, files) {
     if (kind === 'vibefile') {

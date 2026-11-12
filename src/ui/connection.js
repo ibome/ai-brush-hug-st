@@ -72,7 +72,7 @@ export async function identifySkService(key, options = {}) {
   );
   if (options.signal?.aborted) throw options.signal.reason;
   const matches = results.filter((result) => result.status === 'fulfilled' && result.value.valid);
-  if (matches.length === 1) return matches[0].value.service;
+  if (matches.length === 1) return { kind: 'resolved', ...matches[0].value.service };
   if (matches.length > 1) throw new Error('此秘钥在两个项目均有效，请展开填写要使用的第三方地址');
   const rejected = results.every((result) => result.status === 'fulfilled' && result.value.rejected);
   throw new Error(rejected

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibe 编码隔离回归</title>
+<div id="plugin-root"></div>
+<div id="overlay-root"></div>
+<div id="toast-root" role="status"></div>
+<script type="module">
+  import '../../src/styles/plugin.css';
+  import { randomUUID } from '../../src/crypto-compat.js';
+  const account = `fixture-vibe:${randomUUID()}`, ref = `tavern:${randomUUID()}`;
+  const key = `sk-${'a'.repeat(43)}`;
+  const parameters = new URLSearchParams(location.search);
+  window.__LINGHUASHI_ENV__ = {
+    mode: 'extension', account, chat: { name: '隔离测试', count: 0 },
+    releaseState: { status: 'current', release: null },
+    ui: { settingsVersion: 1, page: 'generate', enabled: true, cacheLocation: 'browser',
+      characterTheme: parameters.get('theme') || 'gemini',
+      experience: { level: 'full', dismissed: true, goal: 'manual' }, provider: 'novelai',
+      novelai: { model: 'nai-diffusion-4-5-full', positive: 'a quiet garden',
+        advanced: { mode: 'reference', referenceKind: 'vibe', vibes: [] } },
+      connections: { novelai: { keyRef: ref, endpoint: '' } },
+    },
+  };
+  let completeEncoding;
+  const requests = [], failures = [], originalFetch = window.fetch.bind(window);
+  window.fetch = (url, options = {}) => {
+    const address = String(url);
+    if (address.startsWith('https://dangao.iisbo.com/')) {
+      requests.push({ path: new URL(address).pathname, method: options.method });
+      if (address.endsWith('/v1/models')) return Promise.resolve(new Response(JSON.stringify({ object: 'list', data: [] })));
+      if (address.endsWith('/ai/encode-vibe')) return new Promise((resolve) => {
+        completeEncoding = (status = 200) => resolve(status === 200
+          ? new Response(new Uint8Array(128).fill(7), { headers: { 'Content-Type': 'application/octet-stream' } })
+          : new Response('fixture response', { status }));
+      });
+    }
+    if (address.startsWith('https://tang.iisbo.com/')) return Promise.reject(new TypeError('fixture unreachable service'));
+    if (/^https?:/.test(address) && new URL(address).origin !== location.origin) {
+      failures.push(address);
+      return Promise.reject(new Error('External network is disabled in this fixture'));
+    }
+    return originalFetch(url, options);
+  };
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    let type, value;
+    if (data?.type === 'linghuashi:secret-request') {
+      type = 'linghuashi:secret-result'; value = data.action === 'read' ? key : ref;
+    } else if (data?.type === 'linghuashi:storage-request') {
+      type = 'linghuashi:storage-result'; value = data.action === 'task/list' ? { rows: [] } : {};
+    } else if (data?.type === 'linghuashi:assistant-request') {
+      type = 'linghuashi:assistant-result'; value = { characters: [], models: [] };
+    } else if (data?.type === 'linghuashi:state') type = 'linghuashi:state-result';
+    else return;
+    window.postMessage({ type, requestId: data.requestId, value }, location.origin);
+  });
+  const { ReferenceAssets } = await import('../../src/reference-assets.js');
+  const assets = new ReferenceAssets();
+  const image = await originalFetch('../../src/assets/themes/gemini/gemini-smile.webp').then((response) => response.blob());
+  const asset = await assets.put(image, { name: '水彩参考.webp', width: 512, height: 512 });
+  window.__LINGHUASHI_ENV__.ui.novelai.advanced.vibes.push({
+    id: randomUUID(), name: '水彩参考.webp', image: asset, enabled: true, information: 1, strength: 0.6, encodings: {},
+  });
+  const { normalizeConfig } = await import('../../src/config.js');
+  const { mountPlugin, restoreCredentials } = await import('../../src/ui/plugin.js');
+  await restoreCredentials();
+  mountPlugin(document.querySelector('#plugin-root'), normalizeConfig({ surface: 'console', state: 'ready',
+    theme: parameters.get('dark') ? 'dark' : 'light' }));
+  window.__vibeFixture = { requests, failures, complete: (status) => completeEncoding(status) };
+  document.documentElement.dataset.fixtureReady = 'true';
+</script>

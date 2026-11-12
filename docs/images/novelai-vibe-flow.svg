@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="1030" viewBox="0 0 960 1030" role="img" aria-labelledby="title desc">
   <title id="title">灵画师氛围转移：上传图片和导入编码两条路线</title>
-  <desc id="desc">在 NovelAI 模式的生图工坊选择高级生图、参考生图、画风参考 Vibe。普通图片用添加画风参考上传后点击扫描框编码；现成 .naiv4vibe 文件直接导入。确认当前模型可用后填写提示词并生成。流程示意，非界面截图。</desc>
+  <desc id="desc">在 NovelAI 模式的生图工坊选择高级生图、参考生图、画风参考 Vibe。普通图片用添加画风参考上传后点击编码参考图按钮；现成 .naiv4vibe 文件直接导入。确认当前模型可用后填写提示词并生成。流程示意，非界面截图。</desc>
   <defs>
     <style>
       text { font-family: "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #20303c; }
@@ -30,12 +30,12 @@
   <text x="112" y="354" class="step">点击「添加画风参考」，选择图片</text>
   <circle cx="76" cy="407" r="19" fill="#23699a"/>
   <text x="76" y="415" class="number">2</text>
-  <text x="112" y="416" class="step">V4 / V4.5：点击条目下方的编码图标</text>
+  <text x="112" y="416" class="step">V4 / V4.5：点击「编码参考图」按钮</text>
   <g transform="translate(114 438)" stroke="#23699a" stroke-width="3" fill="none">
     <path d="M0 12 V0 H12 M26 0 H38 V12 M38 26 V38 H26 M12 38 H0 V26"/>
     <path d="M8 19 H30"/>
   </g>
-  <text x="171" y="455" class="detail">扫描框图标：编码参考图</text>
+  <text x="171" y="455" class="detail">按钮有文字，手机端可直接点击</text>
   <text x="171" y="488" class="detail">编码可能消耗额度；这一步还不会生成图片</text>
   <path d="M48 521 H912" stroke="#dde4e8"/>
   <text x="48" y="565" class="route" style="fill:#28745a">B  现成编码文件：.naiv4vibe</text>
@@ -51,5 +51,5 @@
   <rect x="48" y="835" width="864" height="132" rx="8" fill="#edf7f2" stroke="#c3dfd1"/>
   <text x="480" y="878" class="ready">确认已启用，状态为「当前模型可用」</text>
   <text x="480" y="922" class="step center">填写画面提示词 → 点击「生成图像」</text>
-  <text x="480" y="1006" class="subtitle center">灵画师 0.26.9 · 操作流程示意，非界面截图</text>
+  <text x="480" y="1006" class="subtitle center">灵画师 0.26.10 · 操作流程示意，非界面截图</text>
 </svg>
