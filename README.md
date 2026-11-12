@@ -18,6 +18,7 @@
 | --- | --- |
 | 第一次使用、选服务、区分三种配置、生成第一张图 | [从安装到第一张图](docs/preview/first-run.md) |
 | 使用酒馆模型与预设、自定义底层规则、修复分析失败 | [提示词助手与聊天配图](docs/preview/assistant.md) |
+| 上传画风参考、导入编码、调整氛围转移并保存复用 | [氛围转移新手教程 · Vibe](docs/novelai-vibe.md) |
 | 从剧情制作分镜、配图、拖动气泡、管理章节和导出漫画 | [漫画工坊完整流程](docs/preview/comic.md) |
 | 恢复草稿与任务、切换图片版本、阅读导出、换设备 | [草稿、图片与备份](docs/preview/recovery-export.md) |
 | 手机布局、独立 API 转发、网络存储排错、本地反推与超分 | [手机使用与可选组件](docs/preview/mobile-components.md) |
@@ -59,6 +60,7 @@ https://github.com/ibome/ai-brush-hug-st
 | 插件开关、主题、悬浮球、排队与并发、自动生图、存储与清理 | [插件设置](docs/settings.md) |
 | 配置四种接口、模型、秘钥、命名接口和参数预设 | [接口配置](docs/interfaces.md) |
 | 文生图、参考图、图生图、蒙版重绘、Vibe、组合生图和画风探索 | [生图工坊与高级生图](docs/generation.md) |
+| 氛围转移：图片编码、`.naiv4vibe` 导入导出、强度、提取量和常见错误 | [氛围转移新手教程 · Vibe](docs/novelai-vibe.md) |
 | 聊天标签、再画一张、提示词助手、独立文字 API、智能配图 | [聊天联动与提示词助手](docs/chat-assistant.md) |
 | 多角色档案、AI 创建档案、服装、画师串、中文标签和可视化编辑 | [角色与提示词素材库](docs/libraries.md) |
 | 筛图、参数回填、单图编辑、历史版本、服务器存图和任务恢复 | [绘图管理、存储与任务](docs/gallery-tasks.md) |
