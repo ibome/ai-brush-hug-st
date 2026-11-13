@@ -1,5 +1,6 @@
 import { randomUUID } from './crypto-compat.js';
 import { createCredentialVault } from './credential-vault.js';
+import { credentialError } from './credential-errors.js';
 import { apiError } from './extension-api.js';
 import { createReleaseMonitor } from './release-monitor.js';
 import { getBrowserStorage, readBrowserCache, writeBrowserCache } from './browser-cache.js';
@@ -159,7 +160,8 @@ window.addEventListener('message', (event) => {
   if (!pending) return;
   secretRequests.delete(event.data.requestId);
   clearTimeout(pending.timer);
-  if (event.data.error) pending.reject(new Error(event.data.error));
+  if (event.data.error) pending.reject(event.data.failure?.code
+    ? credentialError(event.data.failure.code) : new Error(event.data.error));
   else pending.resolve(event.data.value);
 });
 
@@ -197,8 +199,8 @@ export function credentialRequest(action, provider, value = {}) {
     const requestId = randomUUID();
     const timer = setTimeout(() => {
       secretRequests.delete(requestId);
-      reject(new Error('酒馆秘钥存储超时，请重试'));
-    }, 12000);
+      reject(credentialError('CREDENTIAL_TIMEOUT'));
+    }, 60000);
     secretRequests.set(requestId, { resolve, reject, timer });
     postWindowMessage(window.parent, { type: 'linghuashi:secret-request', requestId, action, provider, ...value });
   });

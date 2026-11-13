@@ -5,6 +5,7 @@ import { assistantHostRequest, credentialRequest, currentAccount, currentChat, e
   readAssistantArchive, persistAssistantArchive, registerUIStateFlush, getUIStateSync, subscribeUIStateSync } from '../runtime.js';
 import { createCoalescedSave } from '../coalesced-save.js';
 import { readBrowserCache, writeBrowserCache } from '../browser-cache.js';
+import { credentialError, credentialFailure, credentialSavedMessage } from '../credential-errors.js';
 import { apiError, publicExtensionTask } from '../extension-api.js';
 import { createExtensionTaskService } from '../extension-tasks.js';
 import { extensionCapabilities, extensionPresets, prepareExtensionSnapshot, publicImageParameters } from './extension-generation.js';
@@ -444,7 +445,7 @@ let sdwebuiAdvancedOpen = false;
 const openaiModelUI = { fetched: false, open: false, query: '' };
 let openaiAdvancedOpen = false;
 let openaiTransportOpen = false;
-const assistantUI = { busy: false, error: '', controller: null, key: '', keyVisible: false, keyStatus: '',
+const assistantUI = { busy: false, error: '', controller: null, key: '', keyVisible: false, keyStatus: '', keyError: false,
   keyDirty: false, keyRevision: 0, keyTimer: null, keyWriting: Promise.resolve(),
   models: [], modelsBusy: false, modelsStatus: '', modelsError: '', modelsOpen: false, modelsQuery: '',
   modelsController: null, tavernCurrent: '', modelSource: '', summary: null,
@@ -1182,7 +1183,7 @@ function setupReadiness() {
       tavernCurrent: assistantUI.tavernCurrent, installed: isInstalled(), enabled: state.enabled,
       modelSource: assistantUI.models.length ? assistantUI.modelSource : '', modelsError: assistantUI.modelsError,
       busy: assistantUI.busy, succeeded: verifiedAssistant.has(assistantReadyIdentity()),
-      credentialError: /失败|无法读取/.test(assistantUI.keyStatus) ? assistantUI.keyStatus : '' }),
+      credentialError: assistantUI.keyError ? assistantUI.keyStatus : '' }),
     storage: storageReadiness({ location: state.cacheLocation, installed: isInstalled(), loading: drawingUI.loading,
       error: drawingUI.error }),
   };
@@ -1337,16 +1338,18 @@ export async function restoreCredentials() {
     } else if (provider === 'comfyui') state.comfyTimeout = saved.timeout;
     try {
       credentials[provider].key = await credentialRequest('read', provider, { ref: saved.keyRef });
-      credentialState[provider].message = saved.keyRef ? '秘钥已保存' : '';
-    } catch {
-      credentialState[provider].message = '保存的秘钥无法读取，请重新填写';
+      credentialState[provider].message = saved.keyRef ? credentialSavedMessage(saved.keyRef) : '';
+      credentialState[provider].error = false;
+    } catch (error) {
+      credentialState[provider].message = credentialFailure(error, 'read').message;
       credentialState[provider].error = true;
     }
   }));
   try {
     assistantUI.key = await credentialRequest('read', 'assistant', { ref: state.assistant.keyRef });
-    assistantUI.keyStatus = state.assistant.keyRef ? '秘钥已保存' : '';
-  } catch { assistantUI.keyStatus = '助手秘钥无法读取，请重新填写'; }
+    assistantUI.keyStatus = state.assistant.keyRef ? credentialSavedMessage(state.assistant.keyRef) : '';
+    assistantUI.keyError = false;
+  } catch (error) { assistantUI.keyStatus = credentialFailure(error, 'read').message; assistantUI.keyError = true; }
   await localToolsPanel.restore();
   await syncAssistantConnection();
 }
@@ -1470,13 +1473,14 @@ function syncAssistantConnection(origin) {
       state.assistant.endpoint = plan.endpoint;
       state.assistant.keyRef = ref;
       assistantUI.key = plan.key.trim();
-      assistantUI.keyStatus = ref ? '秘钥已保存 · 已同步 OpenAI 接口' : '当前助手秘钥已清空';
+      assistantUI.keyStatus = ref ? `${credentialSavedMessage(ref)} · 已同步 OpenAI 接口` : '当前助手秘钥已清空';
+      assistantUI.keyError = false;
       if (state.assistant.source === 'api') resetAssistantModels();
     } else if (target === 'openai') {
       state.openaiEndpoint = plan.endpoint;
       credentials.openai.key = plan.key.trim();
       state.connections.openai.keyRef = ref;
-      credentialState.openai.message = ref ? '秘钥已保存 · 已同步独立 API' : '当前秘钥已清空';
+      credentialState.openai.message = ref ? `${credentialSavedMessage(ref)} · 已同步独立 API` : '当前秘钥已清空';
       credentialState.openai.error = false;
       if (state.provider === 'openai') resetConnection();
     }
@@ -1499,12 +1503,21 @@ function saveAssistantKey() {
   const operation = assistantUI.keyWriting.then(async () => {
     if (!assistantUI.keyDirty) return;
     const revision = assistantUI.keyRevision;
-    const ref = await credentialRequest('write', 'assistant', { key: assistantUI.key, ref: state.assistant.keyRef });
+    let ref;
+    try { ref = await credentialRequest('write', 'assistant', { key: assistantUI.key, ref: state.assistant.keyRef }); }
+    catch (error) {
+      const failure = credentialFailure(error);
+      if (revision === assistantUI.keyRevision) {
+        assistantUI.keyStatus = failure.message; assistantUI.keyError = true;
+        refreshAssistantStatus();
+      }
+      throw credentialError(failure.code);
+    }
     if (revision !== assistantUI.keyRevision) return;
     state.assistant.keyRef = ref; assistantUI.keyDirty = false;
-    assistantUI.keyStatus = ref ? '秘钥已保存' : '当前助手秘钥已清空';
+    assistantUI.keyStatus = credentialSavedMessage(ref); assistantUI.keyError = false;
     persist();
-    host?.querySelectorAll('[data-assistant-key-status]').forEach((node) => { node.textContent = assistantUI.keyStatus; });
+    refreshAssistantStatus();
   });
   assistantUI.keyWriting = operation.catch(() => {});
   return operation.then(() => syncAssistantConnection('assistant'));
@@ -1533,7 +1546,8 @@ async function loadAssistantScheme(id) {
   state.assistant = options; state.assistantSchemeId = id;
   try { persist(); } catch (error) { state.assistant = previous; state.assistantSchemeId = active; throw error; }
   apiEditRevision++; assistantUI.keyRevision++; assistantUI.keyDirty = false; assistantUI.key = key;
-  assistantUI.keyStatus = options.keyRef ? '秘钥已保存 · 已载入方案' : '当前方案未保存独立 API 秘钥';
+  assistantUI.keyStatus = options.keyRef ? `${credentialSavedMessage(options.keyRef)} · 已载入方案` : '当前方案未保存独立 API 秘钥';
+  assistantUI.keyError = false;
   assistantUI.keyVisible = false;
   resetAssistantModels();
   render(true);
@@ -1893,6 +1907,13 @@ function updateCredentialStatus() {
     updateSDWebUIDirty();
   }
   refreshSetupSummary();
+  if (state.page === 'connection' && runtimeState === 'ready') {
+    const badge = host?.querySelector('.page-heading > .ui-status');
+    if (badge) {
+      badge.outerHTML = readinessBadge(setupReadiness().image);
+      paintIcons(host.querySelector('.page-heading'));
+    }
+  }
 }
 
 function saveConnection(provider) {
@@ -1906,11 +1927,20 @@ function saveConnection(provider) {
     current.message = '正在保存秘钥…';
     current.error = false;
     updateCredentialStatus();
-    const ref = await credentialRequest('write', provider, { key, ref: state.connections[provider].keyRef });
+    let ref;
+    try { ref = await credentialRequest('write', provider, { key, ref: state.connections[provider].keyRef }); }
+    catch (error) {
+      const failure = credentialFailure(error);
+      if (current.revision === revision) {
+        current.message = failure.message; current.error = true;
+        updateCredentialStatus();
+      }
+      throw credentialError(failure.code);
+    }
     if (current.revision !== revision) return;
     state.connections[provider].keyRef = ref;
     current.dirty = false;
-    current.message = ref ? '秘钥已保存' : '当前秘钥已清空';
+    current.message = credentialSavedMessage(ref);
     persist();
     updateCredentialStatus();
   });
@@ -1922,11 +1952,7 @@ function scheduleConnectionSave(provider, immediate = false) {
   const current = credentialState[provider];
   clearTimeout(current.timer);
   current.timer = setTimeout(() => {
-    void saveConnection(provider).catch(() => {
-      current.message = '秘钥保存失败，请重试或点击保存预设';
-      current.error = true;
-      updateCredentialStatus();
-    });
+    void saveConnection(provider).catch(() => {});
   }, immediate ? 0 : 400);
 }
 
@@ -1963,7 +1989,7 @@ async function loadCurrentPreset(provider, id) {
       Object.assign(credentials[provider], {
         key, endpoint: state.connections[provider].endpoint, auth: state.connections[provider].auth || 'none',
       });
-      credentialState[provider].message = key ? '秘钥已保存' : '';
+      credentialState[provider].message = key ? credentialSavedMessage(connection.keyRef) : '';
       credentialState[provider].error = false;
     }
     keyVisible = false;
@@ -2788,7 +2814,7 @@ async function switchConnectionProfile(id) {
     credentialState[provider].revision++;
     credentialState[provider].dirty = false;
     credentialState[provider].error = false;
-    credentialState[provider].message = key ? '秘钥已保存' : '';
+    credentialState[provider].message = key ? credentialSavedMessage(entry.connection.keyRef) : '';
     keyVisible = false;
     resetConnection();
     if (provider === 'openai') { apiEditRevision++; await syncAssistantConnection('openai'); }
@@ -5146,10 +5172,8 @@ export function mountPlugin(root, next) {
       apiEditRevision++;
       resetAssistantModels();
       assistantUI.key = event.target.value; assistantUI.keyDirty = true; assistantUI.keyRevision++;
-      assistantUI.keyStatus = '秘钥待保存'; clearTimeout(assistantUI.keyTimer);
-      assistantUI.keyTimer = setTimeout(() => { void saveAssistantKey().catch(() => {
-        assistantUI.keyStatus = '助手秘钥保存失败，请重试'; render();
-      }); }, 400);
+      assistantUI.keyStatus = '秘钥待保存'; assistantUI.keyError = false; clearTimeout(assistantUI.keyTimer);
+      assistantUI.keyTimer = setTimeout(() => { void saveAssistantKey().catch(() => {}); }, 400);
       return;
     }
     if (event.target.matches('[data-assistant-input]')) {
@@ -5353,14 +5377,14 @@ export function mountPlugin(root, next) {
       render(state.page === 'assistant'); return;
     }
     if (event.target.matches('[data-assistant-key]')) {
-      try { await saveAssistantKey(); } catch { assistantUI.keyStatus = '助手秘钥保存失败，请重试'; render(); }
+      try { await saveAssistantKey(); } catch { refreshAssistantStatus(); }
       return;
     }
     if (event.target.dataset.assistant) {
       const key = event.target.dataset.assistant;
       if (key === 'endpoint' || key === 'source') {
         try { await syncAssistantConnection(key === 'endpoint' ? 'assistant' : undefined); }
-        catch { assistantUI.keyStatus = '接口同步失败，请重试'; }
+        catch (error) { assistantUI.keyStatus = credentialFailure(error).message; assistantUI.keyError = true; }
       }
       if (['model', 'tavernModel', 'endpoint', 'source'].includes(key)) { loadAssistantCompatibility(); render(true); }
       else if (['apiTransport', 'template', 'frequency'].includes(key)) render(true);

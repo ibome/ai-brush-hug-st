@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG } from './config.js';
 import { createFloatingMenu } from './ui/floating-menu.js';
 import { createChatLink } from './chat-link.js';
 import { createCredentialVault } from './credential-vault.js';
+import { credentialError, credentialFailure } from './credential-errors.js';
 import { SETTINGS_DEFAULTS } from './ui/settings.js';
 import { createStorageRequest, STORAGE_ACTIONS } from './server-storage.js';
 import { storageFailureInfo } from './debug-errors.js';
@@ -51,8 +52,7 @@ async function start() {
         method: 'POST', headers, credentials: 'same-origin', cache: 'no-store',
         body: JSON.stringify(body), signal: AbortSignal.timeout(8000),
       });
-      if (!response.ok) throw new Error(response.status === 403
-        ? '酒馆禁止读取秘钥，请重新填写' : '酒馆秘钥存储失败，请重试');
+      if (!response.ok) throw credentialError('CREDENTIAL_SERVER');
       return response.status === 204 ? {} : response.json();
     },
   });
@@ -405,8 +405,9 @@ async function start() {
           else if (data.action === 'write') value = await credentialVault.write(data.provider, data.key, data.ref);
           else throw new Error('未知秘钥操作');
           post('linghuashi:secret-result', { requestId: data.requestId, value });
-        } catch {
-          post('linghuashi:secret-result', { requestId: data.requestId, error: '秘钥无法保存或读取，请重新填写后重试' });
+        } catch (error) {
+          const failure = credentialFailure(error, data.action);
+          post('linghuashi:secret-result', { requestId: data.requestId, error: failure.message, failure });
         }
       })();
     }

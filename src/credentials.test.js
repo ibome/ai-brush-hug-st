@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCredentialVault } from './credential-vault.js';
+import { credentialError, credentialFailure, credentialSavedMessage } from './credential-errors.js';
 import { normalizeConnections, normalizeConnection, saveConnectionProfile, deleteConnectionProfile, setCurrentConnection } from './connections.js';
 globalThis.window = { addEventListener() {} };
 const { normalizeNovelAIState, saveNovelAIPreset, loadNovelAIPreset, novelAIPresetDirty } = await import('./ui/novelai.js');
@@ -263,18 +264,20 @@ test('saving a generic secret preserves another extension active selection and p
   await assert.rejects(fresh.read('novelai', `tavern:${originalId}`));
 });
 
-test('disabled exposure falls back to browser, while a failed server write stays a visible failure', async () => {
+test('disabled exposure and unavailable server secret endpoints save an explicitly entered key locally', async () => {
   const saved = storage();
   const fallback = createCredentialVault({ account: 'a', storage: saved,
     request: async () => ({ allowKeysExposure: false }) });
   assert.ok((await fallback.write('novelai', 'fixture-key')).startsWith('browser:'));
   const serverStorage = storage();
-  const failing = createCredentialVault({ account: 'b', storage: serverStorage, request: async (action) => {
+  const request = async (action) => {
     if (action === 'settings') return { allowKeysExposure: true };
     throw new Error('write failed');
-  } });
-  await assert.rejects(failing.write('novelai', 'fixture-key'));
-  assert.equal(serverStorage.data.size, 0);
+  };
+  const fallbackRef = await createCredentialVault({ account: 'b', storage: serverStorage, request }).write('novelai', 'fixture-key');
+  assert.ok(fallbackRef.startsWith('browser:'));
+  assert.equal(await createCredentialVault({ account: 'b', storage: serverStorage, request }).read('novelai', fallbackRef), 'fixture-key');
+  assert.match(credentialSavedMessage(fallbackRef), /当前浏览器/);
 });
 
 test('browser credential quota failures preserve existing references and never claim a new key was saved', async () => {
@@ -285,6 +288,100 @@ test('browser credential quota failures preserve existing references and never c
   const vault = createCredentialVault({ account: 'a', storage: saved });
   assert.equal(await vault.read('novelai', first), 'existing-fixture-key');
   assert.equal(await vault.write('novelai', 'existing-fixture-key', first), first);
-  await assert.rejects(vault.write('novelai', 'new-fixture-key', first), /浏览器秘钥存储空间不足或不可用/);
+  await assert.rejects(vault.write('novelai', 'new-fixture-key', first), { code: 'CREDENTIAL_QUOTA' });
   assert.deepEqual([...saved.data.entries()], previous);
+});
+
+const databaseFixture = () => {
+  const accounts = new Map();
+  return (account) => {
+    if (!accounts.has(account)) accounts.set(account, new Map());
+    const values = accounts.get(account);
+    return {
+      async read(provider, id) { return values.get(`${provider}:${id}`); },
+      async write(provider, id, key) {
+        assert.ok(!values.has(`${provider}:${id}`));
+        values.set(`${provider}:${id}`, key);
+      },
+    };
+  };
+};
+
+test('full localStorage falls back durably and preserves immutable old preset keys and isolation', async () => {
+  const saved = storage(), databases = databaseFixture();
+  const original = createCredentialVault({ account: 'a', storage: saved, database: databases('a') });
+  const first = await original.write('openai', 'original-fixture-key');
+  const previous = [...saved.data.entries()];
+  saved.setItem = () => { throw new DOMException('private detail', 'QuotaExceededError'); };
+  const second = await original.write('openai', 'replacement-fixture-key', first);
+  assert.notEqual(second, first);
+  assert.ok(second.startsWith('browser:'));
+  assert.deepEqual([...saved.data.entries()], previous);
+  const fresh = createCredentialVault({ account: 'a', storage: saved, database: databases('a') });
+  assert.equal(await fresh.read('openai', first), 'original-fixture-key');
+  assert.equal(await fresh.read('openai', second), 'replacement-fixture-key');
+  assert.equal(await fresh.write('openai', 'replacement-fixture-key', second), second);
+  await assert.rejects(fresh.read('assistant', second));
+  await assert.rejects(createCredentialVault({ account: 'b', storage: saved, database: databases('b') }).read('openai', second));
+  assert.equal(await fresh.write('openai', '', second), '');
+  assert.equal(await fresh.read('openai', second), 'replacement-fixture-key');
+});
+
+test('blocked, missing, malformed and silently discarded local storage can use independent durable storage', async () => {
+  for (const kind of ['blocked', 'missing', 'malformed', 'discarded']) {
+    const databases = databaseFixture(), saved = storage();
+    const name = 'linghuashi-credential-vault:a';
+    if (kind === 'blocked') saved.getItem = () => { throw new DOMException('private detail', 'SecurityError'); };
+    if (kind === 'malformed') saved.setItem(name, '{invalid');
+    if (kind === 'discarded') saved.setItem = () => {};
+    const options = { account: 'a', storage: kind === 'missing' ? null : saved, database: databases('a') };
+    const keyRef = await createCredentialVault(options).write('assistant', 'fixture-private-key');
+    assert.equal(await createCredentialVault(options).read('assistant', keyRef), 'fixture-private-key');
+    if (kind === 'malformed') assert.equal(saved.getItem(name), '{invalid');
+  }
+});
+
+test('unreadable server writes never claim server persistence and do not reuse another provider secret', async () => {
+  const saved = storage(), id = crypto.randomUUID();
+  const request = async (action) => action === 'settings' ? { allowKeysExposure: true }
+    : action === 'read' ? { api_key_generic: [] }
+      : action === 'write' ? { id } : { value: 'different-fixture-key' };
+  const options = { account: 'a', storage: saved, request };
+  const keyRef = await createCredentialVault(options).write('openai', 'entered-fixture-key');
+  assert.ok(keyRef.startsWith('browser:'));
+  assert.equal(await createCredentialVault(options).read('openai', keyRef), 'entered-fixture-key');
+  await assert.rejects(createCredentialVault(options).read('novelai', keyRef));
+  await assert.rejects(createCredentialVault(options).read('openai', `tavern:${id}`));
+});
+
+test('failure of both local stores never caches a new key or overwrites the old reference', async () => {
+  const saved = storage(), databases = databaseFixture();
+  const options = { account: 'a', storage: saved, database: databases('a') };
+  const original = await createCredentialVault(options).write('novelai', 'older-fixture-key');
+  saved.setItem = () => { throw new DOMException('private detail', 'QuotaExceededError'); };
+  const failing = createCredentialVault({ ...options, database: {
+    read: options.database.read,
+    async write() { throw new DOMException('private detail', 'QuotaExceededError'); },
+  } });
+  await assert.rejects(failing.write('novelai', 'unsaved-fixture-key', original), { code: 'CREDENTIAL_QUOTA' });
+  assert.equal(await failing.read('novelai', original), 'older-fixture-key');
+  await assert.rejects(failing.write('novelai', 'unsaved-fixture-key', original), { code: 'CREDENTIAL_QUOTA' });
+});
+
+test('credential failures expose only an allowlisted cause and actionable text', () => {
+  const privateDetail = 'sk-private-fixture-key https://private.example/token';
+  for (const error of [
+    new DOMException(privateDetail, 'QuotaExceededError'),
+    new DOMException(privateDetail, 'SecurityError'),
+    new DOMException(privateDetail, 'TimeoutError'),
+    new Error(privateDetail), { code: privateDetail, message: privateDetail },
+    credentialError('CREDENTIAL_CORRUPT'),
+  ]) {
+    const failure = credentialFailure(error);
+    assert.ok(!JSON.stringify(failure).includes(privateDetail));
+    assert.ok(failure.code.startsWith('CREDENTIAL_'));
+    assert.equal(credentialError(failure.code).message, failure.message);
+  }
+  assert.equal(credentialFailure(new Error(privateDetail), 'read').code, 'CREDENTIAL_MISSING');
+  assert.match(credentialSavedMessage(ref), /酒馆账号/);
 });
