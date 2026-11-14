@@ -8,6 +8,7 @@ import { assistantExecution } from './assistant-diagnostics.js';
 import { selectAssistantMessages, validateContextSelection } from './assistant-context.js';
 import { createAssistantRelay } from './assistant-relay.js';
 import { comicSource } from './comic.js';
+import { assistantFailureInfo, normalizeTavernError } from './assistant-errors.js';
 
 const text = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : '';
 
@@ -246,12 +247,14 @@ export function createAssistantHost({ getContext, settings, post, isBusy = () =>
       controller.signal.throwIfAborted();
       if (!destroyed) post('linghuashi:assistant-result', { requestId: data.requestId, value });
     } catch (error) {
+      if (data.action === 'text') error = normalizeTavernError(error);
       if (!destroyed) post('linghuashi:assistant-result', { requestId: data.requestId,
         error: controller.signal.aborted ? '提示词助手操作已取消' : String(data.action).startsWith('relay-') && !error.assistantRelay && !error.assistantDiagnostic
           ? error.name === 'TimeoutError' ? '酒馆转发请求超时，请检查酒馆服务器网络后手动重试'
-            : '酒馆转发未完成，请检查独立 API 配置与酒馆服务器网络后重试' : data.action === 'text' && !error.assistantDiagnostic
-          ? '酒馆文字模型调用失败，请检查连接、额度，或等待当前文字任务结束后重试' : error.message,
+            : '酒馆转发未完成，请检查独立 API 配置与酒馆服务器网络后重试' : error.message,
         ...(data.diagnostics === true && execution ? { execution: assistantExecution(execution) } : {}),
+        ...(data.action === 'text' && assistantFailureInfo(error.assistantFailure)
+          ? { failure: assistantFailureInfo(error.assistantFailure) } : {}),
         ...(!controller.signal.aborted && error.assistantDiagnostic && typeof error.assistantResponse === 'string'
           && error.assistantResponse.length <= 100000 ? { failedResponse: error.assistantResponse } : {}) });
     } finally { if (writingState) stateWriting = false; active.delete(data.requestId); }

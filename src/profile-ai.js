@@ -41,7 +41,7 @@ export function parseProfileResult(raw, sources, uuid = () => randomUUID()) {
   if (typeof raw !== 'string' || !raw.trim() || raw.length > 100000) throw new Error('文字模型没有返回有效角色草稿');
   let result;
   try { result = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); }
-  catch { throw new Error('角色草稿不是完整 JSON，请检查文字模型或增加最大输出 Token 后重试'); }
+  catch { throw new Error('角色草稿不是有效 JSON，请在提示词助手查看失败回复，核对是否含有额外说明或内容不完整；仅确认截断时才需提高输出上限'); }
   if (!object(result) || !Array.isArray(result.profiles) || result.profiles.length !== sources.length) {
     throw new Error('返回的角色数量不完整，请减少一次选择的角色或增加最大输出 Token');
   }

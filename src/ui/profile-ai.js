@@ -224,11 +224,10 @@ export class ProfileAIPanel {
         valid();
         const contextKey = this.chatKey(), baseline = structuredClone(this.library().profiles);
         const messages = buildProfileMessages(sources, this.settings());
-        const raw = await this.generate(messages, controller.signal);
+        const rows = await this.generate(messages, controller.signal, (raw) => parseProfileResult(raw, sources));
         valid();
         if (this.chatKey() !== contextKey) throw new Error('聊天已切换，请重新生成草稿');
         await this.validateSources(sources, controller.signal); valid();
-        const rows = parseProfileResult(raw, sources);
         for (const row of rows) {
           const matches = row.source.avatar ? baseline.filter((profile) => profile.avatar === row.source.avatar) : [];
           if (matches.length === 1) { row.mode = 'fill'; row.targetId = matches[0].id; }

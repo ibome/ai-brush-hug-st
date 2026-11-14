@@ -1,4 +1,5 @@
 import { ASSISTANT_MAX_TOKENS } from './assistant-limits.js';
+import { assistantFailureInfo } from './assistant-errors.js';
 
 const operations = new Set(['generate', 'translate', 'polish', 'illustrate', 'profile', 'edit', 'comic']);
 const stages = new Set(['context', 'preset', 'request', 'parse', 'validate', 'save']);
@@ -27,6 +28,8 @@ export function assistantExecution(value = {}) {
 
 export function assistantErrorCategory(error, stage) {
   const message = String(error?.message || '');
+  const failure = assistantFailureInfo(error?.assistantFailure);
+  if (failure) return failure.category;
   if (/abort|取消/i.test(`${error?.name} ${message}`)) return 'cancelled';
   if (/timeout|超时/i.test(`${error?.name} ${message}`)) return 'timeout';
   if (stage === 'parse' || error?.comicParseFailure || error?.assistantDiagnostic) return 'response';
@@ -81,6 +84,7 @@ export function createAssistantTrace(operation, settings, { version = '', build 
       closeStage(); finished = true;
       record.status = error ? assistantErrorCategory(error, active?.stage) === 'cancelled' ? 'cancelled' : 'failed' : 'success';
       if (error) record.errorCategory = assistantErrorCategory(error, active?.stage);
+      if (assistantFailureInfo(error?.assistantFailure)) record.failure = assistantFailureInfo(error.assistantFailure);
       record.durationMs = bounded(now() - started, 3600000);
       record.scenes = bounded(scenes, operation === 'comic' ? 12 : 4); changed();
     },

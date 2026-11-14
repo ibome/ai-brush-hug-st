@@ -12,6 +12,8 @@ const operationNames = { generate: '生成提示词', translate: '翻译', polis
 const routeNames = { native: '原生调用', 'tavern-backend': '酒馆接口', 'independent-api': '设备直连', 'independent-tavern': '独立 API · 酒馆转发' };
 const modeNames = { text: '普通 JSON 回复', json: '接口 JSON 模式', tool: '工具调用' };
 const errorNames = { cancelled: '已取消', timeout: '超时', authentication: '认证或秘钥异常', 'rate-limit': '请求限流',
+  busy: '文字任务忙碌', permission: '访问权限异常', quota: '余额或配额不足', model: '模型不可用',
+  parameters: '请求参数不兼容', compatibility: '酒馆调用方式不兼容', upstream: '上游服务异常',
   network: '连接异常', preset: '预设配置异常', response: '模型回复异常', changed: '原文或配置已改变', 'local-or-upstream': '本地或上游调用异常' };
 
 function renderPartial(panel) {
@@ -44,6 +46,8 @@ export class AssistantDiagnosticPanel {
         <dl class="assistant-tool-facts"><dt>实际模型</dt><dd>${esc(row.execution.model || (row.status === 'running' ? '尚未提交' : '酒馆未提供模型标识'))}</dd>
           <dt>来源</dt><dd>${row.source === 'api' ? '独立 API' : '酒馆'} · ${routeNames[row.execution.route] || '尚未提交'} · ${modeNames[row.responseMode]}</dd>
           <dt>耗时</dt><dd>${(row.durationMs / 1000).toFixed(2)} 秒${row.errorCategory ? ` · ${errorNames[row.errorCategory] || '调用异常'}` : ''}</dd>
+          ${row.execution.httpStatus ? `<dt>${row.source === 'tavern' ? '酒馆 HTTP' : '接口 HTTP'}</dt><dd>${row.execution.httpStatus}${row.source === 'tavern' && row.execution.httpStatus === 200 && row.status === 'failed' ? ' · 已收到响应，文字任务仍失败' : ''}</dd>` : ''}
+          ${row.failure ? `<dt>失败原因</dt><dd>${esc(row.failure.code)}${row.failure.upstreamStatus ? ` · 上游 HTTP ${row.failure.upstreamStatus}` : ''}${row.failure.parameter ? ` · ${esc(row.failure.parameter)}` : ''}${row.failure.responseType ? ` · ${esc(row.failure.responseType)}` : ''}</dd>` : ''}
         </dl>
         <ol class="assistant-diagnostic-stages">${row.stages.map((item) => `<li>${stageNames[item.stage]} <span>${(item.durationMs / 1000).toFixed(2)} 秒</span></li>`).join('')}</ol>
         ${row.presetOrder.length ? `<details><summary>实际发送的预设顺序 · ${row.presetOrder.length} 条</summary><ol class="assistant-diagnostic-order">${row.presetOrder.map((item, index) =>

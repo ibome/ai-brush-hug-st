@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>助手错误与角色草稿隔离回归</title>
+<div id="plugin-root" style="max-width:800px;margin:auto;padding:12px">
+  <button type="button" id="profile">AI 创建档案</button>
+  <div id="diagnostics"></div>
+  <pre id="report" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+</div>
+<script type="module">
+  import '../../src/styles/plugin.css';
+  import { createAssistantHost } from '../../src/assistant-host.js';
+  import { createTavernTextAccess } from '../../src/tavern-text.js';
+  import { assistantHostRequest } from '../../src/runtime.js';
+  import { normalizeAssistant } from '../../src/prompt-assistant.js';
+  import { AssistantDiagnosticPanel } from '../../src/ui/assistant-tools.js';
+  import { ProfileAIPanel } from '../../src/ui/profile-ai.js';
+
+  window.__LINGHUASHI_ENV__ = { mode: 'extension', account: 'assistant-error-fixture' };
+  const scenario = new URLSearchParams(location.search).get('case') || 'model';
+  const settings = normalizeAssistant({ tavernModel: scenario === 'native' ? 'current' : 'other', maxTokens: 8192 });
+  let calls = 0, failedResponse = '';
+  const source = { id: 'card-0', name: '测试角色', avatar: 'fixture.png', description: '黑发，绿眼。', revision: 'one' };
+  const result = { profiles: [{ sourceId: 'card-0', hair: 'black hair', eyes: 'green eyes', body: '',
+    features: '', tags: '', negative: '', outfits: [], notes: [] }] };
+  const context = { mainApi: 'openai', chatCompletionSettings: { chat_completion_source: 'custom', custom_model: 'current' },
+    getChatCompletionModel: (value) => value.custom_model, getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+    generateRawData: async () => { calls++; return { choices: [{ message: { content: JSON.stringify(result) } }] }; },
+    extractMessageFromData: () => '' };
+  const textAccess = createTavernTextAccess({ getContext: () => context,
+    loadAPI: async () => ({ createGenerationParameters: async () => ({ generate_data: {} }) }),
+    fetcher: async () => {
+      calls++;
+      if (scenario === 'html') return new Response('<html>PRIVATE_REPLY</html>', { headers: { 'Content-Type': 'text/html' } });
+      if (scenario === 'malformed') return Response.json({ choices: [{ message: { content: '{"profiles":[' } }] });
+      return Response.json({ error: { message: 'model not found PRIVATE_REPLY', status: 404 } });
+    } });
+  const host = createAssistantHost({ getContext: () => context, settings: () => settings, textAccess,
+    post: (type, value) => window.postMessage({ type, ...value }, location.origin) });
+  window.addEventListener('message', (event) => {
+    if (event.source === window && event.origin === location.origin && event.data.type === 'linghuashi:assistant-request') void host.receive(event.data);
+  });
+  const diagnostics = new AssistantDiagnosticPanel({ settings: () => settings, release: {},
+    hasFailure: () => Boolean(failedResponse), failure: () => {}, preview: () => {}, network: () => {} });
+  diagnostics.open = true;
+  document.querySelector('#diagnostics').innerHTML = diagnostics.html();
+  diagnostics.bind(document);
+  const panel = new ProfileAIPanel({
+    library: () => ({ profiles: [] }), settings: () => settings, chatKey: () => 'fixture',
+    directory: async () => ({ characters: [{ avatar: source.avatar, name: source.name, current: true }] }),
+    readSources: async () => ({ sources: [source] }),
+    generate: async (messages, signal, parse) => {
+      const trace = diagnostics.start('profile', settings);
+      try {
+        trace.request(messages); trace.step('request');
+        const result = await assistantHostRequest('text', { messages, diagnostics: true }, { signal });
+        trace.execution(result.execution); trace.step('parse');
+        let rows;
+        try { rows = parse(result.text); } catch (error) { failedResponse = result.text; throw error; }
+        trace.finish(); return rows;
+      } catch (error) {
+        if (error.assistantExecution) trace.execution(error.assistantExecution);
+        trace.finish(error); throw error;
+      } finally {
+        document.querySelector('#report').textContent = JSON.stringify({ ...trace.report(), calls }, null, 2);
+      }
+    },
+  });
+  document.querySelector('#profile').addEventListener('click', () => panel.open());
+  document.body.dataset.ready = 'true';
+</script>
+</html>

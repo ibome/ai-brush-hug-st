@@ -604,7 +604,7 @@ const profileAI = new ProfileAIPanel({
   chatKey: () => currentChat().key || '',
   directory: () => assistantHostRequest('characters', {}, { timeout: 20 }),
   readSources: (avatars, signal) => assistantHostRequest('profile-sources', { avatars }, { signal, timeout: 20 }),
-  generate: async (messages, signal) => {
+  generate: async (messages, signal, parse) => {
     if (assistantUI.busy || imageEditorUI?.busy) throw new Error('文字助手正在处理其他任务，请稍后重试');
     await saveAssistantKey(); signal.throwIfAborted();
     const options = normalizeAssistant(state.assistant), identity = JSON.stringify(options);
@@ -614,7 +614,17 @@ const profileAI = new ProfileAIPanel({
       const raw = await executeAssistantText(prepared, options, signal, trace);
       signal.throwIfAborted();
       if (identity !== JSON.stringify(normalizeAssistant(state.assistant))) throw new Error('文字模型配置已改变，请重新生成草稿');
-      trace.finish(); return raw;
+      trace.step('parse');
+      let rows;
+      try { rows = parse(raw); }
+      catch (error) {
+        if (typeof raw === 'string' && raw.length <= 100000) {
+          assistantUI.failureResponse = raw;
+          writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), raw);
+        }
+        throw error;
+      }
+      trace.finish(); return rows;
     } catch (error) { trace.finish(error); throw error; }
   },
   promptTools: (picker) => tagPanel.open(picker),
@@ -1659,7 +1669,10 @@ async function executeAssistantText(messages, options, signal, trace) {
     return raw;
   } catch (error) {
     if (error.assistantTruncated) assistantUI.truncated = true;
-    if (typeof error.assistantResponse === 'string') writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), error.assistantResponse);
+    if (typeof error.assistantResponse === 'string') {
+      assistantUI.failureResponse = error.assistantResponse;
+      writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), error.assistantResponse);
+    }
     if (error.assistantExecution) trace.execution(error.assistantExecution);
     throw error;
   }

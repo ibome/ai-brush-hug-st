@@ -2,6 +2,7 @@ import { assistantModelNames } from './prompt-assistant.js';
 import { withRequestTimeout } from './request-timeout.js';
 import { hostEnvironment } from './host-compat.js';
 import { assistantResponseParameters, extractAssistantResponse } from './assistant-response.js';
+import { assistantCallError, normalizeTavernError, tavernResponseError } from './assistant-errors.js';
 
 const STATUS_SOURCES = new Set(['openai', 'openrouter', 'mistralai', 'custom', 'cohere', 'chutes',
   'electronhub', 'nanogpt', 'deepseek', 'xai', 'aimlapi', 'pollinations', 'groq', 'moonshot',
@@ -62,19 +63,25 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
   }
 
   async function generate(messages, options, signal, { onExecution } = {}) {
+    try { return await generateRequest(messages, options, signal, onExecution); }
+    catch (error) { if (signal?.aborted) throw error; throw normalizeTavernError(error); }
+  }
+
+  async function generateRequest(messages, options, signal, onExecution) {
     signal?.throwIfAborted();
     const context = getContext();
     const execution = (value) => { try { onExecution?.(value); } catch {} };
-    if (!options.tavernModel.trim() && !['tool', 'json'].includes(options.responseMode)) {
-      if (onExecution) {
-        let api = {};
-        if (context.mainApi === 'openai' && !context.getChatCompletionModel) {
-          try { api = await loadAPI(); } catch {}
-        }
-        const settings = context.chatCompletionSettings || api.oai_settings || {};
-        execution({ model: (context.getChatCompletionModel || api.getChatCompletionModel)?.(settings) || '',
-          source: settings.chat_completion_source || context.mainApi || '', route: 'native' });
-      }
+    const requested = options.tavernModel.trim();
+    let modelAPI = {};
+    if (context.mainApi === 'openai' && !context.getChatCompletionModel && (requested || onExecution)) {
+      try { modelAPI = await loadAPI(); } catch {}
+    }
+    const currentSettings = context.chatCompletionSettings || modelAPI.oai_settings || {};
+    const current = (context.getChatCompletionModel || modelAPI.getChatCompletionModel)?.(currentSettings) || '';
+    const canUseNative = typeof context.generateRaw === 'function'
+      || typeof context.generateRawData === 'function' && typeof context.extractMessageFromData === 'function';
+    if ((!requested || requested === current && canUseNative) && !['tool', 'json'].includes(options.responseMode)) {
+      execution({ model: current, source: currentSettings.chat_completion_source || context.mainApi || '', route: 'native' });
       signal?.throwIfAborted();
       const request = { prompt: messages, responseLength: options.maxTokens, trimNames: false, quietToLoud: false };
       if (context.mainApi === 'openai' && typeof context.generateRawData === 'function'
@@ -82,6 +89,7 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
         // Utility JSON must not pass through chat display cleanup and regex replacements.
         const data = await context.generateRawData(request);
         signal?.throwIfAborted();
+        if (data?.error) throw tavernResponseError(data);
         if (data?.choices || data?.output_text || data?.output) return extractAssistantResponse(data);
         return context.extractMessageFromData(data, 'openai');
       }
@@ -113,10 +121,23 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
         body: JSON.stringify(body), signal: requestSignal,
       });
       execution({ httpStatus: response.status });
-      if (!response.ok) throw new Error(`酒馆文字请求失败（${response.status}）`);
-      return response.json();
+      const contentType = response.headers?.get('content-type') || '';
+      const responseType = /json/i.test(contentType) ? 'json' : /html/i.test(contentType) ? 'html'
+        : /event-stream/i.test(contentType) ? 'stream' : /text/i.test(contentType) ? 'text' : 'unknown';
+      let data;
+      try { data = await response.json(); }
+      catch {
+        requestSignal.throwIfAborted();
+        if (!response.ok) throw tavernResponseError(null, { httpStatus: response.status, responseType });
+        throw assistantCallError('invalid-response', { httpStatus: response.status, responseType });
+      }
+      requestSignal.throwIfAborted();
+      if (!response.ok || data?.error) throw tavernResponseError(data, { httpStatus: response.status, responseType });
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw assistantCallError('invalid-response', { httpStatus: response.status, responseType });
+      }
+      return data;
     });
-    if (data.error) throw new Error('酒馆文字接口返回错误，请检查模型权限');
     if (options.responseMode === 'tool' || data?.choices || data?.output_text || data?.output) return extractAssistantResponse(data);
     const content = typeof api.getStreamingReply === 'function'
       ? api.getStreamingReply(data, {}, { chatCompletionSource: settings.chat_completion_source, overrideShowThoughts: false })

@@ -8,6 +8,7 @@ import { restoreStorageFailure } from './debug-errors.js';
 import { isWindowMessage, postWindowMessage } from './host-compat.js';
 import { normalizeAssistantHistory } from './assistant-history.js';
 import { UIStateSync } from './ui-state-sync.js';
+import { assistantFailureInfo } from './assistant-errors.js';
 
 const environment = () => window.__LINGHUASHI_ENV__ || {};
 let uiStateFlush = () => {};
@@ -116,6 +117,8 @@ window.addEventListener('message', (event) => {
   const pending = assistantRequests.get(event.data.requestId);
   if (!pending) return;
   const error = event.data.error ? new Error(event.data.error) : null;
+  const failure = assistantFailureInfo(event.data.failure);
+  if (error && failure) Object.assign(error, { assistantFailure: failure, assistantDiagnostic: true });
   if (error && typeof event.data.failedResponse === 'string' && event.data.failedResponse.length <= 100000) {
     Object.defineProperty(error, 'assistantResponse', { value: event.data.failedResponse });
   }
