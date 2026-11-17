@@ -1,0 +1,27 @@
+.creation-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+.creation-modes button { display: flex; justify-content: center; align-items: center; gap: 8px; min-width: 0; min-height: 44px; padding: 10px 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font: inherit; font-size: 13px; line-height: 1.5; }
+.creation-modes button[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); }
+.creation-modes svg { width: 17px; height: 17px; flex: none; }
+.creation-modes span { overflow-wrap: anywhere; }
+.creation-preview { margin-top: 18px; border-block: 1px solid var(--border); padding-block: 16px; min-width: 0; }
+.creation-preview .settings-band-heading { flex-wrap: wrap; gap: 8px; }
+.creation-preview [role="status"], .creation-preview > p { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.creation-preview textarea { width: 100%; min-width: 0; }
+.creation-preview details { padding-block: 10px; border-top: 1px solid var(--border); }
+.creation-preview summary { cursor: pointer; }
+.creation-preview details p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.prompt-sources dl { margin: 8px 0; }
+.prompt-sources dl > div { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; border-top: 1px solid var(--border); padding: 10px 0; font-size: 12px; }
+.prompt-sources dt small { display: block; margin-top: 5px; color: var(--muted); overflow-wrap: anywhere; }
+.prompt-sources dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-sources dd p { margin: 0 0 6px; }
+.outfit-draft-dialog { max-width: min(560px, calc(100vw - 24px)); }
+.outfit-draft-dialog footer { flex-wrap: wrap; gap: 8px; }
+.outfit-draft-dialog .ui-button { white-space: normal; }
+@media (max-width: 420px) {
+  .creation-modes button { flex-direction: column; gap: 5px; font-size: 12px; }
+  .prompt-sources dl > div { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .outfit-draft-dialog footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .outfit-draft-dialog [data-outfit-decision="apply"] { grid-column: 1 / -1; grid-row: 1; }
+  .outfit-draft-dialog footer .ui-button { min-width: 0; justify-content: center; min-height: 44px; }
+}

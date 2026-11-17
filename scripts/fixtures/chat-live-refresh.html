@@ -59,6 +59,7 @@
       version:{ groupId:id === 'fixture-lake-v2' ? 'fixture-lake' : id, number:id === 'fixture-lake-v2' ? 2 : 1 },
   }));
   const calls = [], opened = [];
+  let observation = null;
   let imageRequest;
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const slow = parameters.has('slow');
@@ -77,10 +78,12 @@
       status:shadow?.querySelector('.status')?.textContent,
       pictures,
       decoded:Boolean(shadow?.querySelector('.picture img')?.naturalWidth),
+      recognized: observation?.recognized.length || 0, inserted: observation?.inserted.length || 0,
       secureContext:window.isSecureContext, viewport:document.documentElement.clientWidth,
     }, null, 2);
   };
   const link = createChatLink({ account, getContext:() => context, settings:() => settings,
+    observe(value) { observation = value; },
     open(page) { opened.push(page); }, notice(text) { document.querySelector('#notice').textContent = text; },
     async storageRequest(action, body) {
       if (parameters.has('scan-slow') && ['task/list', 'chat/list', 'list'].includes(action)) await delay(3000);

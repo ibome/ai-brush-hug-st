@@ -7,11 +7,28 @@ import { checkAssistantPlan, fixAssistantPlan, assistantPlanRevision, lintPrompt
 import { normalizeAssistant, requestAssistantText } from './prompt-assistant.js';
 import { createTavernTextAccess } from './tavern-text.js';
 import { createAssistantHost } from './assistant-host.js';
+import { failureActions } from './start-guide.js';
+globalThis.window = { addEventListener() {} };
+const { AssistantDiagnosticPanel } = await import('./ui/assistant-tools.js');
 
 const ref = 'browser:11111111-1111-4111-8111-111111111111';
 const settings = () => normalizeAssistant({ source: 'api', endpoint: 'https://example.test/proxy/v1/',
   model: 'model-a', keyRef: ref, maxTokens: 4000, presetMode: 'current', autoImage: true,
   taskMessages: { illustrate: [{ role: 'system', content: '{{rules}}' }, { role: 'user', content: '{{input}}' }] } });
+test('failure diagnosis remains attached to its own trace after unrelated calls and history trimming', () => {
+  const panel = new AssistantDiagnosticPanel({ settings, release: {} });
+  const failure = panel.start('generate', settings());
+  failure.step('parse'); failure.finish(new Error('JSON 解析失败'));
+  const unrelated = panel.start('profile', settings());
+  unrelated.finish(new Error('网络失败'));
+  assert.equal(failureActions({ scope: 'assistant', diagnostic: failure.report() })[0], 'assistant-response');
+  panel.focus(failure);
+  assert.equal(panel.traces[panel.selected], failure);
+  for (let index = 0; index < 12; index++) panel.start('comic', settings()).finish();
+  panel.focus(failure);
+  assert.equal(panel.traces[panel.selected], failure);
+  assert.equal(panel.traces[panel.selected].record.operation, 'generate');
+});
 test('diagnostics whitelist excludes secret/chat/preset contents and retains actual ordered counts', () => {
   let clock = 10000;
   const trace = createAssistantTrace('illustrate', settings(), { now: () => clock });

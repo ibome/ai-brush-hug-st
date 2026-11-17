@@ -31,6 +31,11 @@
 .character-frozen { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
 .character-frozen > span { display: flex; align-items: center; gap: 6px; }
 .character-frozen svg { width: 16px; height: 16px; }
+.outfit-controls { min-width: 0; padding-block: 8px; border-block: 1px solid var(--border); margin-bottom: 12px; }
+.outfit-effective { font-size: 12px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; margin: 8px 0 0; }
+.outfit-pending { font-size: 12px; color: var(--accent); overflow-wrap: anywhere; }
+.outfit-controls textarea { min-width: 0; width: 100%; }
+.comic-cast-locks > .outfit-controls { flex: 1 0 100%; }
 @media (max-width: 700px) {
   .character-workspace { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .character-directory { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 240px; border-bottom: 1px solid var(--border); }

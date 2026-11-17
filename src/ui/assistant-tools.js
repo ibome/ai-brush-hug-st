@@ -33,9 +33,20 @@ function toolHTML(panel, attribute) {
 export class AssistantDiagnosticPanel {
   constructor(options) { Object.assign(this, options); this.traces = []; this.selected = 0; this.copyStatus = ''; }
   start(operation, settings) {
+    const selected = this.traces[this.selected];
     const trace = createAssistantTrace(operation, settings, { ...this.release, changed: () => this.render() });
-    this.traces.unshift(trace); this.traces.length = Math.min(8, this.traces.length); this.selected = 0; this.copyStatus = ''; this.copyText = '';
+    this.traces.unshift(trace); this.traces.length = Math.min(8, this.traces.length);
+    this.selected = this.open && selected && this.traces.includes(selected) ? this.traces.indexOf(selected) : 0;
+    this.copyStatus = ''; this.copyText = '';
     this.render(); return trace;
+  }
+  focus(trace) {
+    if (!trace) return false;
+    if (!this.traces.includes(trace)) { this.traces.push(trace); }
+    this.selected = this.traces.indexOf(trace); this.open = true; this.copyStatus = ''; this.copyText = '';
+    const details = this.root?.querySelector('details');
+    if (details) details.open = true;
+    this.render(); return true;
   }
   html() { return toolHTML(this, 'data-assistant-diagnostic-root'); }
   content() {
@@ -56,7 +67,7 @@ export class AssistantDiagnosticPanel {
       <div class="assistant-actions">
         ${button('diagnostic', 'copy', 'copy', '复制脱敏诊断', !row || row.status === 'running')}
         ${button('diagnostic', 'preview', 'eye', '预览当前请求')}
-        ${button('diagnostic', 'failure', 'message-square', '查看失败回复', !this.hasFailure())}
+        ${button('diagnostic', 'failure', 'message-square', '查看失败回复', !this.hasFailure(trace))}
         ${button('diagnostic', 'network', 'scan', '检测助手网络', this.settings().source !== 'api')}
         ${button('diagnostic', 'clear', 'trash-2', '清除诊断', !row || this.traces.some((item) => item.record.status === 'running'))}
       </div>
@@ -78,7 +89,7 @@ export class AssistantDiagnosticPanel {
       if (!action) return;
       try {
         if (action === 'preview') await this.preview();
-        if (action === 'failure') this.failure();
+        if (action === 'failure' && this.hasFailure(this.traces[this.selected])) this.failure();
         if (action === 'network') this.network();
         if (action === 'clear' && !this.traces.some((item) => item.record.status === 'running')) {
           this.traces = []; this.selected = 0; this.copyText = ''; this.copyStatus = ''; this.render();

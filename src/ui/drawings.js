@@ -583,7 +583,7 @@ export function renderDrawingViewer(item, position, total, ui) {
       <div>${command('pencil', '编辑这张图', 'viewer-edit', item.snapshot ? '' : 'disabled')}
       ${command('wand-sparkles', '图片增强', 'viewer-enhance')}
       ${command('scan-eye', '本地反推 / 超分', 'viewer-local-tools')}
-      ${command('image-plus', '作为底图', 'viewer-source')}${command('palette', '作为参考图', 'viewer-reference')}
+      ${command('image-plus', '作为底图', 'viewer-source', ui.sourceEnabled === false ? 'disabled title="当前接口或模型不支持图生图"' : '')}${command('palette', '作为参考图', 'viewer-reference', ui.referenceEnabled === false ? 'disabled title="当前接口或模型不支持参考图"' : '')}
       ${command('check', selected ? '当前版本' : '设为当前版本', 'version-select', selected ? 'disabled' : '')}
       ${iconCommand('columns-2', '比较版本', 'version-compare', `aria-pressed="${Boolean(ui.compare)}" ${versions.length < 2 ? 'disabled' : ''}`)}
       ${iconCommand('copy', '复制种子', 'version-copy-seed', ui.seed === null ? 'disabled' : '')}

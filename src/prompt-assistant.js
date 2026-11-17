@@ -12,7 +12,7 @@ export const ASSISTANT_DEFAULTS = Object.freeze({
   source: 'tavern', apiTransport: 'direct', endpoint: '', model: '', tavernModel: '', keyRef: '', apiLink: null,
   temperature: 0.6, maxTokens: 4000, timeout: 120,
   presetMode: 'none', presetId: '', presetSelection: null,
-  contextMessages: 8, contextCharacters: 24000, includeCharacters: true, includeWorld: false,
+  contextMessages: 8, contextCharacters: 24000, includeCharacters: true, includeWorld: false, inputOnly: false,
   format: 'auto', template: 'scene', customTemplate: '', appearance: '',
   autoPrompt: false, autoImage: false, frequency: 'scene', every: 3,
   count: 1, aspect: 'keep', composition: 'balanced',
@@ -38,7 +38,7 @@ export function normalizeAssistant(value = {}) {
     composition: ['balanced', 'closeup', 'fullbody', 'environment'],
     responseMode: ['text', 'json', 'tool'],
   })) if (options.includes(value[key])) result[key] = value[key];
-  for (const key of ['includeCharacters', 'includeWorld', 'autoPrompt', 'autoImage', 'rememberState', 'omitTemperature']) {
+  for (const key of ['includeCharacters', 'includeWorld', 'inputOnly', 'autoPrompt', 'autoImage', 'rememberState', 'omitTemperature']) {
     if (typeof value[key] === 'boolean') result[key] = value[key];
   }
   for (const [key, limit] of Object.entries({ endpoint: 512, model: 200, tavernModel: 200, customTemplate: 8000, appearance: 4000 })) {
@@ -161,6 +161,7 @@ export function promptFormat(provider, model, choice = 'auto') {
 
 export function buildAssistantMessages({ settings, operation = 'generate', ruleTask = operation, input = '', context = {}, target = {} }) {
   const options = normalizeAssistant(settings);
+  if (options.inputOnly && operation !== 'illustrate' && ruleTask !== 'edit') context = {};
   if (!['generate', 'translate', 'polish', 'illustrate'].includes(operation)) throw new Error('未知提示词操作');
   const format = promptFormat(target.provider, target.model, options.format);
   const task = {

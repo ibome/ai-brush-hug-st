@@ -96,6 +96,11 @@ export async function clearDrawingState(context, chatKey) {
 
 export async function collectAssistantContext(context, options, binding, previous, signal, selection) {
   const settings = normalizeAssistant(options);
+  if (settings.inputOnly && !binding) {
+    signal?.throwIfAborted();
+    return { chatKey: '', characterAvatars: [], targetBinding: null, target: '', messages: [], characters: [], world: '',
+      drawingState: [], previous: null, summary: { messages: 0, characters: 0, worldCharacters: 0 } };
+  }
   const message = binding ? await findBoundMessage(context, binding)
     : [...(context.chat || [])].reverse().find(eligibleMessage);
   if (binding && !message) throw new Error('原消息已变化，请在当前回复上重新配图');
@@ -180,7 +185,8 @@ export function createAssistantHost({ getContext, settings, post, isBusy = () =>
         if (isBusy()) throw new Error('酒馆正在输出回复，请等待完成后读取剧情');
         value = comicSource(getContext(), data.range);
       } else if (data.action === 'context') {
-        value = await collectAssistantContext(getContext(), options, data.binding, data.previous, controller.signal, data.contextSelection);
+        value = await collectAssistantContext(getContext(), { ...options, inputOnly: data.inputOnly === true },
+          data.binding, data.previous, controller.signal, data.contextSelection);
       } else if (data.action === 'context-validate') {
         await validateContextSelection(getContext(), data.contextSelection);
         if (data.binding && !await findBoundMessage(getContext(), data.binding)) throw new Error('原消息已变化，请重新分析');

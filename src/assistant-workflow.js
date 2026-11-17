@@ -1,3 +1,5 @@
+import { effectiveOutfit } from './character-profiles.js';
+
 export const ASSISTANT_OPERATIONS = [
   ['generate', '生成提示词'], ['translate', '翻译'], ['polish', '润色'],
   ['illustrate', '聊天配图'], ['profile', '创建角色档'], ['edit', '单图编辑'], ['comic', '漫画分镜'],
@@ -139,7 +141,7 @@ export function freezeIllustrationCharacters(plan, scene, previous = []) {
         action: entry.action || direction?.action || state?.action || '',
         expression: entry.expression || direction?.expression || state?.expression || '',
         appearance: profile.lockAppearance ? '' : direction?.appearance || state?.appearance || '',
-        outfit: profile.lockOutfit ? '' : direction?.outfit || state?.outfit || '',
+        outfit: effectiveOutfit(entry).locked ? '' : direction?.outfit || (entry.outfitMode === 'ai' ? '' : state?.outfit) || '',
         negative: direction?.negative || '',
       };
     });

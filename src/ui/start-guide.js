@@ -1,6 +1,6 @@
 import { escapeHtml as esc } from '../config.js';
 import { icon } from '../icons.js';
-import { START_GOALS, guideSteps, guideStepComplete } from '../start-guide.js';
+import { START_GOALS, CHAT_DRAWING_MODES, guideSteps, guideStepComplete } from '../start-guide.js';
 import '../styles/start-guide.css';
 
 const glyph = (code) => ({ ready: 'circle-check', configured: 'circle-check', missing: 'circle', error: 'circle-alert',
@@ -15,8 +15,9 @@ export function readinessBadge(row, attribute = '') {
 
 export function renderStartGuide(state, readiness) {
   const experience = state.experience;
+  const verification = `<div data-first-success-root>${renderFirstSuccess(readiness.verification, experience.goal)}</div>`;
   if (experience.dismissed || experience.completed) return `<section class="start-guide-entry" aria-label="使用引导">
-    <span>${icon('compass')}使用引导</span>${guideCommand('open', experience.completed ? '重新查看' : experience.goal ? '继续设置' : '开始设置', 'arrow-right')}</section>`;
+    <span>${icon('compass')}使用引导</span>${guideCommand('open', experience.completed ? '重新查看' : experience.goal ? '继续设置' : '开始设置', 'arrow-right')}</section>${verification}`;
   const steps = guideSteps(experience, { ...readiness, chat: state });
   const done = steps.filter(guideStepComplete).length;
   const ready = Boolean(experience.goal) && steps.every(guideStepComplete);
@@ -25,13 +26,34 @@ export function renderStartGuide(state, readiness) {
     <h2>${icon('compass')}开始使用灵画师</h2>${guideCommand('dismiss', '暂时收起', 'chevron-up')}</div>
     <div class="start-goals" role="group" aria-label="想先做什么">${START_GOALS.map(([id, name, symbol]) =>
       `<button type="button" data-guide-goal="${id}" aria-pressed="${experience.goal === id}">${icon(symbol)}<span>${name}</span>${experience.goal === id ? icon('check') : ''}</button>`).join('')}</div>
+    ${experience.goal === 'chat' ? `<div class="start-chat-modes" role="group" aria-label="聊天配图来源">${CHAT_DRAWING_MODES.map(([id, name]) =>
+      `<button type="button" data-guide-chat-mode="${id}" aria-pressed="${Boolean(state.assistant.autoPrompt) === (id === 'assistant')}">${icon(id === 'tags' ? 'braces' : 'sparkles')}<span>${name}</span></button>`).join('')}</div>
+      <p class="storage-scope">${state.assistant.autoPrompt ? '由文字模型分析聊天剧情，需要配置提示词助手。' : '在酒馆导入并启用生图世界书，识别回复里的提示词块；只需配置生图接口，无需配置文字模型。'}</p>` : ''}
     ${experience.goal ? `<div class="start-guide-progress"><span>配置进度 ${done} / ${steps.length}</span><progress max="${steps.length}" value="${done}" aria-label="首次配置进度"></progress></div>
       <ol class="start-checklist">${steps.map((row) => `<li data-readiness="${row.result.code}">
         <div><strong>${esc(row.label)}${row.optional ? '<small>提示词块模式可跳过</small>' : ''}</strong>
           <span>${esc(row.result.label)}</span><small>${esc(row.result.detail)}</small></div>
         ${guideCommand(row.page, row.result.canSubmit ? '查看' : '去设置', row.result.canSubmit ? 'settings-2' : 'arrow-right')}</li>`).join('')}</ol>
       <div class="start-guide-actions">${guideCommand(next[0], next[1], 'arrow-right')}
-      ${ready ? guideCommand('complete', '完成引导', 'check-check') : ''}</div>` : ''}
+      ${ready ? guideCommand('complete', '配置完成，收起引导', 'check-check') : ''}</div>` : ''}
+    ${verification}
+  </section>`;
+}
+
+export function renderFirstSuccess(value, goal) {
+  if (!goal) return '';
+  const result = value || {}, chat = goal === 'chat';
+  const rows = [[chat ? '识别提示词 / 助手画面' : '已准备提示词', result.recognized],
+    ['图片实际返回', result.generated], ['图片成功保存', result.saved], ...(chat ? [['聊天图片加载成功', result.inserted]] : [])];
+  return `<section class="first-success" aria-label="实际出图验证"><h3>实际出图验证 <small>本次打开 · 当前接口、模型与存储</small></h3>
+    <ol>${rows.map(([label, done]) => `<li data-verified="${Boolean(done)}">${icon(done ? 'circle-check' : 'circle')}${esc(label)}<span>${done ? '已完成' : '待验证'}</span></li>`).join('')}</ol>
+    <p role="status">${result.failure ? esc(result.failure) : result.status === 'queued' ? '任务已排队，等待生成。'
+      : result.status === 'running' ? result.saved ? '图片已保存，正在同步显示。' : result.generated ? '图片已返回，正在保存。' : '正在生成图片，请稍候。'
+      : result.complete ? '本次流程已验证成功。'
+      : result.saved && chat ? '图片已保存，等待原聊天中的图片加载；可返回聊天查看。'
+        : result.recognized ? '提示词已识别或准备，可按自己的需要生成第一张图。'
+          : chat ? '返回聊天完成一条带提示词的回复，或使用助手准备画面。' : '在工坊准备提示词并生成一张图片。'}</p>
+    ${guideCommand('task-records', '查看任务记录', 'list-todo')}${result.saved ? guideCommand('gallery', '查看已存图片', 'images') : ''}
   </section>`;
 }
 
@@ -54,6 +76,7 @@ const actionNames = {
   'task-records': ['list-todo', '查看待处理任务'], 'assistant-response': ['file-json', '查看回复并本地修复'],
   'assistant-config': ['settings-2', '检查文字配置'], 'assistant-network': ['scan', '检测文字网络'],
   'assistant-diagnostic': ['list-checks', '查看调用诊断'],
+  'outfit-settings': ['shirt', '检查服装草稿'],
 };
 export function renderFailureActions(actions, jobId = '') {
   return `<div class="failure-actions">${actions.map((action) => {

@@ -5,11 +5,14 @@ import { renderOpenAIParameters } from './openai.js';
 import { renderComfyParameters } from './comfyui.js';
 import { renderSDWebUIParameters } from './sdwebui.js';
 import { normalizeVersion } from '../../server/linghuashi-storage/image-versions.mjs';
+import { imageEditAvailability } from '../image-edit.js';
 
-const command = (name, label, action, disabled = false) => `<button type="button" class="ui-button" data-action="${action}" ${disabled ? 'disabled' : ''}>${icon(name)}<span>${label}</span></button>`;
+const command = (name, label, action, disabled = false, reason = '') => `<button type="button" class="ui-button" data-action="${action}" ${disabled ? 'disabled' : ''} ${reason ? `title="${esc(reason)}"` : ''}>${icon(name)}<span>${label}</span></button>`;
 
 export function renderImageEditor(item, ui, advancedHTML = '') {
   const snapshot = ui.draft;
+  const available = imageEditAvailability(snapshot), locked = ui.busy || ui.submitting;
+  const unavailable = '当前模型或接口未开放图片编辑，请在接口配置选择支持此能力的接口和模型';
   const local = { novelai: snapshot.params, novelaiPresets: [], novelaiPresetId: 'default', openai: snapshot.params, comfyui: snapshot.config,
     sdwebui: snapshot.params, sdwebuiPresets: [], sdwebuiPresetId: 'default' };
   let parameters;
@@ -25,7 +28,8 @@ export function renderImageEditor(item, ui, advancedHTML = '') {
     <header><div><h2 id="image-editor-title">单图编辑</h2><span>版本 ${version.number} · ${esc(({ novelai: 'NovelAI', openai: 'OpenAI兼容', comfyui: 'ComfyUI', sdwebui: 'SDWebUI' })[snapshot.provider])}</span></div>
     ${command('x', '关闭', 'image-edit-close')}</header>
     <div class="image-editor-body"><aside><img src="${item.src}" alt="${esc(item.title)}" /><p>${esc(item.title)}</p>
-      <div class="advanced-upload-actions">${command('image-plus', '以这张图继续画', 'image-edit-source', ui.busy || ui.submitting)}${command('brush', '局部重绘', 'image-edit-inpaint', ui.busy || ui.submitting)}${command('wand-sparkles', '图片增强', 'image-edit-enhance', ui.busy || ui.submitting)}</div>
+      <div class="advanced-upload-actions">${command('image-plus', '以这张图继续画', 'image-edit-source', locked || !available.image, !available.image ? unavailable : '')}${command('brush', '局部重绘', 'image-edit-inpaint', locked || !available.inpaint, !available.inpaint ? unavailable : '')}${command('wand-sparkles', '图片增强', 'image-edit-enhance', locked)}</div>
+      ${!available.image ? `<p class="advanced-error">${unavailable}</p>` : ''}
       <label class="ui-field"><span>版本备注</span><textarea data-image-edit-note rows="2" maxlength="1000">${esc(ui.note)}</textarea></label>
       <section class="image-edit-assistant"><label class="ui-field"><span>想怎么修改</span><textarea data-image-edit-instruction rows="3" maxlength="8000" placeholder="例如：换成白色裙子，保留发型和场景">${esc(ui.instruction)}</textarea></label>
         ${command(ui.busy ? 'loader-circle' : 'wand-sparkles', ui.busy ? '处理中' : 'AI 修改提示词', 'image-edit-rewrite', ui.busy)}
@@ -37,6 +41,6 @@ export function renderImageEditor(item, ui, advancedHTML = '') {
         <label class="ui-field"><span>${esc(role.name)} · 负面提示词</span><textarea rows="2" maxlength="4000" data-image-edit-role="${index}" data-role-field="negative">${esc(role.negative)}</textarea></label>
         <label class="ui-field"><span>${esc(role.name)} · 画面位置</span><select data-image-edit-role="${index}" data-role-field="position">${['auto', 'left', 'center', 'right', 'top', 'bottom'].map((position) => `<option value="${position}" ${role.position === position ? 'selected' : ''}>${({ auto: '自动', left: '左侧', center: '中央', right: '右侧', top: '上方', bottom: '下方' })[position]}</option>`).join('')}</select></label>
       </div>`).join('')}</section>` : ''}</fieldset></div>
-    <footer><span class="image-edit-status" role="status">${esc(ui.error)}</span><div>${command('rotate-ccw', '恢复原参数', 'image-edit-reset', ui.busy || ui.submitting)}${command('sparkles', ui.submitting ? '正在加入任务' : '重绘为新版本', 'image-edit-generate', ui.busy || ui.submitting)}</div></footer>
+    <footer><span class="image-edit-status" role="status">${esc(ui.error || available.issue)}</span><div>${command('rotate-ccw', '恢复原参数', 'image-edit-reset', locked)}${command('sparkles', ui.submitting ? '正在加入任务' : '重绘为新版本', 'image-edit-generate', locked || Boolean(available.issue))}</div></footer>
   </dialog>`;
 }

@@ -8,6 +8,19 @@ import { createTavernTextAccess } from './tavern-text.js';
 import { ASSISTANT_MAX_TOKENS } from './assistant-limits.js';
 
 const result = { shouldDraw: true, scene: '窗边读书', positive: 'reading a book, rainy window', negative: 'blurry', aspect: 'portrait' };
+test('input-only requests avoid collecting chat, character cards and worldbooks', async () => {
+  const context = { get chat() { throw new Error('Chat must not be read'); },
+    getWorldInfoPrompt() { throw new Error('Worldbook must not be read'); } };
+  const options = normalizeAssistant({ inputOnly: true, includeWorld: true, includeCharacters: true });
+  const collected = await collectAssistantContext(context, options);
+  assert.deepEqual(collected.summary, { messages: 0, characters: 0, worldCharacters: 0 });
+  const messages = buildAssistantMessages({ settings: options, input: 'a quiet lake',
+    context: { target: 'PRIVATE_CHAT', world: 'PRIVATE_WORLD', characters: [{ name: 'PRIVATE_CARD' }] } });
+  assert.ok(!JSON.stringify(messages).includes('PRIVATE_'));
+  assert.ok(JSON.stringify(messages).includes('a quiet lake'));
+  const chat = buildAssistantMessages({ settings: options, operation: 'illustrate', context: { target: 'CURRENT_TARGET' } });
+  assert.ok(JSON.stringify(chat).includes('CURRENT_TARGET'));
+});
 test('independent text endpoint accepts suffixes and subpaths without leaking URL credentials', () => {
   for (const suffix of ['', '/', '/v1', '/v1/', '/v1/chat/completions', '/v1/chat/completions/', '/v1/images/generations/', '/v1/models/']) {
     assert.equal(assistantURLs(`https://example.test${suffix}`).completions, 'https://example.test/v1/chat/completions');
@@ -225,9 +238,11 @@ test('following Tavern reads cached and fresh models through its backend without
       return Response.json({ data: [{ id: 'fresh-a' }, { id: 'fresh-b' }] });
     } });
   const cached = await access.models();
-  assert.deepEqual(cached.models, ['cached-model', 'current-model']);
+  assert.deepEqual(cached.models, ['cached-model']);
+  assert.equal(cached.current, 'current-model');
   const fresh = await access.models({ refresh: true });
-  assert.deepEqual(fresh.models, ['current-model', 'fresh-a', 'fresh-b']);
+  assert.deepEqual(fresh.models, ['fresh-a', 'fresh-b']);
+  assert.equal(fresh.current, 'current-model');
   assert.ok(!JSON.stringify(fresh).includes('never-return-this'));
   assert.deepEqual(context.chatCompletionSettings, original);
 });

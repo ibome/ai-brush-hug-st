@@ -64,7 +64,8 @@ test('processing bounds and generation model support fail before any provider ca
     assert.throws(() => validateProcessingDraft(processingDraft(item, {}), { ...item, width: dimensions[0], height: dimensions[1] }), /尺寸/);
   }
   assert.throws(() => validateProcessingDraft({ ...processingDraft(item, {}), kind: 'enhance', width: 833 }, item), /64 的倍数/);
-  assert.throws(() => buildProcessingRequest({ ...snapshot('enhance'), params: { ...snapshot().params, model: 'nai-diffusion-5-full' } }), /尚未接入/);
+  assert.throws(() => buildProcessingRequest({ ...snapshot('enhance'), params: { ...snapshot().params, model: 'unknown-model' } }), /尚未接入/);
+  assert.equal(buildProcessingRequest({ ...snapshot('enhance'), params: { ...snapshot().params, model: 'nai-diffusion-5-full' } }).body.action, 'img2img');
   assert.throws(() => validateProcessingDraft({ ...processingDraft(item, {}), kind: 'director', defry: -1 }, item), /参数无效/);
   assert.throws(() => validateProcessingDraft({ ...processingDraft(item, {}), kind: 'enhance', strength: 1.1 }, item), /0 至 1/);
   for (const dimensions of [[12000, 9000], [400, 800], [64, 9000]]) {

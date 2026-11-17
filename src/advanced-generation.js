@@ -1,4 +1,5 @@
 import { randomUUID } from './crypto-compat.js';
+import { novelAIImageCapabilities, novelAIImageModel } from './novelai-models.js';
 const number = (value, fallback, min = 0, max = 1) => Number.isFinite(Number(value)) ? Math.max(min, Math.min(max, Number(value))) : fallback;
 const record = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const base64OK = (value) => typeof value === 'string' && value.length > 0 && value.length <= 6 * 1024 * 1024 && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
@@ -56,8 +57,7 @@ export function setAdvanced(snapshot, value) {
 }
 export function modelCapabilities(provider, model, advanced = {}) {
   if (provider === 'novelai') return {
-    image: /^nai-diffusion-(?:3|furry-3|4(?:-|$))/.test(model),
-    inpaint: /^nai-diffusion-(?:3|furry-3|4(?:-|$))/.test(model),
+    ...novelAIImageCapabilities(model),
     vibe: Boolean(vibeModelKey(model)), character: /^nai-diffusion-4-5-(full|curated)$/.test(model),
   };
   if (provider === 'comfyui') return { image: true, inpaint: true, vibe: false, character: false };
@@ -146,7 +146,13 @@ export async function applyNovelAIAdvanced(body, snapshot, readBase64) {
   const result = structuredClone(body), parameters = result.parameters;
   if (['image', 'inpaint'].includes(advanced.mode)) {
     result.action = advanced.mode === 'inpaint' ? 'infill' : 'img2img';
-    if (advanced.mode === 'inpaint') result.model += '-inpainting';
+    if (advanced.mode === 'inpaint') {
+      result.model = novelAIImageModel(result.model);
+      if (!novelAIImageCapabilities(result.model.replace(/-inpainting$/, '')).transparent) {
+        delete parameters.tag_hint_transparent_background;
+        delete parameters.straight_alpha;
+      }
+    }
     parameters.image = await readBase64(advanced.source);
     parameters.strength = advanced.strength;
     parameters.noise = advanced.noise;

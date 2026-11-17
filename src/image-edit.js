@@ -1,6 +1,15 @@
 import { normalizeSnapshot } from './ui/drawings.js';
 import { buildAssistantMessages } from './prompt-assistant.js';
 import { applyCharacterScene } from './character-profiles.js';
+import { advancedOf, modelCapabilities, validateAdvanced } from './advanced-generation.js';
+
+export function imageEditAvailability(snapshot) {
+  const params = snapshot.params || snapshot.config.params;
+  const capabilities = modelCapabilities(snapshot.provider, params.model, advancedOf(snapshot));
+  let issue = '';
+  try { validateAdvanced(snapshot); } catch (error) { issue = error.message; }
+  return { image: Boolean(capabilities.image), inpaint: Boolean(capabilities.inpaint), issue };
+}
 
 export function imageEditDraft(snapshot) {
   const draft = normalizeSnapshot(snapshot && { ...snapshot, partial: false });
@@ -22,6 +31,7 @@ export function prepareImageEdit(draft) {
   const result = normalizeSnapshot(draft);
   delete result.novelaiProcessing;
   const params = result.params || result.config.params;
+  validateAdvanced(result);
   if (!params.positive.trim() && !(result.provider === 'sdwebui' && params.advanced?.mode === 'upscale')) throw new Error('请填写正向提示词');
   if (result.provider === 'comfyui' && !result.config.mapping.positive) throw new Error('原工作流没有映射正向提示词，请先在接口配置完善工作流');
   if (result.characterScene?.applied) {

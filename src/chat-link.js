@@ -23,7 +23,7 @@ const labels = {
 };
 const phases = { submitting: '正在提交', retrieving: '正在取图', downloading: '正在下载', saving: '正在保存' };
 
-export function createChatLink({ account, getContext, settings, send, open, notice, storageRequest }) {
+export function createChatLink({ account, getContext, settings, send, open, notice, storageRequest, observe = () => {} }) {
   const entries = new Map();
   const requests = new Map();
   const listeners = [];
@@ -34,6 +34,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   const anchorSplits = [];
   let mountedCards = new Map();
   let mountedLayout = new Map();
+  let observationSignature = '';
   let store;
   let destroyed = false;
   let revision = 0;
@@ -133,6 +134,25 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       entry.record = result;
       channel?.postMessage({ id: entry.binding.id });
     }
+  }
+
+  function reportObservation() {
+    if (destroyed) return;
+    const context = getContext(), options = settings(), inserted = [], recognized = [];
+    for (const [id, { card }] of mountedCards) {
+      const entry = entries.get(id);
+      if (!entry || !isCurrent(entry) || !card.isConnected) continue;
+      if (entry.binding.kind !== 'smart' || entry.record?.assistant?.positive?.trim()) recognized.push(id);
+      const imageIds = [...card.shadowRoot.querySelectorAll('.picture-entry')].flatMap((picture) => {
+        const image = picture.querySelector('img');
+        return image?.complete && image.naturalWidth > 0 ? [picture.dataset.image] : [];
+      });
+      if (imageIds.length && entry.record?.requestId) inserted.push({ bindingId: id, requestId: entry.record.requestId, imageIds });
+    }
+    const value = { chatKey: chatIdentity(context), recognized: recognized.slice(-100), inserted: inserted.slice(-100) };
+    const signature = JSON.stringify([options.enabled, options.inline, value]);
+    if (signature === observationSignature) return;
+    observationSignature = signature; observe(value);
   }
 
   async function reconcile(local = false) {
@@ -302,6 +322,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     } finally {
       observeChat();
     }
+    reportObservation();
     // Recognize tags before doing a complete task/gallery scan on a slow device.
     if (!local && options.enabled && chatKey) syncInBackground(chatKey,
       ['server', 'local'].includes(options.cacheLocation) ? 'server' : 'browser');
@@ -471,6 +492,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           button.type = 'button'; button.className = 'picture';
           button.setAttribute('aria-label', '查看配图大图和生图参数');
           const image = document.createElement('img');
+          image.addEventListener('load', reportObservation, { once: true });
           image.src = url; image.alt = row.title; image.loading = 'lazy'; image.decoding = 'async';
           image.width = row.width; image.height = row.height;
           button.append(image);

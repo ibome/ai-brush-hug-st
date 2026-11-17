@@ -70,6 +70,7 @@ async function start() {
   let requestedPage = null;
   let pendingFloatingBall = null;
   let activeChat = chatContext();
+  let chatObservation = null;
   let chatLink;
   const extensionAPI = createExtensionAPI({ version: VERSION, ensureReady: () => ensureFrame(), send: post });
   let frameReady;
@@ -352,6 +353,7 @@ async function start() {
       requestedPage = null;
     } else if (data.type === 'linghuashi:mounted') {
       mounted = true;
+      if (chatObservation) post('linghuashi:chat-observed', chatObservation);
       post('linghuashi:release-state', { value: releaseMonitor.getState() });
       resolveFrame();
       clearTimeout(sizeTimer);
@@ -535,6 +537,7 @@ async function start() {
   for (const type of events) context.eventSource?.on?.(type, updateChat);
   chatLink = createChatLink({
     account, getContext, storageRequest,
+    observe: (value) => { chatObservation = value; if (mounted) post('linghuashi:chat-observed', value); },
     settings: () => ({ ...SETTINGS_DEFAULTS, ...ui, enabled: ui.enabled !== false, triggerPrefix: ui.triggerPrefix || 'image###', triggerSuffix: ui.triggerSuffix || '###' }),
     send: async (type, value) => {
       await ensureFrame();

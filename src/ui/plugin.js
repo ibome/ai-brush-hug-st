@@ -9,7 +9,7 @@ import { credentialError, credentialFailure, credentialSavedMessage } from '../c
 import { apiError, publicExtensionTask } from '../extension-api.js';
 import { createExtensionTaskService } from '../extension-tasks.js';
 import { extensionCapabilities, extensionPresets, prepareExtensionSnapshot, publicImageParameters } from './extension-generation.js';
-import { imageEditDraft, prepareImageEdit, imageEditMessages, applyImageRewrite, drawingSeed } from '../image-edit.js';
+import { imageEditDraft, prepareImageEdit, imageEditMessages, applyImageRewrite, drawingSeed, imageEditAvailability } from '../image-edit.js';
 import { applyChatImageEdit, applyChatImageStyle, chatImageBelongsTo } from '../chat-image-actions.js';
 import { blockingChatWindow, waitForChatWindow, mergeChatPrompt } from '../chat-preparation.js';
 import { createChatPromptStyle, inferChatPromptStyle } from '../chat-prompt-style.js';
@@ -60,7 +60,8 @@ import { composeTaskMessages, illustrationPlans, selectedIllustration, freezeIll
 import { AssistantWorkflowPanel } from './assistant-workflow.js';
 import { TaskPromptPanel } from './assistant-rules.js';
 import { START_GOALS, normalizeExperience, imageReadiness, assistantReadiness, storageReadiness, failureActions, guideSteps, guideStepComplete } from '../start-guide.js';
-import { renderStartGuide, renderReadiness, renderFailureActions, readinessBadge, guideCommand } from './start-guide.js';
+import { renderStartGuide, renderReadiness, renderFailureActions, readinessBadge, guideCommand, renderFirstSuccess } from './start-guide.js';
+import { FirstSuccessVerification } from '../first-success.js';
 import { experienceFold } from './experience.js';
 import { buildProfileMessages, manualProfileSource } from '../profile-ai.js';
 import { AssistantDiagnosticPanel, AssistantSchemePanel, AssistantLintPanel } from './assistant-tools.js';
@@ -75,8 +76,13 @@ import { renderAssistantCompatibility, renderAssistantBudget } from './assistant
 import { replaceSelectedScene, sceneReanalysisMessages } from '../assistant-scene.js';
 import '../styles/assistant.css';
 import { migrateProfileLibrary, normalizeProfileLibrary, normalizeProfile, effectiveProfiles, saveProfile, deleteProfile,
-  updateProfileChat, resolveCharacterScene, applyCharacterScene, normalizeCharacterScene, restoreSceneProfiles } from '../character-profiles.js';
-import { renderCharacters as renderCharacterPage, renderCharacterSelection } from './characters.js';
+  updateProfileChat, resolveCharacterScene, applyCharacterScene, normalizeCharacterScene, restoreSceneProfiles,
+  applySceneOutfit, setGlobalOutfit, reconcileTemporaryScene } from '../character-profiles.js';
+import { renderCharacters as renderCharacterPage, renderCharacterSelection, refreshOutfitDraftFeedback } from './characters.js';
+import { creationRevision, previewCreation } from '../creation-workflow.js';
+import { renderCreationModes, renderCreationPreview } from './creation-workflow.js';
+import { OutfitDraftSessions, pendingOutfitDrafts, prepareOutfitDrafts } from '../outfit-drafts.js';
+import { confirmOutfitDrafts } from './outfit-drafts.js';
 import { ProfileAIPanel } from './profile-ai.js';
 import { requestAssistantText } from '../prompt-assistant.js';
 import '../styles/characters.css';
@@ -449,9 +455,12 @@ const assistantUI = { busy: false, error: '', controller: null, key: '', keyVisi
   keyDirty: false, keyRevision: 0, keyTimer: null, keyWriting: Promise.resolve(),
   models: [], modelsBusy: false, modelsStatus: '', modelsError: '', modelsOpen: false, modelsQuery: '',
   modelsController: null, tavernCurrent: '', modelSource: '', summary: null,
+  failureTrace: null,
   failureResponse: (readBrowserCache(storageKey('linghuashi-assistant-failure-v1')) || '').slice(0, 100000),
   binding: validBinding(state.assistantBinding) ? state.assistantBinding : null,
   requestId: typeof state.assistantRequestId === 'string' ? state.assistantRequestId : null };
+const firstSuccess = new FirstSuccessVerification();
+let chatObservation = null;
 window.addEventListener('pagehide', () => {
   writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), assistantUI.failureResponse || '');
 });
@@ -462,7 +471,7 @@ const assistantPresetPanel = new AssistantPresetPanel({
   request: (action, value) => assistantHostRequest(action, value, { timeout: 20 }),
   preview: async () => {
     const options = normalizeAssistant(state.assistant), snapshot = captureSnapshot(state);
-    const context = await assistantHostRequest('context', { binding: assistantUI.binding,
+    const context = await assistantHostRequest('context', { binding: assistantUI.binding, inputOnly: options.inputOnly && Boolean(state.assistantInput.trim()),
       contextSelection: assistantContextPanel.selection }, { timeout: 20 });
     context.characterScene = state.characterSceneOverride ? snapshot.characterScene
       : resolveCharacterScene(state.characterProfiles, context.chatKey, context.characterAvatars);
@@ -498,7 +507,7 @@ const taskPromptPanel = new TaskPromptPanel({
       base = imageEditMessages(snapshot, '在此填入单图修改要求', options);
       note = '当前生图参数 · 修改要求为占位内容';
     } else {
-      const context = await assistantHostRequest('context', { binding: assistantUI.binding,
+      const context = await assistantHostRequest('context', { binding: assistantUI.binding, inputOnly: options.inputOnly && operation !== 'illustrate',
         contextSelection: assistantContextPanel.selection }, { timeout: 20 });
       context.characterScene = state.characterSceneOverride ? snapshot.characterScene
         : resolveCharacterScene(state.characterProfiles, context.chatKey, context.characterAvatars);
@@ -520,7 +529,7 @@ const assistantWorkflowPanel = new AssistantWorkflowPanel({
 });
 const assistantDiagnosticPanel = new AssistantDiagnosticPanel({
   release: RELEASE, settings: () => state.assistant,
-  hasFailure: () => Boolean(assistantUI.failureResponse),
+  hasFailure: (trace) => trace === assistantUI.failureTrace && Boolean(assistantUI.failureResponse),
   preview: () => assistantPresetPanel.click('preview'),
   failure: () => {
     const details = host?.querySelector('[data-assistant-failure]');
@@ -597,7 +606,8 @@ const assistantScenePanel = new AssistantScenePanel({
   },
 });
 const profileUI = { scope: 'global', draft: structuredClone(state.characterProfiles.profiles[0] || null),
-  characters: [], dirty: false, busy: false, error: '' };
+  characters: [], dirty: false, busy: false, error: '', outfitDrafts: {} };
+const outfitDraftSessions = new OutfitDraftSessions();
 const profileAI = new ProfileAIPanel({
   library: () => state.characterProfiles,
   settings: () => normalizeAssistant(state.assistant),
@@ -618,7 +628,7 @@ const profileAI = new ProfileAIPanel({
       let rows;
       try { rows = parse(raw); }
       catch (error) {
-        if (typeof raw === 'string' && raw.length <= 100000) {
+        if (!assistantUI.error && typeof raw === 'string' && raw.length <= 100000) {
           assistantUI.failureResponse = raw;
           writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), raw);
         }
@@ -659,7 +669,10 @@ const taskQueue = new GenerationQueue({
     if (job) runtimeState = ({ queued: 'queued', running: 'generating', completed: 'success', failed: 'error', cancelled: 'ready', paused: 'ready', uncertain: 'error' })[job.status] || 'ready';
     if (job?.savedIds?.some((id) => drawings.some((row) => row.id === id))
       && !['queued', 'running'].includes(job.status)) runtimeState = 'success';
-    for (const item of taskQueue.jobs) reportChatTask(item);
+    for (const item of taskQueue.jobs) {
+      reportChatTask(item);
+      firstSuccess.update(item.id, item.status, item.failurePhase || item.phase);
+    }
     externalTaskService.report(chatPost);
     try {
       const comicUpdate = reconcileComicJobs(state.comicLibrary, taskQueue.jobs);
@@ -790,6 +803,8 @@ const backupPanel = new BackupPanel({
     } catch (error) { state = previous; await restoreCredentials(); throw error; }
     artistUI.draft = structuredClone(state.artistLibrary[0] || null); artistUI.dirty = false;
     profileUI.draft = structuredClone(state.characterProfiles.profiles[0] || null); profileUI.dirty = false;
+    outfitDraftSessions.clear();
+    comicPanel.outfitDrafts = {};
     generationVerified = null; resetConnection(); advancedPanel.resetMask();
     comicPanel.leave(); comicPanel.candidate = null; comicPanel.confirm = null;
     assistantUI.binding = null; assistantUI.requestId = null;
@@ -826,7 +841,7 @@ const settingsResetPanel = new SettingsResetPanel({
       try { persist(); } catch {}
       throw error;
     }
-    if (scopes.includes('generation')) advancedPanel.resetMask();
+    if (scopes.includes('generation')) { advancedPanel.resetMask(); outfitDraftSessions.clear(); }
     if (scopes.includes('assistant')) {
       taskPromptPanel.close();
       taskPromptPanel.drafts.clear(); taskPromptPanel.baselines.clear();
@@ -913,7 +928,6 @@ const comicPanel = new ComicPanel({
   },
   navigate: (page) => openWorkflowPage(page, 'comic'),
   editRules: () => taskPromptPanel.open('comic'),
-  diagnostic: () => assistantDiagnosticPanel.traces.find((trace) => trace.record.operation === 'comic')?.report(),
   inspectModel: async () => {
     const result = await assistantHostRequest('models', { refresh: false }, { timeout: 20 });
     assistantUI.tavernCurrent = result.current || '';
@@ -933,7 +947,7 @@ const comicPanel = new ComicPanel({
       signal.throwIfAborted(); trace.step('parse');
       const result = parseComicStoryboard(raw, project);
       trace.finish(null, result.panels.length); return result;
-    } catch (error) { trace.finish(error); throw error; }
+    } catch (error) { trace.finish(error); error.assistantReport = trace.report(); throw error; }
     finally { assistantUI.busy = false; }
   },
   previewBudget: async (project) => {
@@ -953,7 +967,7 @@ const comicPanel = new ComicPanel({
       signal.throwIfAborted(); trace.step('parse');
       const result = parseComicPanelRewrite(raw, project, panelId, locks);
       trace.finish(null, 1); return result;
-    } catch (error) { trace.finish(error); throw error; }
+    } catch (error) { trace.finish(error); error.assistantReport = trace.report(); throw error; }
     finally { assistantUI.busy = false; }
   },
   submit: enqueueComicPanels,
@@ -1183,6 +1197,7 @@ function setupReadiness() {
   const params = provider === 'comfyui' ? state.comfyui.params : state[provider];
   const route = provider === 'novelai' ? resolveNovelAIService(current.key, current.endpoint) : null;
   return {
+    verification: firstSuccess.result(verificationContext(), state.experience.goal === 'chat'),
     image: imageReadiness({ provider, endpoint: provider === 'openai' ? state.openaiEndpoint : current.endpoint,
       hasKey: Boolean(current.key.trim()), auth: current.auth, enabled: state.enabled, model: params.model || '',
       credentialError: cs.error ? cs.message : cs.dirty ? '秘钥正在保存，请稍候' : '',
@@ -1191,12 +1206,29 @@ function setupReadiness() {
     assistant: assistantReadiness({ ...state.assistant, hasKey: Boolean(assistantUI.key.trim()),
       model: state.assistant.source === 'api' ? state.assistant.model : state.assistant.tavernModel,
       tavernCurrent: assistantUI.tavernCurrent, installed: isInstalled(), enabled: state.enabled,
-      modelSource: assistantUI.models.length ? assistantUI.modelSource : '', modelsError: assistantUI.modelsError,
+      modelSource: assistantUI.models.length ? assistantUI.modelSource : '', models: assistantUI.models, modelsError: assistantUI.modelsError,
       busy: assistantUI.busy, succeeded: verifiedAssistant.has(assistantReadyIdentity()),
       credentialError: assistantUI.keyError ? assistantUI.keyStatus : '' }),
     storage: storageReadiness({ location: state.cacheLocation, installed: isInstalled(), loading: drawingUI.loading,
-      error: drawingUI.error }),
+      error: drawingUI.error, written: firstSuccess.storageWritten(storageVerificationContext()) }),
   };
+}
+
+function verificationContext(plan) {
+  const image = plan ? JSON.stringify([plan.provider, plan.url, plan.model, plan.headers.Authorization || '']) : currentImageReceipt();
+  return JSON.stringify([image, plan?.storageLocation || state.cacheLocation, plan?.chatBinding?.chatKey || currentChat().key]);
+}
+function storageVerificationContext(location = state.cacheLocation) {
+  return JSON.stringify([currentAccount(), location]);
+}
+function refreshFirstSuccess() {
+  const node = host?.querySelector('[data-first-success-root]');
+  if (!node) return;
+  const result = firstSuccess.result(verificationContext(), state.experience.goal === 'chat');
+  const signature = JSON.stringify([result, state.experience.goal]);
+  if (node.dataset.signature !== signature) {
+    node.dataset.signature = signature; node.innerHTML = renderFirstSuccess(result, state.experience.goal); paintIcons(node);
+  }
 }
 
 function setupSummary() {
@@ -1255,6 +1287,7 @@ function primaryPageAction() {
       currentAssistantPlan()?.positive.trim() ? 'assistant-draw' : 'assistant-generate', 'primary',
       `aria-label="${currentAssistantPlan()?.positive.trim() ? '快捷生成图片' : '快捷生成提示词'}" ${!state.enabled ? 'disabled' : ''}`);
   }
+  if (state.page === 'comic' && comicPanel.tab === 'read') return '';
   if (state.page === 'comic') return guideCommand('comic-next', '继续当前步骤', 'arrow-right',
     comicPanel.busy || comicPanel.submitting ? 'disabled' : '');
   if (state.page === 'connection') return guideCommand('image-test', '测试连接', 'plug', `aria-label="快捷测试连接" ${connectionController ? 'disabled' : ''}`);
@@ -1269,6 +1302,8 @@ function openWorkflowPage(page, from = state.page) {
 function revealSetting(selector) {
   const node = host?.querySelector(selector);
   if (!node) return;
+  if (node.tagName === 'DETAILS') node.open = true;
+  node.querySelector(':scope > details')?.setAttribute('open', '');
   for (let parent = node.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
   node.scrollIntoView({ block: 'start' });
 }
@@ -1292,6 +1327,11 @@ async function guideAction(action, buttonNode) {
   }
   if (action === 'assistant') { openWorkflowPage('assistant'); revealSetting('.assistant-configuration'); return; }
   if (action === 'assistant-config') { if (state.page !== 'assistant') openWorkflowPage('assistant'); revealSetting('.assistant-configuration'); return; }
+  if (action === 'outfit-settings') {
+    if (state.page !== 'generate') openWorkflowPage('generate');
+    revealSetting('.character-selection');
+    host?.querySelector('[data-outfit-field="prompt"]')?.focus({ preventScroll: true }); return;
+  }
   if (action === 'assistant-models') { await fetchAssistantModels(false); refreshSetupSummary(); return; }
   if (action === 'image-test') { await checkConnection(true); return; }
   if (action === 'storage-settings' || action === 'chat-settings' || action === 'backup-settings') {
@@ -1318,10 +1358,18 @@ async function guideAction(action, buttonNode) {
     return;
   }
   if (action === 'assistant-diagnostic') {
-    assistantDiagnosticPanel.open = true; assistantDiagnosticPanel.render();
+    if (!assistantDiagnosticPanel.focus(assistantUI.failureTrace)) {
+      toast('此失败没有保留调用诊断，请重新执行后查看'); return;
+    }
     revealSetting('[data-assistant-diagnostic-root]'); return;
   }
   if (action === 'comic-next') await comicPanel.action(comicPanel.project ? 'next' : 'new');
+}
+
+function assistantFailureActions() {
+  return failureActions({ scope: 'assistant', message: assistantUI.error,
+    diagnostic: assistantUI.failureTrace?.report() })
+    .filter((action) => action !== 'assistant-response' || assistantUI.failureResponse);
 }
 
 function syncConnection(provider) {
@@ -1388,7 +1436,9 @@ function refreshAssistantStatus() {
     if (hideEmpty) node.hidden = !value;
   };
   updateText('[data-assistant-key-status]', assistantUI.keyStatus);
-  updateText('[data-assistant-model-status]', assistantUI.modelsBusy ? '正在读取模型列表…' : assistantUI.modelsStatus);
+  const textModel = state.assistant.source === 'api' ? state.assistant.model : state.assistant.tavernModel || assistantUI.tavernCurrent;
+  updateText('[data-assistant-model-status]', assistantUI.modelsBusy ? '正在读取模型列表…'
+    : [textModel ? `当前调用模型：${textModel}` : '', assistantUI.modelsStatus].filter(Boolean).join(' · '));
   updateText('[data-assistant-model-error]', assistantUI.modelsError, true);
   updateText('[data-assistant-error]', assistantUI.error, true);
   const status = host.querySelector('[data-assistant-state]');
@@ -1399,8 +1449,7 @@ function refreshAssistantStatus() {
   }
   const repairs = host.querySelector('[data-assistant-error-actions]');
   if (repairs) {
-    const html = assistantUI.error ? renderFailureActions(failureActions({ scope: 'assistant', message: assistantUI.error })
-      .filter((action) => action !== 'assistant-response' || assistantUI.failureResponse)) : '';
+    const html = assistantUI.error ? renderFailureActions(assistantFailureActions()) : '';
     if (repairs.innerHTML !== html) { repairs.innerHTML = html; paintIcons(repairs); }
   }
   refreshSetupSummary();
@@ -1586,7 +1635,7 @@ async function reanalyzeSelectedScene(instruction, locks) {
   const workspace = structuredClone(assistantWorkspace()), revision = assistantScenePanel.revision();
   const snapshot = captureSnapshot(state), controller = new AbortController();
   const options = normalizeAssistant(state.assistant), trace = assistantDiagnosticPanel.start('polish', options);
-  assistantUI.busy = true; assistantUI.error = ''; assistantUI.controller = controller;
+  assistantUI.busy = true; assistantUI.error = ''; assistantUI.failureTrace = null; assistantUI.controller = controller;
   render(true);
   try {
     await saveAssistantKey();
@@ -1608,7 +1657,7 @@ async function reanalyzeSelectedScene(instruction, locks) {
     const plan = replaceSelectedScene(workspace.plan, workspace.index, result, locks);
     trace.finish(null, 1);
     return { plan, context };
-  } catch (error) { trace.finish(error); throw error; }
+  } catch (error) { trace.finish(error); assistantUI.failureTrace = trace; throw error; }
   finally { assistantUI.busy = false; assistantUI.controller = null; render(true); }
 }
 
@@ -1755,7 +1804,7 @@ async function runPromptAssistant(operation, request) {
   const controller = request?.controller || new AbortController();
   const trace = assistantDiagnosticPanel.start(operation, normalizeAssistant(state.assistant));
   let recoveryContext;
-  assistantUI.busy = true; assistantUI.error = ''; assistantUI.failureResponse = ''; assistantUI.stateWarning = ''; assistantUI.controller = controller;
+  assistantUI.busy = true; assistantUI.error = ''; assistantUI.failureTrace = null; assistantUI.failureResponse = ''; assistantUI.stateWarning = ''; assistantUI.controller = controller;
   writeBrowserCache(storageKey('linghuashi-assistant-failure-v1'), '');
   assistantRecoveryPanel.clear();
   render(true);
@@ -1767,13 +1816,14 @@ async function runPromptAssistant(operation, request) {
     trace.step('context');
     reportChatPreparation(request, 'context');
     const context = await assistantHostRequest('context', { binding: request?.binding, previous: request?.previous,
+      inputOnly: options.inputOnly && operation !== 'illustrate',
       contextSelection: request?.automatic ? null : assistantContextPanel.selection },
       { signal: controller.signal, timeout: options.timeout });
     if (operation === 'illustrate' && !context.target.trim()) throw new Error('请先打开包含角色回复的聊天');
     assistantUI.summary = context.summary;
     trace.context(context.summary);
-    context.characterScene = frozenScene || resolveCharacterScene(profileLibrary,
-      context.chatKey, context.characterAvatars);
+    context.characterScene = options.inputOnly && operation !== 'illustrate' ? { version: 1, chatKey: '', entries: [] }
+      : frozenScene || resolveCharacterScene(profileLibrary, context.chatKey, context.characterAvatars);
     snapshot.characterScene = structuredClone(context.characterScene);
     reportChatPreparation(request, 'preset');
     const messages = await prepareAssistantMessages({ options, operation, input, context, snapshot, signal: controller.signal, trace });
@@ -1821,6 +1871,7 @@ async function runPromptAssistant(operation, request) {
     return { plan, options, snapshot };
   } catch (error) {
     trace.finish(controller.signal.aborted ? new Error('操作已取消') : error);
+    assistantUI.failureTrace = trace;
     if (!controller.signal.aborted && typeof error.assistantResponse === 'string') {
       assistantUI.failureResponse = error.assistantResponse;
       assistantRecoveryPanel.setFailure(error.assistantResponse, recoveryContext || {});
@@ -1904,6 +1955,9 @@ function applyAssistantToParameters() {
   params.positive = ''; params.negative = '';
   if (snapshot.characterScene) delete snapshot.characterScene.applied;
   restoreSnapshot(state, applyAssistantPlan(snapshot, plan, state.assistant));
+  const applied = state.provider === 'comfyui' ? state.comfyui.params : state[state.provider];
+  creationPromptOrigin = { provider: state.provider, label: '与已应用的助手草稿相同',
+    params: { positive: applied.positive, negative: applied.negative } };
   persist(); toast('助手提示词已载入当前生图参数');
 }
 
@@ -2062,10 +2116,29 @@ function renderGenerate() {
         ${renderArtistQuickPick(state)}
         ${experienceFold(state, 'generation-modes', '图生图、局部重绘与参考图', advancedPanel.html(), advancedOf(captureSnapshot(state)).mode !== 'text')}
         ${novelai ? renderNovelAIParameters(state, novelaiAdvancedOpen) : openai ? renderOpenAIParameters(state, openaiModels, openaiAdvancedOpen, { ...openaiModelUI, loading: connectionStatus.tone === 'pending' }) : state.provider === 'sdwebui' ? renderSDWebUIParameters(state, sdwebuiProbe, sdwebuiAdvancedOpen) : renderComfyWorkflow(state, comfyProbe, comfyExpanded)}
-        ${renderCharacterSelection(state, currentChat(), { frozen: Boolean(state.characterSceneOverride?.entries?.length) })}
+        ${renderCharacterSelection(state, currentChat(), { frozen: Boolean(state.characterSceneOverride?.entries?.length), outfitDrafts: profileUI.outfitDrafts })}
+        <div class="assistant-actions">${button('scan-eye', '预览本次生图', 'creation-preview', 'secondary')}${button('sparkles', '用当前提示词构思', 'creation-assistant', 'secondary')}</div>
+        ${renderCreationPreview(creationPreviewState?.preview, creationPreviewState && creationPreviewState.revision !== currentCreationRevision())}
       </section>
       ${renderGenerationResult()}
     </div>${renderTasks()}`;
+}
+
+let creationPreviewState = null;
+let creationPromptOrigin = null;
+function creationSources() {
+  const preset = { novelai: selectedNovelAIPreset, openai: selectedOpenAIPreset,
+    comfyui: selectedComfyPreset, sdwebui: selectedSDWebUIPreset }[state.provider](state);
+  return { preset: { name: preset.name || '默认配置', params: preset.params || preset.config?.params || {} },
+    origin: creationPromptOrigin?.provider === state.provider ? creationPromptOrigin : null };
+}
+function currentCreationRevision() {
+  return creationRevision([captureSnapshot(state), creationSources(), profileUI.outfitDrafts]);
+}
+function refreshCreationPreviewState() {
+  const node = host?.querySelector('[data-creation-preview-state]');
+  if (node && creationPreviewState) node.textContent = creationPreviewState.revision === currentCreationRevision()
+    ? '本地预览 · 尚未提交生图' : '参数已改变，请重新预览';
 }
 
 function renderGenerationResult() {
@@ -2110,6 +2183,7 @@ function refreshBackgroundStatus() {
   const count = host.querySelector('.plugin-nav [data-page="gallery"] small');
   if (count && count.textContent !== String(state.history.length)) count.textContent = String(state.history.length);
   refreshSaveStatus();
+  refreshFirstSuccess();
 }
 
 function taskPhase(phase) {
@@ -2766,17 +2840,113 @@ async function refreshProfileCards() {
   profileUI.busy = true; profileUI.error = '';
   try {
     const data = await assistantHostRequest('characters', {}, { timeout: 20 });
-    profileUI.characters = data.characters;
+    if (!Array.isArray(data?.characters) || data.characters.some((row) => !row
+      || typeof row.avatar !== 'string' || typeof row.name !== 'string')) {
+      throw new Error('酒馆返回的角色列表格式不完整，已有列表已保留，请重新读取');
+    }
+    profileUI.characters = data.characters.slice(0, 1000);
   } catch (error) { profileUI.error = error.message; }
   finally { profileUI.busy = false; render(); }
 }
 
-function saveProfileParticipants(selection) {
+function refreshTemporaryScene(replaceOutfits = []) {
+  const chat = currentChat();
+  const next = reconcileTemporaryScene(state.characterSceneOverride,
+    resolveCharacterScene(state.characterProfiles, chat.key, chat.avatars), replaceOutfits);
+  useLiveCharacterScene();
+  if (next) {
+    state.characterSceneOverride = next;
+    state.characterSceneOverrideProvider = state.provider;
+  }
+}
+
+function saveProfileParticipants(selection, replaceOutfits = []) {
   const key = currentChat().key;
   if (key) state.characterProfiles = updateProfileChat(state.characterProfiles, key, { selection });
   else state.characterProfiles.selection = selection || [];
-  useLiveCharacterScene(); persist();
+  refreshTemporaryScene(replaceOutfits); persist();
   host?.querySelectorAll('[data-profile-auto]').forEach((node) => { node.checked = selection === null; });
+}
+
+function updateProfileParticipant(target) {
+  const temporary = state.characterSceneOverride?.entries.some((entry) => entry.outfitScope === 'once');
+  const chat = currentChat();
+  const scene = temporary ? normalizeCharacterScene(state.characterSceneOverride)
+    : resolveCharacterScene(state.characterProfiles, chat.key, chat.avatars);
+  const entry = scene?.entries.find((item) => item.profileId === target.dataset.profileId);
+  if (!entry) return;
+  entry[target.dataset.participantField] = target.value;
+  if (temporary) {
+    useLiveCharacterScene();
+    delete scene.applied; delete scene.characterPrompts;
+    state.characterSceneOverride = scene; state.characterSceneOverrideProvider = state.provider;
+    persist();
+  } else saveProfileParticipants(scene.entries.map(({ profile, ...item }) => item));
+}
+
+function updateOutfitDraft(target) {
+  const row = target.closest('[data-outfit-row]');
+  if (!row || row.hasAttribute('data-outfit-project')) return false;
+  const id = row.dataset.outfitRow, draft = profileUI.outfitDrafts[id] || {};
+  for (const control of row.querySelectorAll('[data-outfit-field]')) draft[control.dataset.outfitField] = control.value;
+  profileUI.outfitDrafts[id] = draft;
+  const entry = captureSnapshot(state).characterScene?.entries.find((entry) => entry.profileId === id);
+  refreshOutfitDraftFeedback(row, entry, draft);
+  return true;
+}
+
+function applySelectedOutfit(profileId) {
+  const chat = currentChat(), choice = profileUI.outfitDrafts[profileId];
+  if (!choice) throw new Error('请先选择服装方式');
+  if (choice.scope === 'global') {
+    state.characterProfiles = setGlobalOutfit(state.characterProfiles, profileId, choice, randomUUID());
+    refreshTemporaryScene([profileId]); loadProfileDraft();
+  } else {
+    const scene = choice.scope === 'chat' ? resolveCharacterScene(state.characterProfiles, chat.key, chat.avatars)
+      : captureSnapshot(state).characterScene;
+    const next = applySceneOutfit(scene, profileId, choice, choice.scope === 'chat' ? 'chat' : 'once');
+    if (choice.scope === 'chat') {
+      if (!chat.key) throw new Error('请先打开一个聊天');
+      saveProfileParticipants(next.entries.map(({ profile, ...entry }) => entry), [profileId]);
+    } else {
+      useLiveCharacterScene();
+      state.characterSceneOverride = next; state.characterSceneOverrideProvider = state.provider;
+    }
+  }
+  delete profileUI.outfitDrafts[profileId];
+  persist(); render(true);
+  toast(choice.scope === 'global' ? '全局默认服装已保存，已有聊天覆盖保留' : choice.scope === 'chat' ? '已应用到当前聊天' : '已应用到下一次生图');
+}
+
+async function resolvePendingOutfits() {
+  const chat = currentChat(), scene = captureSnapshot(state).characterScene;
+  const choices = pendingOutfitDrafts(scene, profileUI.outfitDrafts);
+  if (!choices.length) return true;
+  const revision = JSON.stringify([chat.key, state.provider, scene, state.characterProfiles, profileUI.outfitDrafts]);
+  const decision = await confirmOutfitDrafts(choices);
+  if (decision === 'cancel') return false;
+  if (revision !== JSON.stringify([currentChat().key, state.provider, captureSnapshot(state).characterScene,
+    state.characterProfiles, profileUI.outfitDrafts])) throw new Error('角色或服装配置已变化，请重新生成');
+  if (decision === 'original') return true;
+  const next = prepareOutfitDrafts({ library: state.characterProfiles, scene, chatKey: chat.key, avatars: chat.avatars }, choices, randomUUID);
+  const previous = { characterProfiles: state.characterProfiles, characterSceneOverride: state.characterSceneOverride,
+    characterSceneOverrideProvider: state.characterSceneOverrideProvider };
+  Object.assign(state, { characterProfiles: next.library, characterSceneOverride: next.scene, characterSceneOverrideProvider: state.provider });
+  try { persist(); } catch (error) { Object.assign(state, previous); throw error; }
+  for (const row of choices) delete profileUI.outfitDrafts[row.profileId];
+  loadProfileDraft(); return 'applied';
+}
+
+function consumeTemporaryOutfits(submitted) {
+  const current = state.characterSceneOverride;
+  const temporary = current?.entries.filter((entry) => entry.outfitScope === 'once') || [];
+  if (!temporary.length || !temporary.every((entry) => {
+    const used = submitted?.entries.find((row) => row.profileId === entry.profileId);
+    return used?.outfitScope === 'once' && used.outfitMode === entry.outfitMode
+      && used.outfitId === entry.outfitId && used.outfitPrompt === entry.outfitPrompt;
+  })) return;
+  useLiveCharacterScene();
+  try { persist(); } catch (error) { toast(`任务已保存，临时服装清理未同步：${error.message}`); }
 }
 
 function setProfileParticipant(profileId, checked) {
@@ -3006,11 +3176,11 @@ function refreshUpdateNavigation() {
 }
 
 function renderConsole() {
+  profileUI.outfitDrafts = outfitDraftSessions.forChat(currentChat().key || '');
   const readiness = setupReadiness();
   const renderer = { settings: () => renderSettings(state, backupPanel.html() + recoveryPanel.html(), renderStartGuide(state, readiness)), assistant: () => renderAssistant(state, assistantUI, assistantPresetPanel.html(), assistantWorkflowPanel.html(),
     { status: readinessBadge(readiness.assistant, `data-assistant-state="${assistantUI.busy}"`),
-      repairs: renderFailureActions(failureActions({ scope: 'assistant', message: assistantUI.error })
-        .filter((action) => action !== 'assistant-response' || assistantUI.failureResponse)),
+      repairs: renderFailureActions(assistantFailureActions()),
       prompts: taskPromptPanel.entry(), schemes: assistantSchemePanel.html(), diagnostics: assistantDiagnosticPanel.html(), lint: assistantLintPanel.html(),
       history: assistantHistoryPanel.html(), recovery: assistantRecoveryPanel.html(), context: assistantContextPanel.html(),
       scene: assistantScenePanel.html(), compatibility: renderAssistantCompatibility(state, assistantUI), budget: renderAssistantBudget(assistantUI.budget) }), comic: () => comicPanel.html(), reader: () => readerPanel.html(), generate: renderGenerate, batch: () => workbenchPanel.html() + renderTasks(), connection: renderConnection, characters: renderCharacters, styles: renderStyles, tags: () => tagPanel.html(), gallery: renderGallery, components: () => componentsPanel.html(), debug: () => debugToolsPanel.html(), changelog: () => changelogPanel.html() }[state.page] || (() => renderSettings(state, backupPanel.html()));
@@ -3020,7 +3190,7 @@ function renderConsole() {
   const sessionCount = isInstalled() ? currentChat().count : 12;
   return `<div class="plugin-shell">
     <header class="plugin-header"><div class="plugin-brand"><span class="brand-mark">${pluginIcon(state.characterTheme)}</span><div class="brand-copy"><strong>${esc(config.name)}</strong><span class="brand-subtitle">一款对萌新友好的生图扩展插件，愿世间充满和平友爱~</span></div></div><div class="plugin-header-right"><span class="session-label">${icon('message-square')}<span class="session-name" title="${sessionName}">${sessionName}</span></span>${iconButton('circle-help', '使用引导', 'start-guide')}${iconButton('more-horizontal', '更多操作', 'more')}</div></header>
-    <div class="plugin-body"><nav class="plugin-nav" aria-label="插件导航"><span class="nav-caption">工作空间</span>${navigation.map((item) => `<button type="button" data-page="${item.id}" class="${navigationPage === item.id ? 'active' : ''}" aria-current="${navigationPage === item.id ? 'page' : 'false'}">${icon(item.icon)}<span>${item.title}</span>${item.id === 'gallery' ? `<small>${state.history.length}</small>` : item.id === 'changelog' ? '<span class="nav-update-alert" data-release-nav-badge aria-hidden="true" hidden>!</span>' : ''}</button>`).join('')}<div class="nav-bottom"><span class="connection-dot"></span><span>生图工坊</span><small>${RELEASE.version}</small></div></nav><main class="plugin-content">${configCacheAvailable ? '' : `<p class="configuration-cache-status" role="status">${icon('database')}<span>${isInstalled() ? '浏览器设置缓存不可用；配置将继续同步到当前酒馆账号。' : '浏览器设置缓存不可用；本次修改仅在当前页面保留，请导出备份。'}</span></p>`}${setupPage ? experienceToolbar() + `<div data-setup-root>${renderReadiness(readiness, setupSummary(), setupExpanded)}</div>` : ''}${renderer()}</main></div>
+    <div class="plugin-body"><nav class="plugin-nav" aria-label="插件导航"><span class="nav-caption">工作空间</span>${navigation.map((item) => `<button type="button" data-page="${item.id}" class="${navigationPage === item.id ? 'active' : ''}" aria-current="${navigationPage === item.id ? 'page' : 'false'}">${icon(item.icon)}<span>${item.title}</span>${item.id === 'gallery' ? `<small>${state.history.length}</small>` : item.id === 'changelog' ? '<span class="nav-update-alert" data-release-nav-badge aria-hidden="true" hidden>!</span>' : ''}</button>`).join('')}<div class="nav-bottom"><span class="connection-dot"></span><span>生图工坊</span><small>${RELEASE.version}</small></div></nav><main class="plugin-content">${configCacheAvailable ? '' : `<p class="configuration-cache-status" role="status">${icon('database')}<span>${isInstalled() ? '浏览器设置缓存不可用；配置将继续同步到当前酒馆账号。' : '浏览器设置缓存不可用；本次修改仅在当前页面保留，请导出备份。'}</span></p>`}${setupPage ? experienceToolbar() + `<div data-setup-root>${renderReadiness(readiness, setupSummary(), setupExpanded)}</div>` : ''}${renderCreationModes(state.page)}${renderer()}</main></div>
     <footer class="plugin-bottom"><span>${icon(state.enabled ? 'circle-check' : 'circle')}${!state.enabled ? '插件已关闭' : state.page === 'generate' ? GENERATION_MODES.find((mode) => mode.id === state.provider)?.title || '自定义接口' : '配置已载入'}</span><div class="bottom-actions"><span>当前会话 · ${sessionCount} 条消息</span>${workflowReturn ? guideCommand('return', workflowReturn.label, 'arrow-left') : ''}<div data-page-primary>${primaryPageAction()}</div></div></footer>
   </div>`;
 }
@@ -3228,6 +3398,15 @@ export function showSettings() {
   }
 }
 
+function revealActiveNavigation() {
+  const nav = host?.querySelector('.plugin-nav'), selected = nav?.querySelector('[aria-current="page"]');
+  if (!nav || !selected || nav.scrollWidth <= nav.clientWidth) return;
+  const box = nav.getBoundingClientRect(), active = selected.getBoundingClientRect();
+  if (active.left < box.left) nav.scrollLeft += active.left - box.left - 8;
+  else if (active.right > box.right) nav.scrollLeft += active.right - box.right + 8;
+}
+window.addEventListener('resize', () => requestAnimationFrame(revealActiveNavigation));
+
 export function showPage(page) {
   if (page === 'updates') {
     releasePanel.open = true;
@@ -3240,7 +3419,7 @@ export function showPage(page) {
   if (state.page === 'comic' && page !== 'comic') comicPanel.leave();
   if (page === 'changelog' && releasePanel.hasUpdate) releasePanel.open = true;
   state.page = page;
-  persist(); render(page === 'assistant');
+  persist(); render(page === 'assistant'); revealActiveNavigation();
   if (page === 'assistant' && assistantPresetPanel.ui.loaded && isInstalled()) void assistantPresetPanel.refresh();
   if (page === 'assistant' && state.assistant.source === 'tavern' && isInstalled()) void fetchAssistantModels(false);
   if (page === 'characters') void refreshProfileCards();
@@ -3574,7 +3753,11 @@ function showDrawingViewer() {
     viewerUI.compareId = viewerUI.versions.find((row) => row.id !== item.id)?.id || '';
   }
   const overlay = document.getElementById('overlay-root');
-  overlay.innerHTML = renderDrawingViewer(item, viewerUI.index, viewerUI.ids.length, viewerUI);
+  const snapshot = captureSnapshot(state), params = snapshot.params || snapshot.config.params;
+  const caps = modelCapabilities(snapshot.provider, params.model, advancedOf(snapshot));
+  overlay.innerHTML = renderDrawingViewer(item, viewerUI.index, viewerUI.ids.length, { ...viewerUI,
+    sourceEnabled: Boolean(caps.image), referenceEnabled: snapshot.provider === 'novelai'
+      ? Boolean(caps.vibe || caps.character) : snapshot.provider === 'openai' && Boolean(caps.image) });
   const dialog = overlay.querySelector('dialog');
   dialog.addEventListener('close', () => dialog.remove(), { once: true });
   paintIcons(); dialog.showModal();
@@ -3627,6 +3810,9 @@ function openImageEditor(item) {
 async function attachEditorSource(mode) {
   const ui = imageEditorUI;
   if (!ui) return;
+  if (!imageEditAvailability(ui.draft)[mode]) {
+    ui.error = '当前模型或接口未开放此图片编辑能力，请先选择支持的接口和模型'; showImageEditor(); return;
+  }
   await editorAdvancedPanel.perform(async () => {
     await editorAdvancedPanel.attach('source', await materializeReferenceDrawing(ui.id));
     if (imageEditorUI !== ui) return;
@@ -3704,6 +3890,12 @@ async function useViewerReference(kind) {
   const row = viewedDrawing();
   if (!row) return;
   try {
+    const current = captureSnapshot(state), params = current.params || current.config.params;
+    const caps = modelCapabilities(current.provider, params.model, advancedOf(current));
+    if (kind === 'source' ? !caps.image : current.provider === 'novelai' ? !caps.vibe && !caps.character
+      : current.provider !== 'openai' || !caps.image) {
+      throw new Error('当前模型或接口未开放此参考能力，请在接口配置选择支持的接口和模型');
+    }
     const image = await materializeReferenceDrawing(row.id);
     closeDrawingViewer();
     const snapshot = captureSnapshot(state), advanced = advancedOf(snapshot);
@@ -3996,6 +4188,8 @@ async function runGeneration(job) {
       }
       job.rows = rows;
     }
+    if (job.rows.length) firstSuccess.mark(job.id, 'generated');
+    refreshFirstSuccess();
     if (job.plan.provider === 'openai') generationVerified = job.plan.identity;
     job.controller.signal.throwIfAborted();
     job.failurePhase = 'saving';
@@ -4003,6 +4197,9 @@ async function runGeneration(job) {
     await drawingLibrary.add(job.rows, job.plan.storageLocation, { requestId: job.plan.chatRequestId });
     job.saved = true; job.imageCount = job.rows.length;
     job.savedIds = job.rows.map((row) => row.id);
+    firstSuccess.mark(job.id, 'saved', job.savedIds);
+    if (chatObservation?.chatKey === currentChat().key) firstSuccess.inserted(verificationContext(), chatObservation.inserted);
+    refreshFirstSuccess();
   }
   activeDrawingId = job.savedIds[0];
   if (job.plan.provider === 'openai' && state.provider === 'openai' && openAIGenerationVerified()) {
@@ -4064,6 +4261,13 @@ async function validateChatRequest(request) {
 
 export function receiveChatCommand(data) {
   if (!isInstalled()) return;
+  if (data.type === 'linghuashi:chat-observed') {
+    if (data.chatKey !== currentChat().key || !Array.isArray(data.recognized) || !Array.isArray(data.inserted)) return;
+    chatObservation = { chatKey: data.chatKey, inserted: data.inserted.slice(0, 100) };
+    firstSuccess.recognize(verificationContext(), data.recognized);
+    firstSuccess.inserted(verificationContext(), chatObservation.inserted);
+    refreshFirstSuccess(); return;
+  }
   if (data.type === 'linghuashi:chat-task-records') {
     showPage('generate'); revealSetting('.generation-tasks');
     void refreshTasks(); return;
@@ -4395,6 +4599,8 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
   if (workbenchPanel.ui.busy) { report('failed', '正在保存组合任务，请稍后提交'); return; }
   if (!state.enabled) { report('cancelled'); return; }
   if (drawingUI.loading || !drawingLibrary.db) { report('failed', '图片存储尚未准备好，请稍后重试'); return; }
+  const outfitDecision = !request && !imageEdit ? await resolvePendingOutfits() : true;
+  if (!outfitDecision) return;
   const storageLocation = imageEdit?.storageLocation || request?.storageLocation || state.cacheLocation;
   if (storageLocation === 'server') {
     try { await drawingLibrary.list('server'); }
@@ -4403,7 +4609,10 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
   let snapshot = imageEdit ? structuredClone(imageEdit.snapshot)
     : request?.assistantSnapshot ? structuredClone(request.assistantSnapshot) : captureSnapshot(state);
   delete snapshot.extensionRequest;
-  const assistantPlan = request?.assistantPlan || assistantResult?.plan;
+  let assistantPlan = request?.assistantPlan || assistantResult?.plan;
+  if (assistantPlan && outfitDecision === 'applied') assistantPlan = {
+    ...structuredClone(assistantPlan), characterScene: structuredClone(snapshot.characterScene),
+  };
   if (assistantPlan) {
     try {
       snapshot = applyAssistantPlan(snapshot, assistantPlan, request?.assistantOptions || assistantResult?.options || state.assistant);
@@ -4461,6 +4670,9 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
       plan.chatBinding = request.binding;
     }
     const record = await taskPersistence.create(plan);
+    firstSuccess.begin(verificationContext(plan), { id: record.id, storageContext: storageVerificationContext(plan.storageLocation), bindingId: request?.binding?.id || '',
+      requestId: request?.requestId || '' });
+    if (!imageEdit) consumeTemporaryOutfits(snapshot.characterScene);
     const job = taskQueue.add(plan, { id: record.id });
     if (request) request.jobId = job.id;
     activeJobId = job.id;
@@ -4477,6 +4689,9 @@ async function enqueueBatch(preview) {
   const ids = [], plans = [];
   if (!state.enabled || backupPanel.ui.restoring) throw new Error('请先启用插件并完成配置恢复');
   if (!preview?.rows?.length || preview.rows.length > BATCH_LIMIT) throw new Error('请先预览组合');
+  const outfits = await resolvePendingOutfits();
+  if (!outfits) return { ids: [], error: '已取消，尚未提交组合生图' };
+  if (outfits === 'applied') throw new Error('服装已应用，请重新预览组合后再生成');
   await libraryReady; await tasksReady;
   if (!drawingLibrary.db || drawingUI.loading) throw new Error('图片存储尚未准备好');
   if (taskQueue.jobs.filter((job) => ['queued', 'running'].includes(job.status)).length + preview.rows.length > BATCH_LIMIT) {
@@ -4508,6 +4723,7 @@ async function enqueueBatch(preview) {
   try {
     for (const plan of plans) {
       const record = await taskPersistence.create(plan);
+      firstSuccess.begin(verificationContext(plan), { id: record.id, storageContext: storageVerificationContext(plan.storageLocation) });
       created.push({ plan, id: record.id }); ids.push(record.id);
     }
   } catch (error) {
@@ -4519,6 +4735,7 @@ async function enqueueBatch(preview) {
     return { ids, error: '配置发生变化，任务已保存为等待继续，请在任务记录中核对' };
   }
   for (const row of created) taskQueue.add(row.plan, { id: row.id, defer: true });
+  consumeTemporaryOutfits(preview.rows[0].snapshot.characterScene);
   activeJobId = ids[0]; taskQueue.pump(); render();
   return { ids };
 }
@@ -4550,6 +4767,7 @@ async function enqueueComicPanels(project, panelIds, token) {
     for (const row of plans) {
       if (prepared.signature !== signature()) throw new Error('生图配置发生变化');
       const record = await taskPersistence.create(row.plan);
+      firstSuccess.begin(verificationContext(row.plan), { id: record.id, storageContext: storageVerificationContext(row.plan.storageLocation) });
       created.push({ ...row, id: record.id });
     }
   } catch (error) { failure = error; }
@@ -4676,9 +4894,17 @@ export function mountPlugin(root, next) {
   host.addEventListener('click', async (event) => {
     const target = event.target.closest('button');
     if (!target) return;
+    if (['generate', 'assistant', 'comic'].includes(target.dataset.creationPage)) {
+      pendingSave.flush(); openWorkflowPage(target.dataset.creationPage); return;
+    }
     if (target.dataset.guideAction) {
       try { await guideAction(target.dataset.guideAction, target); } catch (error) { toast(error.message); }
       return;
+    }
+    if (['tags', 'assistant'].includes(target.dataset.guideChatMode)) {
+      state.assistant.autoPrompt = target.dataset.guideChatMode === 'assistant';
+      state.auto = true; state.inline = true; state.experience.completed = false;
+      persist(); render(true); return;
     }
     if (START_GOALS.some(([id]) => id === target.dataset.guideGoal)) {
       state.experience.goal = target.dataset.guideGoal; state.experience.completed = false;
@@ -5013,6 +5239,34 @@ export function mountPlugin(root, next) {
       case 'nai-random-seed':
         state.novelai.seed = crypto.getRandomValues(new Uint32Array(1))[0]; commitNovelAIFields(); break;
       case 'generate': generate(); break;
+      case 'profile-apply-outfit':
+        try {
+          if (profileUI.dirty) throw new Error('角色档案还有未保存修改，请先保存或撤销');
+          updateOutfitDraft(target);
+          applySelectedOutfit(target.dataset.profileId);
+        } catch (error) { toast(error.message); }
+        break;
+      case 'profile-discard-outfit':
+        delete profileUI.outfitDrafts[target.dataset.profileId];
+        render(true); break;
+      case 'creation-preview':
+        try {
+          pendingSave.flush();
+          const snapshot = captureSnapshot(state);
+          creationPreviewState = { revision: currentCreationRevision(), preview: previewCreation(snapshot, {
+            ...creationSources(), pendingOutfits: pendingOutfitDrafts(snapshot.characterScene, profileUI.outfitDrafts).map((row) => row.name),
+          }) };
+          render(true); revealSetting('.creation-preview');
+        } catch (error) { toast(error.message); }
+        break;
+      case 'creation-assistant': {
+        const snapshot = captureSnapshot(state), params = snapshot.params || snapshot.config.params;
+        if (!state.assistantInput.trim() && !state.assistantDraft) {
+          state.assistantInput = snapshot.characterScene?.applied ? snapshot.characterScene.basePositive : params.positive;
+          persist();
+        } else toast('助手已有草稿，已保留原内容');
+        openWorkflowPage('assistant', 'generate'); revealSetting('[data-assistant-input]'); break;
+      }
       case 'clear-cache':
         deleteDrawingsDialog(drawings.map((item) => item.id), state.cacheLocation === 'server' ? '清空服务器图片' : '清空浏览器图片'); break;
       case 'cancel': taskQueue.cancel(activeJobId); toast('已停止等待或取图；服务已开始的生成可能继续运行'); break;
@@ -5136,6 +5390,8 @@ export function mountPlugin(root, next) {
     }
   });
   host.addEventListener('input', (event) => {
+    if (creationPreviewState) queueMicrotask(refreshCreationPreviewState);
+    if (event.target.dataset.outfitField && updateOutfitDraft(event.target)) return;
     if (event.target.dataset.artistField && artistUI.draft) {
       artistUI.draft[event.target.dataset.artistField] = event.target.type === 'checkbox' ? event.target.checked : event.target.value;
       artistUI.dirty = true; return;
@@ -5156,10 +5412,7 @@ export function mountPlugin(root, next) {
       return;
     }
     if (event.target.dataset.participantField && event.target.tagName !== 'SELECT') {
-      const chat = currentChat(), scene = resolveCharacterScene(state.characterProfiles, chat.key, chat.avatars);
-      const selection = scene.entries.map(({ profile, ...entry }) => entry);
-      const entry = selection.find((item) => item.profileId === event.target.dataset.profileId);
-      if (entry) { entry[event.target.dataset.participantField] = event.target.value; saveProfileParticipants(selection); }
+      updateProfileParticipant(event.target);
       return;
     }
     if (event.target.dataset.assistantCharacter && state.assistantDraft) {
@@ -5327,6 +5580,11 @@ export function mountPlugin(root, next) {
     }
   }, true);
   host.addEventListener('change', async (event) => {
+    if (creationPreviewState) queueMicrotask(refreshCreationPreviewState);
+    if (event.target.dataset.outfitField && updateOutfitDraft(event.target)) {
+      if (event.target.tagName === 'SELECT') render(true);
+      return;
+    }
     if (event.target.dataset.drawingExport) {
       drawingUI.exportOptions[event.target.dataset.drawingExport] = event.target.value;
       return;
@@ -5382,9 +5640,7 @@ export function mountPlugin(root, next) {
         } else if (event.target.hasAttribute('data-profile-participant')) {
           setProfileParticipant(event.target.dataset.profileParticipant, event.target.checked);
         } else if (event.target.tagName === 'SELECT') {
-          const chat = currentChat(), selection = resolveCharacterScene(state.characterProfiles, chat.key, chat.avatars).entries.map(({ profile, ...entry }) => entry);
-          const entry = selection.find((item) => item.profileId === event.target.dataset.profileId);
-          if (entry) { entry[event.target.dataset.participantField] = event.target.value; saveProfileParticipants(selection); }
+          updateProfileParticipant(event.target);
         }
       } catch (error) { toast(error.message); }
       render(state.page === 'assistant'); return;

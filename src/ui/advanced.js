@@ -6,6 +6,7 @@ import { normalizeReferenceImage, assetBase64, assetBytes } from '../reference-a
 import { COMFY_TEMPLATES, comfyTemplate, comfyLoras, addComfyLora, removeComfyLora } from '../comfy-advanced.js';
 import { newComfyConfig, normalizeComfyParams, autoMapWorkflow } from './comfyui.js';
 import { searchVibes, saveVibe } from '../vibe-library.js';
+import { isNovelAIV5 } from '../novelai-models.js';
 
 const button = (glyph, label, command, attributes = '') => `<button type="button" class="ui-button secondary" data-advanced-command="${command}" ${attributes}>${icon(glyph)}<span>${label}</span></button>`;
 const tool = (glyph, label, command, attributes = '') => `<button type="button" class="ui-icon-button" title="${label}" aria-label="${label}" data-advanced-command="${command}" ${attributes}>${icon(glyph)}</button>`;
@@ -37,7 +38,7 @@ export class AdvancedPanel {
     const modes = ADVANCED_MODES.filter(([mode]) => (mode !== 'upscale' || provider === 'sdwebui')
       && (!['comfyui', 'sdwebui'].includes(provider) || mode !== 'reference'));
     const unsupported = advanced.mode !== 'text' && (['image', 'inpaint', 'upscale'].includes(advanced.mode)
-      ? !caps[advanced.mode] : provider === 'openai' && !caps.image);
+      ? !caps[advanced.mode] : provider === 'novelai' ? advanced.referenceKind === 'character' ? !caps.character : !caps.vibe : provider === 'openai' && !caps.image);
     const references = provider === 'openai' && advanced.mode === 'reference';
     const source = ['image', 'inpaint', 'upscale'].includes(advanced.mode);
     const hasVibes = provider === 'novelai' && advanced.mode === 'reference' && advanced.referenceKind === 'vibe';
@@ -49,6 +50,8 @@ export class AdvancedPanel {
         <div class="advanced-modes" role="group" aria-label="生成方式">${modes.map(([mode, title]) => `<button type="button" data-advanced-mode="${mode}" aria-pressed="${advanced.mode === mode}" ${mode !== 'text'
           && (['image', 'inpaint', 'upscale'].includes(mode) ? !caps[mode] : provider === 'openai' && !caps.image || provider === 'novelai' && !caps.vibe && !caps.character) ? 'disabled' : ''}>${title}</button>`).join('')}</div>
         ${unsupported ? '<p class="advanced-error">当前模型或接口尚未开放所选能力，请切换生成方式。</p>' : ''}
+        ${provider === 'novelai' && isNovelAIV5(params.model) && advanced.mode === 'inpaint' && params.model.endsWith('curated')
+          ? '<p class="advanced-error">V5 Curated 局部重绘将使用官方对应的 V4.5 Curated 修复模型。</p>' : ''}
         ${provider === 'comfyui' ? this.comfyHTML(snapshot.config) : ''}
         ${source ? `<div class="advanced-upload-actions">${button('image-plus', '上传底图', 'source-upload')}${this.gallerySelect()}${advanced.source ? tool('x', '移除底图', 'source-remove') : ''}</div>
           ${advanced.source ? `<div class="advanced-source"><img data-advanced-preview="source" alt="底图预览" /><div><strong>${esc(advanced.source.name)}</strong><span>${advanced.source.width} × ${advanced.source.height}</span>${button('maximize', '使用底图尺寸', 'source-size')}</div></div>` : ''}

@@ -5,6 +5,10 @@ export const START_GOALS = Object.freeze([
   ['chat', '聊天自动配图', 'messages-square'],
   ['comic', '制作漫画', 'panels-top-left'],
 ]);
+export const CHAT_DRAWING_MODES = Object.freeze([
+  ['tags', '世界书提示词块'],
+  ['assistant', '助手分析剧情'],
+]);
 
 export function normalizeExperience(value, existing = false) {
   return {
@@ -54,11 +58,11 @@ export function imageReadiness({ provider, endpoint = '', hasKey, auth = 'none',
 
 export function assistantReadiness({ source = 'tavern', endpoint = '', hasKey, model = '', tavernCurrent = '',
   installed = false, modelSource = '', modelsError = '', busy = false, enabled = true, succeeded = false,
-  credentialError = '' }) {
+  credentialError = '', models = [] }) {
   if (!enabled) return status('missing', '插件已关闭', '在插件设置中启用', 'settings');
   if (busy) return status('checking', '正在处理', '文字任务进行中', 'assistant');
-  if (credentialError) return status('error', '秘钥未保存', credentialError, 'assistant-config');
   if (source === 'api') {
+    if (credentialError) return status('error', '秘钥未保存', credentialError, 'assistant-config');
     if (!validEndpoint(endpoint)) return status('missing', '文字地址未配置', '填写独立 API 地址', 'assistant-config');
     if (!hasKey && !localEndpoint(endpoint)) return status('missing', '文字秘钥未配置', '填写助手 API Key', 'assistant-config');
     if (!model.trim()) return status('missing', '文字模型未选择', '输入模型名称或读取模型列表', 'assistant-config');
@@ -68,23 +72,27 @@ export function assistantReadiness({ source = 'tavern', endpoint = '', hasKey, m
   }
   if (modelsError) return status('error', '模型列表读取异常', modelsError, 'assistant-config', true);
   if (succeeded) return status('ready', '文字调用已验证', '当前配置已成功完成文字任务', 'assistant-config', true);
+  const selected = source === 'api' ? model.trim() : model.trim() || tavernCurrent;
+  if (modelSource === source && models.length && selected && !models.includes(selected)) {
+    return status('unverified', '模型未在列表中', '当前选择不在接口返回的模型列表中，请刷新列表或选择其他模型后验证', 'assistant-models', true);
+  }
   if (modelSource === source) return status('configured', '模型已读取 · 调用待验证', '模型列表不代表文字调用权限已验证', 'assistant-config', true);
   return status('configured', '已配置 · 调用待验证', '提交文字任务后验证实际调用', 'assistant-config', true);
 }
 
-export function storageReadiness({ location = 'browser', loading = false, error = '', installed = false }) {
+export function storageReadiness({ location = 'browser', loading = false, error = '', installed = false, written = false }) {
   if (location === 'server' && !installed) return status('missing', '需要登录酒馆', '服务器存图使用当前酒馆账号', 'storage-settings');
   if (loading) return status('checking', '正在读取', '正在打开图片存储', 'storage-settings');
   if (error) return status('error', '存储暂不可用', error, 'storage-check');
+  if (written) return status('ready', '存图已验证', '本次打开已成功写入当前图片存储', 'gallery', true);
   return status('configured', '图片库可读取', location === 'server' ? '当前酒馆账号 · 尚未进行写入测试' : '当前设备与站点 · 尚未进行写入测试', 'storage-check', true);
 }
 
 export function guideSteps(experience, { image, assistant, storage, chat = {} }) {
   const autoPrompt = chat.assistant?.autoPrompt ?? chat.autoPrompt;
   const steps = [{ id: 'image', label: '配置生图接口', page: 'connection', result: image }];
-  if (['comic', 'chat'].includes(experience.goal)) {
-    steps.push({ id: 'assistant', label: '配置文字模型', page: 'assistant', result: assistant,
-      optional: experience.goal === 'chat' && !autoPrompt });
+  if (experience.goal === 'comic' || experience.goal === 'chat' && autoPrompt) {
+    steps.push({ id: 'assistant', label: '配置文字模型', page: 'assistant', result: assistant });
   }
   if (experience.goal === 'chat') steps.push({ id: 'chat', label: '聊天触发与展示', page: 'chat-settings',
     result: chat.inline && (chat.auto || autoPrompt)
@@ -99,11 +107,20 @@ export function guideStepComplete(row) {
 }
 
 export function failureActions({ scope = 'image', message = '', phase = '', execution = false,
-  saved = false, status: taskStatus = '', stage = '', diagnostic } = {}) {
-  if (scope === 'assistant') return [
-    ...(/JSON|解析|格式|截断|回复|工具|分镜/.test(message) ? ['assistant-response'] : []),
-    'assistant-config', 'assistant-network', 'assistant-diagnostic',
-  ];
+  saved = false, status: taskStatus = '', stage = '', diagnostic, failure } = {}) {
+  if (scope === 'assistant') {
+    const category = failure?.category || diagnostic?.errorCategory || '';
+    if (category === 'cancelled' || category === 'busy') return ['assistant-diagnostic'];
+    if (['authentication', 'permission', 'quota', 'model', 'parameters', 'compatibility', 'preset'].includes(category)) {
+      return ['assistant-config', 'assistant-diagnostic'];
+    }
+    if (category === 'response' || !category && /JSON|解析|格式|截断|回复|工具|分镜/.test(message)) {
+      return ['assistant-response', 'assistant-config', 'assistant-diagnostic'];
+    }
+    if (category === 'rate-limit' || category === 'upstream' || category === 'changed') return ['assistant-diagnostic', 'assistant-config'];
+    return ['assistant-network', 'assistant-config', 'assistant-diagnostic'];
+  }
+  if (/自定义服装提示词|服装库已满|请选择有效服装|全局档案中没有此服装|角色或服装配置已变化/.test(message)) return ['outfit-settings'];
   if (taskCapacityIssue(message)) return ['task-records'];
   const storage = /存储|保存|缓存|配额|磁盘|数据库|图库|缩略图/.test(message)
     || ['saving', 'refreshing', 'response-cache', 'image-processing'].includes(phase);

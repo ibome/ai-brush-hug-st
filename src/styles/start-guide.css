@@ -11,6 +11,9 @@
 .start-goals button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .start-goals button > span { flex: 1; overflow-wrap: anywhere; }
 .start-goals button > svg:last-child:not(:first-child) { width: 14px; }
+.start-chat-modes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.start-chat-modes button { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 12px; border-bottom: 2px solid transparent; }
+.start-chat-modes button[aria-pressed="true"] { border-bottom-color: var(--accent); color: var(--accent); }
 .start-guide-progress { display: flex; align-items: center; gap: 12px; margin: 18px 0 6px; font-size: 12px; color: var(--secondary); }
 .start-guide-progress progress { flex: 1; min-width: 0; height: 6px; accent-color: var(--accent); }
 .start-checklist { padding: 0; margin: 0; list-style: none; }
@@ -87,3 +90,13 @@
 .recovery-row { padding: 12px 0; border-top: 1px solid var(--border); min-width: 0; }
 .recovery-row small { display: block; color: var(--muted); font-weight: 400; margin-top: 4px; }
 .recovery-row pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; font-size: 12px; }
+.first-success { margin-top: 18px; padding: 14px 0; border-top: 1px solid var(--border); min-width: 0; }
+.first-success h3 { font-size: 14px; margin: 0 0 12px; }
+.first-success h3 small { display: block; font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 6px; }
+.first-success ol { padding: 0; margin: 0; list-style: none; }
+.first-success li { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 12px; }
+.first-success li svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.first-success li[data-verified="true"] svg { color: var(--accent); }
+.first-success li span { margin-left: auto; color: var(--muted); flex: none; }
+.first-success p { font-size: 12px; line-height: 1.7; color: var(--secondary); overflow-wrap: anywhere; }
+.first-success .ui-button { margin: 4px 8px 4px 0; max-width: 100%; white-space: normal; }

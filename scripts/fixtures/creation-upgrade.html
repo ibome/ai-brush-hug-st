@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V5 与创作流程隔离验证</title>
+<div id="plugin-root"></div><div id="overlay-root"></div><div id="toast-root" role="status"></div>
+<details id="fixture-report" style="position:fixed;right:0;top:0;z-index:10000;background:white;color:black;max-width:95vw;font-size:11px">
+  <summary>隔离测试报告</summary><label><input id="fixture-text-failure" type="checkbox">模拟文字格式失败</label>
+  <label><input id="fixture-character-failure" type="checkbox">模拟角色列表错误</label>
+  <label>模拟一次存储失败<select id="fixture-storage-failure"><option value="">不模拟</option><option value="save">保存图片失败</option><option value="refresh">保存后刷新失败</option></select></label>
+  <button id="fixture-chat-switch">切换测试聊天</button>
+  <button id="fixture-chat-open">打开模拟聊天</button><pre style="max-height:40vh;overflow:auto;white-space:pre-wrap"></pre>
+</details>
+<section id="fixture-chat-view" hidden style="position:fixed;inset:0;z-index:20000;background:#fff;color:#23443b;padding:20px;overflow:auto;font:14px/1.7 system-ui">
+  <button id="fixture-chat-close">返回插件</button><h1>隔离测试聊天</h1>
+  <div id="chat"><article class="mes" mesid="0"><div class="mes_block"><div class="mes_text"></div><div class="mes_buttons"></div></div></article></div>
+</section>
+<script type="module">
+  import '../../src/styles/plugin.css';
+  import { chatIdentity } from '../../src/chat.js';
+  import { createChatLink } from '../../src/chat-link.js';
+  const fixtureMessage = { mes: '旅行者在花园中读书。image###garden, reading a book###', name: '旅行者', send_date: 'fixture', swipe_id: 0 };
+  const chatContext = { chat: [fixtureMessage], chatId: 'fixture-chat', characterId: 0, characters: [{ avatar: 'fixture.png' }],
+    eventTypes: {}, eventSource: { on() {}, removeListener() {} } };
+  const fixtureChatKey = chatIdentity(chatContext);
+  let activeChatKey = fixtureChatKey;
+  document.querySelector('.mes_text').textContent = fixtureMessage.mes;
+  const account = `creation-upgrade-${crypto.randomUUID()}`, ref = `tavern:${crypto.randomUUID()}`;
+  const profiles = { profiles: [{ id: 'traveler', name: '旅行者', avatar: 'fixture.png', tags: '1girl, black hair',
+    lockOutfit: true, outfits: [{ id: 'white', name: '白裙', prompt: 'white dress' }, { id: 'red', name: '红裙', prompt: 'red dress' }] },
+    { id: 'companion', name: '同行者', avatar: 'companion.png', tags: '1boy, silver hair',
+      outfits: [{ id: 'uniform', name: '制服', prompt: 'black uniform' }] }],
+    selection: [{ profileId: 'traveler' }] };
+  window.__LINGHUASHI_ENV__ = { mode: 'extension', account, chat: { key: fixtureChatKey, name: '隔离测试聊天', count: 1, avatars: ['fixture.png'] },
+    releaseState: { status: 'current', release: null }, ui: {
+      settingsVersion: 1, enabled: true, page: 'generate', confirm: false, cacheLocation: 'browser', provider: 'novelai',
+      experience: { level: 'common', dismissed: false, goal: 'chat' }, characterProfiles: profiles,
+      novelai: { model: 'nai-diffusion-5-full', positive: 'a quiet garden', negative: 'blurry', artist: 'watercolor', width: 832, height: 1216 },
+      assistant: { source: 'api', model: 'fixture-text', endpoint: 'https://fixture.invalid/v1', keyRef: ref, autoPrompt: false },
+      connections: { novelai: { endpoint: 'https://fixture.invalid', keyRef: ref } },
+    } };
+  const { createBrowserTaskRequest } = await import('../../src/task-persistence.js');
+  const { newComicProject } = await import('../../src/comic.js');
+  const { resolveCharacterScene } = await import('../../src/character-profiles.js');
+  const project = newComicProject(resolveCharacterScene(profiles, fixtureChatKey, ['fixture.png']));
+  project.source = '旅行者在花园中读书。';
+  window.__LINGHUASHI_ENV__.ui.comicLibrary = { version: 1, activeId: project.id, projects: [project] };
+  const tasks = createBrowserTaskRequest(`${account}:tasks`);
+  let lastState = window.__LINGHUASHI_ENV__.ui, imageCalls = 0, textCalls = 0, request = null, storedImageWrites = 0, storageFailures = 0;
+  let chatLink, lastObservation;
+  let focused, focusPreserved = true;
+  const canvas = document.createElement('canvas');
+  canvas.width = 128; canvas.height = 128;
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#b7e4d0'; context.fillRect(0, 0, 128, 128);
+  context.fillStyle = '#405d8d'; context.fillRect(40, 25, 48, 78);
+  const png = canvas.toDataURL('image/png').split(',')[1];
+  if (new URLSearchParams(location.search).has('inpaint')) {
+    const { ReferenceAssets } = await import('../../src/reference-assets.js');
+    const assets = new ReferenceAssets(), image = document.createElement('canvas');
+    image.width = 512; image.height = 512;
+    const paint = image.getContext('2d');
+    paint.drawImage(canvas, 0, 0, 512, 512);
+    const save = async (name) => assets.put(await new Promise((resolve) => image.toBlob(resolve, 'image/png')),
+      { name, width: 512, height: 512 });
+    const source = await save('隔离测试底图');
+    paint.fillStyle = 'black'; paint.fillRect(0, 0, 512, 512);
+    paint.fillStyle = 'white'; paint.fillRect(160, 160, 192, 192);
+    const mask = await save('隔离测试蒙版');
+    Object.assign(window.__LINGHUASHI_ENV__.ui.novelai, { model: 'nai-diffusion-5-curated', transparent: true,
+      width: 512, height: 512, advanced: { mode: 'inpaint', source, mask } });
+  }
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (url, options = {}) => {
+    if (!String(url).startsWith('https://fixture.invalid/')) return originalFetch(url, options);
+    if (String(url).endsWith('/chat/completions')) {
+      textCalls++;
+      if (document.querySelector('#fixture-text-failure').checked) return Response.json({ choices: [{ message: { content: 'fixture invalid JSON response' } }] });
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ shouldDraw: true, scene: '花园中读书',
+        positive: 'garden, reading a book', negative: 'blurry', characters: [{ profileId: 'traveler', outfit: 'yellow suit' }] }) } }] });
+    }
+    if (options.method === 'POST') {
+      imageCalls++; request = JSON.parse(options.body);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      return Response.json({ images: [{ image: png }] });
+    }
+    return Response.json({ data: [{ id: 'fixture-text' }] });
+  };
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    let type, value, error;
+    if (data?.type === 'linghuashi:secret-request') {
+      type = 'linghuashi:secret-result'; value = data.action === 'read' ? 'fixture-key' : ref;
+    } else if (data?.type === 'linghuashi:storage-request') {
+      type = 'linghuashi:storage-result';
+      try { value = await tasks(data.action, data.body); } catch (failure) { error = failure.message; }
+    } else if (data?.type === 'linghuashi:state') {
+      type = 'linghuashi:state-result'; lastState = data.ui;
+    } else if (data?.type === 'linghuashi:assistant-request') {
+      type = 'linghuashi:assistant-result';
+      value = data.action === 'context' ? { target: '旅行者在花园中读书。', chatKey: activeChatKey, characterAvatars: ['fixture.png'],
+        messages: [], characters: [], summary: { messages: 1, characters: 1, worldCharacters: 0 }, world: '' }
+        : data.action === 'models' ? { current: 'fixture-text', models: ['fixture-text'], signature: 'fixture' }
+        : data.action === 'characters' && !document.querySelector('#fixture-character-failure').checked
+          ? { characters: [{ avatar: 'fixture.png', name: '旅行者', current: true }] } : {};
+    } else if (['linghuashi:chat-task', 'linghuashi:chat-validate', 'linghuashi:chat-draft', 'linghuashi:chat-draft-submit'].includes(data?.type)) {
+      await chatLink?.receive(data); return;
+    } else if (data?.type === 'linghuashi:images-changed') {
+      chatLink?.refresh(true); return;
+    } else return;
+    window.postMessage({ type, requestId: data.requestId, value, error }, location.origin);
+  });
+  document.addEventListener('input', (event) => {
+    if (event.target.matches('[data-outfit-field="prompt"]')) focused = event.target;
+  });
+  const { normalizeConfig } = await import('../../src/config.js');
+  const { DrawingLibrary } = await import('../../src/ui/drawings.js');
+  const originalAdd = DrawingLibrary.prototype.add, originalList = DrawingLibrary.prototype.list;
+  const storageFailure = (stage) => {
+    const select = document.querySelector('#fixture-storage-failure');
+    if (select.value !== stage) return false;
+    select.value = ''; storageFailures++; return true;
+  };
+  DrawingLibrary.prototype.add = async function (...args) {
+    if (storageFailure('save')) throw new DOMException('隔离测试：模拟存储空间不足', 'QuotaExceededError');
+    const result = await originalAdd.apply(this, args);
+    storedImageWrites++; return result;
+  };
+  DrawingLibrary.prototype.list = async function (mode, refresh) {
+    if (refresh && storedImageWrites > 0 && storageFailure('refresh')) throw new Error('隔离测试：模拟已保存图片刷新失败');
+    return originalList.call(this, mode, refresh);
+  };
+  const { mountPlugin, restoreCredentials, receiveChatCommand, showPage, applyHostContext } = await import('../../src/ui/plugin.js');
+  await restoreCredentials();
+  mountPlugin(document.querySelector('#plugin-root'), normalizeConfig({ surface: 'console', state: 'ready' }));
+  chatLink = createChatLink({ account, getContext: () => chatContext, settings: () => lastState,
+    send: (type, data) => receiveChatCommand({ type, ...data }), open: showPage,
+    notice: (message) => { document.querySelector('#toast-root').textContent = message; },
+    storageRequest: tasks,
+    observe: (data) => { lastObservation = data; receiveChatCommand({ type: 'linghuashi:chat-observed', ...data }); } });
+  document.querySelector('#fixture-chat-open').onclick = () => { document.querySelector('#fixture-chat-view').hidden = false; chatLink.refresh(true); };
+  document.querySelector('#fixture-chat-close').onclick = () => { document.querySelector('#fixture-chat-view').hidden = true; };
+  document.querySelector('#fixture-chat-switch').onclick = () => {
+    chatContext.chatId = activeChatKey === fixtureChatKey ? 'fixture-other-chat' : 'fixture-chat';
+    activeChatKey = chatIdentity(chatContext);
+    applyHostContext({ key: activeChatKey, name: activeChatKey === fixtureChatKey ? '隔离测试聊天' : '另一个测试聊天',
+      count: 1, avatars: ['fixture.png'] });
+    chatLink.refresh(true);
+  };
+  window.addEventListener('pagehide', () => chatLink.destroy(), { once: true });
+  setInterval(() => {
+    if (focused && document.activeElement?.matches('[data-outfit-field="prompt"]') && focused !== document.activeElement) focusPreserved = false;
+    const state = lastState;
+    document.querySelector('#fixture-report pre').textContent = JSON.stringify({ imageCalls, textCalls, request, storedImageWrites, storageFailures,
+      activeChat: activeChatKey === fixtureChatKey ? 'primary' : 'other',
+      globalDefault: state.characterProfiles?.profiles[0]?.defaultOutfitId,
+      globalOutfits: state.characterProfiles?.profiles[0]?.outfits.map((row) => row.prompt),
+      nextOutfit: state.characterSceneOverride?.entries[0]?.outfitPrompt || '',
+      pendingCast: state.characterSceneOverride?.entries.map((row) => ({ id: row.profileId, action: row.action,
+        outfit: row.outfitPrompt || row.outfitId, scope: row.outfitScope })) || [],
+      chatOutfit: state.characterProfiles?.chats?.find((row) => row.chatKey === fixtureChatKey)?.selection?.[0]?.outfitPrompt || '',
+      projectOutfit: state.comicLibrary?.projects[0]?.characterScene?.entries[0]?.outfitPrompt || '',
+      firstSuccess: document.querySelector('[data-first-success-root]')?.textContent,
+      chatRecognized: lastObservation?.recognized.length || 0, chatInserted: lastObservation?.inserted.length || 0,
+      focusPreserved, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      savedImages: document.querySelectorAll('.recent-images img').length }, null, 2);
+  }, 150);
+</script>
+</html>

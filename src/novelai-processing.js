@@ -72,7 +72,7 @@ export function validateProcessingDraft(draft, item) {
   }
   if (draft.kind !== 'upscale' && (draft.width % 64 || draft.height % 64)) throw new Error('处理宽高需为 64 的倍数');
   if (draft.kind === 'enhance') {
-    if (!modelCapabilities('novelai', draft.params.model).image) throw new Error('此模型的细节增强尚未接入，请选择 NAI 3、4 或 4.5');
+    if (!modelCapabilities('novelai', draft.params.model).image) throw new Error('此模型的细节增强尚未接入，请选择 NAI 3、4、4.5 或 5');
     if (![draft.strength, draft.noise].every((value) => finite(value, 0, 1))) throw new Error('增强强度和噪声需为 0 至 1');
     if (![draft.params.artist, draft.params.positive].some((value) => value?.trim())) throw new Error('请填写增强提示词');
   }

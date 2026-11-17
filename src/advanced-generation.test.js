@@ -80,6 +80,34 @@ test('unsupported models and OpenAI NAI aliases do not imply advanced support', 
   assert.equal(modelCapabilities('openai', 'custom-image', {}).image, false);
   assert.equal(vibeModelKey('unknown'), '');
 });
+test('V5 opens image editing while keeping unsupported references explicit and preserving V4 encodings', async () => {
+  const advanced = { mode: 'image', source: asset(), vibes: [vibe()] };
+  for (const model of ['nai-diffusion-5-full', 'nai-diffusion-5-curated']) {
+    const caps = modelCapabilities('novelai', model);
+    assert.equal(caps.image, true); assert.equal(caps.inpaint, true); assert.equal(caps.transparent, true);
+    assert.equal(caps.vibe, false); assert.equal(caps.character, false);
+    const value = snapshot(advanced, model), body = base(); body.model = model;
+    const result = await applyNovelAIAdvanced(body, value, async () => 'source-data');
+    assert.equal(result.action, 'img2img'); assert.equal(result.model, model);
+    assert.deepEqual(normalizeAdvanced(value.params.advanced).vibes[0].encodings, normalizeAdvanced(advanced).vibes[0].encodings);
+    assert.throws(() => validateAdvanced(snapshot({ mode: 'reference', vibes: [vibe()] }, model)), /未开放 Vibe/);
+    assert.throws(() => validateAdvanced(snapshot({ mode: 'reference', referenceKind: 'character', character: asset() }, model)), /人物参考/);
+  }
+});
+test('V5 inpainting selects the official Full and Curated repair models without duplicate suffixes', async () => {
+  for (const [model, expected] of [['nai-diffusion-5-full', 'nai-diffusion-5-full-inpainting'],
+    ['nai-diffusion-5-curated', 'nai-diffusion-4-5-curated-inpainting'],
+    ['nai-diffusion-4-curated-preview', 'nai-diffusion-4-curated-inpainting']]) {
+    const body = base(); body.model = model;
+    body.parameters.tag_hint_transparent_background = true;
+    body.parameters.straight_alpha = true;
+    const result = await applyNovelAIAdvanced(body, snapshot({ mode: 'inpaint', source: asset(), mask: asset('b') }, model),
+      async (ref) => ref.id === asset().id ? 'source-data' : 'mask-data');
+    assert.equal(result.model, expected); assert.equal(result.action, 'infill');
+    assert.equal(result.parameters.image, 'source-data'); assert.equal(result.parameters.mask, 'mask-data');
+    assert.equal(Boolean(result.parameters.tag_hint_transparent_background), model === 'nai-diffusion-5-full');
+  }
+});
 test('official Vibe file round trip preserves encoding parameters and model grouping', () => {
   const entry = vibe(), encoding = Buffer.alloc(120, 25).toString('base64');
   const exported = exportVibeFile(entry, { 'v4-5full': encoding });

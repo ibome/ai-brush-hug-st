@@ -5,6 +5,7 @@ import { ASSISTANT_MAX_TOKENS } from '../assistant-limits.js';
 import { currentChat } from '../runtime.js';
 import { renderCharacterSelection } from './characters.js';
 import { illustrationPlans, selectedIllustration } from '../assistant-workflow.js';
+import { effectiveOutfit } from '../character-profiles.js';
 
 const field = (label, control) => `<label class="ui-field"><span>${label}</span>${control}</label>`;
 const options = (key, value, items) => `<select data-assistant="${key}" aria-label="${esc({
@@ -39,6 +40,8 @@ export function renderAssistant(state, ui, presetPanel = '', workflowPanel = '',
   const busy = ui.busy;
   const full = state.experience?.level !== 'common';
   const modelChoices = assistantModelChoices(a, ui);
+  const currentModel = a.source === 'api' ? a.model : a.tavernModel || ui.tavernCurrent;
+  const modelStatus = [currentModel ? `当前调用模型：${currentModel}` : '', ui.modelsStatus || ''].filter(Boolean).join(' · ');
   return `<div class="page-heading"><div><h1>提示词助手</h1><p>${state.provider === 'novelai' ? 'NovelAI' : state.provider === 'comfyui' ? 'ComfyUI' : state.provider === 'sdwebui' ? 'SDWebUI' : 'OpenAI兼容'}</p></div>
     ${tools.status || `<span class="ui-status neutral" data-assistant-state="${busy}" role="status">${busy ? '正在处理' : '配置待核对'}</span>`}</div>
     ${tools.prompts || ''}
@@ -70,8 +73,10 @@ export function renderAssistant(state, ui, presetPanel = '', workflowPanel = '',
           <textarea rows="6" readonly spellcheck="false" aria-label="失败的模型回复">${esc(ui.failureResponse)}</textarea>
           ${tools.recovery || ''}
         </details>` : ''}
+        ${toggle('inputOnly', '仅处理本次输入', a.inputOnly)}
         ${ui.summary ? `<p class="assistant-context">上下文 ${ui.summary.messages} 条 · 角色 ${ui.summary.characters} 个 · 世界书 ${ui.summary.worldCharacters} 字</p>` : ''}
-        ${renderCharacterSelection(state, currentChat(), { compact: true })}
+        ${renderCharacterSelection(state, currentChat(), { compact: true,
+          frozen: Boolean(state.characterSceneOverride?.entries?.length) })}
         ${plan ? `<div class="assistant-result">
           <div class="settings-band-heading"><h2>${icon('image')}画面与提示词</h2><span class="settings-label">${plan.shouldDraw ? '可生成' : '无需配图'}</span></div>
           ${shots.length > 1 ? `<div class="assistant-shot-tabs" role="tablist" aria-label="配图画面">${shots.map((shot, shotIndex) =>
@@ -85,13 +90,14 @@ export function renderAssistant(state, ui, presetPanel = '', workflowPanel = '',
             const profile = sceneEntry?.profile;
             const name = profile?.name || entry.profileId;
             const appearance = profile?.lockAppearance ? [profile.tags, profile.hair, profile.eyes, profile.body, profile.features].filter(Boolean).join(', ') : entry.appearance;
-            const outfit = profile?.lockOutfit ? profile.outfits.find((item) => item.id === sceneEntry.outfitId)?.prompt || '' : entry.outfit;
+            const outfitState = sceneEntry ? effectiveOutfit(sceneEntry) : { locked: false };
+            const outfit = outfitState.locked ? outfitState.prompt : entry.outfit;
             return `<div class="character-scene-row"><strong>${esc(name)}</strong><div class="assistant-grid">
               ${field('角色动作', `<input data-assistant-character="${entry.profileId}" data-character-result="action" aria-label="${esc(name)}助手动作" maxlength="1000" value="${esc(entry.action)}" />`)}
               ${field('角色表情', `<input data-assistant-character="${entry.profileId}" data-character-result="expression" aria-label="${esc(name)}助手表情" maxlength="500" value="${esc(entry.expression)}" />`)}
             </div><details><summary>角色外貌与服装</summary>
               ${field('角色外貌', `<textarea data-assistant-character="${entry.profileId}" data-character-result="appearance" aria-label="${esc(name)}助手外貌" rows="2" maxlength="4000" ${profile?.lockAppearance ? 'readonly' : ''}>${esc(appearance)}</textarea>`)}
-              ${field('角色服装', `<textarea data-assistant-character="${entry.profileId}" data-character-result="outfit" aria-label="${esc(name)}助手服装" rows="2" maxlength="4000" ${profile?.lockOutfit ? 'readonly' : ''}>${esc(outfit)}</textarea>`)}
+              ${field('角色服装', `<textarea data-assistant-character="${entry.profileId}" data-character-result="outfit" aria-label="${esc(name)}助手服装" rows="2" maxlength="4000" ${outfitState.locked ? 'readonly' : ''}>${esc(outfit)}</textarea>`)}
               ${field('角色负面词', `<input data-assistant-character="${entry.profileId}" data-character-result="negative" aria-label="${esc(name)}助手负面词" maxlength="1000" value="${esc(entry.negative)}" />`)}
             </details></div>`;
           }).join('')}
@@ -133,7 +139,7 @@ export function renderAssistant(state, ui, presetPanel = '', workflowPanel = '',
             <div class="assistant-model-list" data-assistant-model-list role="group" aria-label="助手模型列表">${modelChoices.html}</div>
           </div>
         </div>
-        <p class="assistant-context" data-assistant-model-status role="status">${esc(ui.modelsStatus || '')}</p>
+        <p class="assistant-context" data-assistant-model-status role="status">${esc(ui.modelsBusy ? '正在读取模型列表…' : modelStatus)}</p>
         <p class="assistant-error" data-assistant-model-error role="alert" ${ui.modelsError ? '' : 'hidden'}>${esc(ui.modelsError || '')}</p>
         ${a.source === 'api' ? `<div class="assistant-actions">${command('assistant-network', 'scan', '检测助手网络')}</div>` : ''}
         <div class="assistant-grid">${number('maxTokens', '最大输出 Token', a.maxTokens, 256, ASSISTANT_MAX_TOKENS)}${number('timeout', '超时（秒）', a.timeout, 15, 300)}</div>

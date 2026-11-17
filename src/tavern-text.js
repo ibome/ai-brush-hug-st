@@ -37,7 +37,7 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
     const selector = { makersuite: 'google', azure_openai: 'azure_openai' }[source] || source;
     const options = document?.querySelectorAll?.(`#model_${selector}_select option`) || [];
     const cached = assistantModelNames([...(api.model_list || []),
-      ...Array.from(options, (option) => option.value), current].filter(Boolean));
+      ...Array.from(options, (option) => option.value)].filter(Boolean));
     let list = cached, message = '';
     if (refresh && (STATUS_SOURCES.has(source) || tauri && TAURI_STATUS_SOURCES.has(source))) {
       const body = { chat_completion_source: source };
@@ -54,7 +54,7 @@ export function createTavernTextAccess({ getContext, fetcher = fetch,
       });
       if (data.error) throw new Error('酒馆模型列表读取失败，请检查酒馆接口连接');
       const received = assistantModelNames(data);
-      if (received.length) list = assistantModelNames([...received, current].filter(Boolean));
+      if (received.length) list = received;
       else message = '接口未返回模型列表，已保留酒馆可用模型';
     } else if (refresh) message = '已读取酒馆模型选项；该接口未提供独立模型列表查询';
     signal?.throwIfAborted();

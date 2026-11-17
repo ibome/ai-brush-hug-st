@@ -4,6 +4,7 @@ import { icon } from '../icons.js';
 import { samples } from './sample-data.js';
 import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding, resolvePresetConnection } from '../connections.js';
 import { normalizeAdvanced } from '../advanced-generation.js';
+import { isNovelAIV5 } from '../novelai-models.js';
 
 export const NOVELAI_MODELS = Object.freeze([
   { id: 'nai-diffusion-4-5-full', title: 'NAI 4.5 Full' },
@@ -50,6 +51,7 @@ export const NOVELAI_DEFAULTS = Object.freeze({
   variety: false,
   sm: false,
   smDyn: false,
+  transparent: false,
   advanced: normalizeAdvanced(),
 });
 export const NOVELAI_LIMITS = Object.freeze({
@@ -172,6 +174,7 @@ const numeric = (key, label) => {
 export function renderNovelAIParameters(state, advancedOpen = false) {
   const value = state.novelai;
   const nai3 = isNAI3(value.model);
+  const v5 = isNovelAIV5(value.model);
   const sizes = NOVELAI_SIZES.find((size) => size.width === value.width && size.height === value.height)?.id || 'custom';
   const numberField = (key, label) => {
     const limits = numeric(key, label);
@@ -180,7 +183,8 @@ export function renderNovelAIParameters(state, advancedOpen = false) {
   const toggle = (key, title, disabled = false, note = '') => `<label class="nai-toggle ${disabled ? 'is-disabled' : ''}"><span>${title}${note ? `<small>${note}</small>` : ''}</span><input type="checkbox" role="switch" data-nai="${key}" ${value[key] ? 'checked' : ''} ${disabled ? 'disabled' : ''} /><span class="nai-toggle-track" aria-hidden="true"></span></label>`;
   return `<section class="novelai-parameters" aria-label="NovelAI 参数配置">
     <div class="field-heading"><h2>NovelAI 参数</h2><span class="nai-preset-state" data-nai-dirty>${novelAIPresetDirty(state) ? '有未保存修改' : '已保存'}</span></div>
-    ${field('NovelAI 模型', `<select data-nai="model">${options(NOVELAI_MODELS.map((model) => [model.id, model.id]), value.model)}</select>`)}
+    ${field('NovelAI 模型', `<select data-nai="model">${options(NOVELAI_MODELS.map((model) => [model.id, `${model.title} · ${model.id}`]), value.model)}</select>`)}
+    ${v5 ? '<p class="nai-seed-note">V5 · 支持图生图、局部重绘和透明背景；不支持 Vibe 与人物参考。第三方接口需提供对应模型能力。</p>' : ''}
     ${field('画师串', `<textarea rows="2" data-nai="artist" maxlength="4000" spellcheck="false" placeholder="artist:画师名, artist:画师名">${esc(value.artist)}</textarea>`)}
     ${field('正向提示词', `<textarea class="nai-positive" rows="3" data-nai="positive" maxlength="12000" spellcheck="false" placeholder="想要的主体、场景、风格与细节">${esc(value.positive)}</textarea>`)}
     ${field('负面提示词', `<textarea rows="2" data-nai="negative" maxlength="12000" spellcheck="false" placeholder="不希望出现的内容">${esc(value.negative)}</textarea>`)}
@@ -192,13 +196,13 @@ export function renderNovelAIParameters(state, advancedOpen = false) {
         ${numberField('scale', '提示词引导 (CFG)')}
         ${numberField('cfgRescale', 'CFG Rescale')}
         ${field('采样器', `<select data-nai="sampler">${options(NOVELAI_SAMPLERS.filter(([id]) => nai3 || id !== 'ddim'), value.sampler)}</select>`)}
-        ${field('噪声调度', `<select data-nai="noiseSchedule">${options([['karras', 'Karras'], ['exponential', 'Exponential'], ['polyexponential', 'Polyexponential'], ...(nai3 ? [['native', 'Native']] : [])], value.noiseSchedule)}</select>`)}
+        ${v5 ? '' : field('噪声调度', `<select data-nai="noiseSchedule">${options([['karras', 'Karras'], ['exponential', 'Exponential'], ['polyexponential', 'Polyexponential'], ...(nai3 ? [['native', 'Native']] : [])], value.noiseSchedule)}</select>`)}
         ${field('随机种子', `<div class="input-with-button"><input type="number" data-nai="seed" min="-1" max="4294967295" step="1" value="${value.seed}" /><button type="button" class="ui-icon-button" data-action="nai-random-seed" title="生成随机种子" aria-label="生成随机种子">${icon('refresh-cw')}</button></div>`)}
         ${numberField('nSamples', '每次生成张数')}
         ${field('负面预设', `<select data-nai="ucPreset">${options([['0', 'Heavy'], ['1', 'Light'], ['2', 'Furry'], ['3', 'Human Focus'], ['4', 'None']], value.ucPreset)}</select>`)}
         <p class="nai-seed-note">种子 -1 表示每次随机</p>
       </div>
-      <div class="nai-toggle-grid">${toggle('qualityTags', '质量标签')}${toggle('variety', 'Variety+', !supportsVariety(value.model), '仅 NAI 4 / 4.5')}${toggle('sm', 'SMEA', !nai3, '仅 NAI 3')}${toggle('smDyn', 'SMEA DYN', !nai3 || !value.sm, '需启用 SMEA')}</div>
+      <div class="nai-toggle-grid">${toggle('qualityTags', '质量标签')}${v5 ? toggle('transparent', '透明背景') : ''}${toggle('variety', 'Variety+', !supportsVariety(value.model), '仅 NAI 4 / 4.5')}${toggle('sm', 'SMEA', !nai3, '仅 NAI 3')}${toggle('smDyn', 'SMEA DYN', !nai3 || !value.sm, '需启用 SMEA')}</div>
     </details>
   </section>`;
 }

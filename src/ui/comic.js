@@ -1,5 +1,7 @@
 import { escapeHtml as esc } from '../config.js';
 import { icon, paintIcons } from '../icons.js';
+import { pendingOutfitDrafts } from '../outfit-drafts.js';
+import { confirmOutfitDrafts } from './outfit-drafts.js';
 import { comicRefKey, COMIC_TABS, COMIC_LIMITS, newComicProject, newComicPanel, newComicBubble,
   saveComicProject, validateComicLibrary, comicPanelBusy, comicPanelJobs, comicProjectFile, importComicProject,
   comicAssistantOptions, comicDraft, parseComicStoryboard, comicPanelTask, comicProjectProgress } from '../comic.js';
@@ -21,6 +23,8 @@ import { cacheComicPreview, readComicThumbnail } from '../comic-resilience.js';
 import { comicChapterRows, shelveComicProject, loadComicChapter, setComicSeries, newComicSeries, createComicSeriesForChapter,
   availableComicChapter, comicSeriesFile, importComicSeriesFile, COMIC_CHAPTER_BUNDLE_BYTES } from '../comic-chapters.js';
 import '../styles/comic.css';
+import { applySceneOutfit, effectiveOutfit } from '../character-profiles.js';
+import { renderOutfitControls, refreshOutfitDraftFeedback } from './characters.js';
 
 const command = (action, glyph, label, disabled = false, kind = 'secondary', extra = '') =>
   `<button type="button" class="ui-button ${kind}" data-comic-action="${action}" ${extra} ${disabled ? 'disabled' : ''}>${icon(glyph)}<span>${label}</span></button>`;
@@ -46,6 +50,8 @@ export class ComicPanel {
     this.layoutView = 'edit'; this.exportQuality = 'standard'; this.exportSelection = '';
     this.previewBlobs = new Map(); this.renderedPages = new Map(); this.coverURLs = new Map(); this.coverRefs = new Map();
     this.previewFailures = new Set(); this.snap = true;
+    this.outfitDrafts = {};
+    this.failureDiagnostics = new Map();
     this.imagePicker = new ComicImagePicker(dependencies);
     this.workspace = new ComicWorkspace({ key: dependencies.workspaceKey, onStatus: (message) => {
       this.workspaceWarning = message;
@@ -118,6 +124,7 @@ export class ComicPanel {
       ${this.error && this.errorContext ? `<div class="comic-actions comic-error-actions">
         ${this.errorContext === 'assistant' ? command('assistant-settings', 'settings-2', '检查文字接口') + command('diagnostic', 'copy', '复制脱敏诊断')
           : this.errorContext === 'image' ? command('image-settings', 'plug', '检查生图接口') + command('queue', 'list-todo', '查看任务记录')
+          : this.errorContext === 'outfit' ? command('outfit-settings', 'shirt', '检查服装草稿')
           : this.errorContext === 'chapter' && this.retryChapterId ? command('chapter-retry', 'refresh-cw', '重试加载章节') : ''}
       </div>` : ''}
       <p class="comic-message" role="status" ${this.message ? '' : 'hidden'}>${esc(this.message)}</p>
@@ -141,11 +148,14 @@ export class ComicPanel {
   stashDraft() {
     this.savedView = this.view();
     if (this.project) this.workspace.draft(this.project.id, { candidate: this.candidate, candidateBase: this.candidateBase,
-      rewrite: this.rewrite || null, failureResponse: this.failureResponse, error: this.error, failureOpen: this.failureOpen === true }, this.savedView);
+      rewrite: this.rewrite || null, failureResponse: this.failureResponse,
+      error: this.error, failureOpen: this.failureOpen === true }, this.savedView);
   }
   loadDraft() {
     const entry = this.workspace.get(this.project?.id);
-    Object.assign(this, { candidate: null, candidateBase: '', failureResponse: '', error: '', failureOpen: false, rewrite: null }, entry?.draft);
+    Object.assign(this, { candidate: null, candidateBase: '', failureResponse: '', failureDiagnostic: null, diagnosticText: '',
+      error: '', failureOpen: false, rewrite: null }, entry?.draft);
+    this.failureDiagnostic = this.failureDiagnostics.get(this.project?.id) || null;
     this.repairPreview = null;
     this.layoutSuggestion = null;
     this.selectedBubble = entry?.view?.selectedBubble || '';
@@ -199,6 +209,9 @@ export class ComicPanel {
   nextHTML(project) {
     const progress = comicProjectProgress(project, this.jobs(), this.assetStates), missing = progress.missing;
     const active = progress.queued + progress.running, blocked = progress.paused + progress.uncertain;
+    if (this.tab === 'read' && progress.total && !missing && !active && !blocked && !progress.checking && !progress.unreachable) {
+      return '<div data-comic-next hidden></div>';
+    }
     const state = !project.source.trim() && !project.panels.length ? ['story', '输入剧情或读取聊天', '']
       : this.candidate ? ['story', '分镜已生成，等待确认', 'candidate']
       : !project.panels.length ? ['story', '剧情已准备，创建分镜', 'storyboard']
@@ -301,8 +314,8 @@ export class ComicPanel {
       ${tool('characters', 'settings-2', '管理角色档案库', this.hasTasks())}</div>
       ${entries.map((entry) => `<div class="comic-cast-locks"><strong>${esc(entry.profile.name)}</strong>
         <label class="comic-check"><input type="checkbox" data-comic-profile-lock="lockAppearance" data-profile-id="${esc(entry.profileId)}" ${entry.profile.lockAppearance ? 'checked' : ''}>锁定外观</label>
-        <label class="comic-check"><input type="checkbox" data-comic-profile-lock="lockOutfit" data-profile-id="${esc(entry.profileId)}" ${entry.profile.lockOutfit ? 'checked' : ''}>锁定服装</label>
-        ${field('项目服装', `<select data-comic-outfit="${esc(entry.profileId)}"><option value="">无指定服装</option>${options(entry.profile.outfits.map((row) => [row.id, row.name]), entry.outfitId)}</select>`)}
+        <label class="comic-check" ${entry.outfitMode && entry.outfitMode !== 'inherit' ? 'title="由所选服装方式决定；选择跟随档案与剧情后可修改锁定"' : ''}><input type="checkbox" data-comic-profile-lock="lockOutfit" data-profile-id="${esc(entry.profileId)}" ${effectiveOutfit(entry).locked ? 'checked' : ''} ${entry.outfitMode && entry.outfitMode !== 'inherit' ? 'disabled' : ''}>锁定服装</label>
+        ${renderOutfitControls(entry, this.outfitDrafts[`${project.id}:${entry.profileId}`], { project: true })}
         ${tool('cast-reference', 'image-plus', entry.profile.reference ? '替换项目人物参考图' : '上传项目人物参考图', this.hasTasks(), `data-profile-id="${esc(entry.profileId)}"`)}
         ${entry.profile.reference ? tool('cast-reference-clear', 'image-off', '移除项目人物参考图', this.hasTasks(), `data-profile-id="${esc(entry.profileId)}"`) : ''}
         ${tool('cast-remove', 'user-round-minus', '从项目移除角色', this.hasTasks(), `data-profile-id="${esc(entry.profileId)}"`)}
@@ -422,7 +435,7 @@ export class ComicPanel {
   generationSummary() {
     const info = this.setup?.().image || {};
     return `<dl class="comic-facts"><dt>生图接口</dt><dd>${esc(this.providerTitle())} · ${esc(info.connection || '当前配置')}</dd>
-      <dt>模型</dt><dd>${esc(info.model || '当前工作流')}</dd><dt>尺寸与步数</dt><dd>${esc(info.size || '由工作流决定')} · ${esc(info.steps || '默认')} 步</dd>
+      <dt>模型</dt><dd>${esc(info.model || '当前工作流')}</dd><dt>${info.steps ? '尺寸与步数' : '尺寸'}</dt><dd>${esc(info.size || '由工作流决定')}${info.steps ? ` · ${esc(info.steps)} 步` : ''}</dd>
       <dt>图片保存</dt><dd>${esc(info.storage || '当前存储位置')} · 每格 1 张 · 自动收藏</dd></dl>
       <div class="comic-actions">${command('image-settings', 'plug', '生图接口设置')}</div>`;
   }
@@ -706,7 +719,10 @@ export class ComicPanel {
     }
     this.root.onchange = (event) => {
       const target = event.target;
-      if (target.matches('[data-comic-reference-file]')) {
+      if (target.dataset.outfitField) {
+        this.updateOutfitDraft(target);
+        if (target.tagName === 'SELECT') this.render();
+      } else if (target.matches('[data-comic-reference-file]')) {
         const file = target.files?.[0], profileId = this.referenceTarget, projectId = this.project?.id;
         target.value = '';
         if (file && profileId) void this.run('正在保存项目参考图…', async (signal) => {
@@ -776,9 +792,15 @@ export class ComicPanel {
       } else if (target.matches('[data-comic-profile-lock],[data-comic-outfit]')) {
         this.commit((project) => {
           const entry = project.characterScene?.entries.find((row) => row.profileId === (target.dataset.profileId || target.dataset.comicOutfit));
-          if (entry && target.dataset.comicProfileLock) entry.profile[target.dataset.comicProfileLock] = target.checked;
-          else if (entry) entry.outfitId = target.value;
-        }, false, { label: '修改角色锁定或服装' }); this.refreshStatus();
+          if (entry && target.dataset.comicProfileLock) {
+            if (target.dataset.comicProfileLock !== 'lockOutfit' || !entry.outfitMode || entry.outfitMode === 'inherit') {
+              entry.profile[target.dataset.comicProfileLock] = target.checked;
+            }
+          } else if (entry) entry.outfitId = target.value;
+          if (entry) {
+            delete project.characterScene.applied; delete project.characterScene.characterPrompts;
+          }
+        }, true, { label: '修改角色锁定或服装' }); this.refreshStatus();
       } else if (target.matches('select[data-comic-layout],select[data-comic-bubble],select[data-comic-assistant]')) this.input(event);
       else if (target.matches('[type="checkbox"][data-comic-bubble],[type="checkbox"][data-comic-protection]')) this.input(event);
     };
@@ -791,10 +813,20 @@ export class ComicPanel {
     this.root.dataset.bubbleEditing = String(this.tab === 'layout' && Boolean(this.selectedBubble) && !this.protectionEditing);
     paintIcons();
   }
+  updateOutfitDraft(target) {
+    const row = target.closest('[data-outfit-row]');
+    if (!row) return;
+    const key = `${this.project.id}:${row.dataset.outfitRow}`, draft = this.outfitDrafts[key] || {};
+    for (const control of row.querySelectorAll('[data-outfit-field]')) draft[control.dataset.outfitField] = control.value;
+    this.outfitDrafts[key] = draft;
+    const entry = this.project.characterScene.entries.find((entry) => entry.profileId === row.dataset.outfitRow);
+    refreshOutfitDraftFeedback(row, entry, draft);
+  }
   input(event) {
     const target = event.target, data = target.dataset;
     if (target.matches('select,[type="checkbox"],[type="file"]') && event.type !== 'change') return;
     try {
+      if (target.dataset.outfitField) { this.updateOutfitDraft(target); return; }
       if (target.matches('[data-comic-project-search]')) {
         this.projectSearch = target.value; this.projectPage = 1;
         clearTimeout(this.projectSearchTimer);
@@ -1003,10 +1035,30 @@ export class ComicPanel {
   }
   fail(error) {
     this.error = error?.name === 'AbortError' ? '操作已取消' : error.message || '操作失败';
+    this.failureDiagnostic = error?.assistantReport || null;
+    if (this.project) this.failureDiagnostics.set(this.project.id, this.failureDiagnostic);
     if (error?.name !== 'AbortError' && typeof error.assistantResponse === 'string') {
       this.failureResponse = error.assistantResponse; this.failureOpen = true; this.repairPreview = null;
     }
     this.stashDraft(); this.render(); this.reveal('.comic-error:not([hidden])');
+  }
+  async resolveOutfits() {
+    const project = this.project, scene = project.characterScene;
+    const drafts = Object.fromEntries(scene.entries.map((entry) => [entry.profileId, this.outfitDrafts[`${project.id}:${entry.profileId}`]]));
+    const choices = pendingOutfitDrafts(scene, drafts).map((row) => ({ ...row, scope: 'project' }));
+    if (!choices.length) return true;
+    const revision = JSON.stringify([project.id, scene, drafts]);
+    const decision = await confirmOutfitDrafts(choices);
+    if (decision === 'cancel') return false;
+    const currentDrafts = Object.fromEntries((this.project?.characterScene.entries || [])
+      .map((entry) => [entry.profileId, this.outfitDrafts[`${this.project.id}:${entry.profileId}`]]));
+    if (revision !== JSON.stringify([this.project?.id, this.project?.characterScene, currentDrafts])) throw new Error('项目或服装已变化，请重新生成');
+    if (decision === 'original') return true;
+    let next = scene;
+    for (const choice of choices) next = applySceneOutfit(next, choice.profileId, choice, 'project');
+    this.commit((value) => { value.characterScene = next; }, false, { label: '应用项目服装' });
+    for (const choice of choices) delete this.outfitDrafts[`${project.id}:${choice.profileId}`];
+    return true;
   }
   render() {
     if (!this.root?.isConnected) return;
@@ -1145,7 +1197,29 @@ export class ComicPanel {
       return;
     }
     this.error = ''; this.message = '';
-    const project = this.project;
+    let project = this.project;
+    if (action === 'outfit-apply') {
+      this.errorContext = 'outfit';
+      if (this.hasTasks()) throw new Error('请先处理本项目未完成的任务');
+      this.updateOutfitDraft(button);
+      const profileId = button.dataset.profileId, key = `${project.id}:${profileId}`;
+      const scene = applySceneOutfit(project.characterScene, profileId, this.outfitDrafts[key], 'project');
+      this.commit((next) => { next.characterScene = scene; }, false, { label: '应用项目服装' });
+      delete this.outfitDrafts[key]; this.render(); return;
+    }
+    if (action === 'outfit-discard') {
+      delete this.outfitDrafts[`${project.id}:${button.dataset.profileId}`];
+      this.render(); return;
+    }
+    if (action === 'outfit-settings') {
+      this.switchTab('story'); this.render();
+      const fold = this.root.querySelector('[data-experience-fold="comic-cast"]');
+      if (fold) fold.open = true;
+      this.reveal('.comic-project-cast');
+      this.root.querySelector('[data-outfit-pending]:not([hidden])')?.closest('[data-outfit-row]')
+        ?.querySelector('textarea,select')?.focus({ preventScroll: true });
+      return;
+    }
     if (action === 'budget-preview') {
       const budget = await this.previewBudget(project);
       this.message = [`估算输入 ${budget.input} + 输出上限 ${budget.output} = ${budget.total} Token`,
@@ -1434,12 +1508,12 @@ export class ComicPanel {
       }); return;
     }
     if (action === 'diagnostic') {
-      this.diagnosticText = JSON.stringify(this.diagnostic?.() || { status: '尚无调用诊断' }, null, 2);
+      this.diagnosticText = JSON.stringify(this.failureDiagnostic || { status: '此失败没有保留调用诊断，请重新执行后查看' }, null, 2);
       try { await navigator.clipboard.writeText(this.diagnosticText); this.message = '脱敏诊断已复制'; }
       catch { this.message = '可在失败回复下方复制脱敏诊断'; }
       this.render(); this.reveal('.comic-recovery'); return;
     }
-    if (action === 'failure-clear') { this.failureResponse = ''; this.diagnosticText = ''; this.repairPreview = null; this.stashDraft(); this.render(); return; }
+    if (action === 'failure-clear') { this.failureResponse = ''; this.failureDiagnostic = null; this.failureDiagnostics.delete(project.id); this.diagnosticText = ''; this.repairPreview = null; this.stashDraft(); this.render(); return; }
     if (action === 'repair-preview') {
       const preview = previewComicRepair(this.failureResponse, project);
       this.repairPreview = { ...preview, original: this.failureResponse, base: this.storySignature(project) };
@@ -1486,7 +1560,8 @@ export class ComicPanel {
     }
     if (action === 'storyboard') {
       this.errorContext = 'assistant';
-      this.failureResponse = ''; this.failureOpen = false; this.diagnosticText = ''; this.repairPreview = null;
+      this.failureResponse = ''; this.failureDiagnostic = null; this.failureOpen = false; this.diagnosticText = ''; this.repairPreview = null;
+      this.failureDiagnostics.delete(project.id);
       return this.run('正在创建漫画分镜…', async (signal) => {
         this.candidate = await this.storyboard(structuredClone(project), signal);
         this.candidateBase = this.storySignature(project); this.stashDraft();
@@ -1533,7 +1608,10 @@ export class ComicPanel {
     }
     if (action === 'generate-dismiss') { this.confirm = null; this.render(); return; }
     if (['generate-missing', 'generate-failed', 'panel-generate'].includes(action)) {
+      this.errorContext = 'outfit';
+      if (!await this.resolveOutfits()) return;
       this.errorContext = 'image';
+      project = this.project;
       const ids = action === 'generate-missing' ? comicMissingPanelIds(project, this.assetStates)
         : action === 'generate-failed' ? this.failedPanelIds(project) : [button.dataset.panelId];
       if (!ids.length) throw new Error('所有画格都已配图，可单独选择再画一张');

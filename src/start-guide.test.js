@@ -9,11 +9,21 @@ test('first-use defaults preserve established users and never change automation'
   const configured = { canSubmit: true }, missing = { canSubmit: false };
   const chat = guideSteps({ goal: 'chat' }, { image: configured, assistant: missing, storage: configured,
     chat: { auto: true, inline: true, assistant: { autoPrompt: false } } });
-  assert.equal(chat.find((row) => row.id === 'assistant').optional, true);
+  assert.equal(chat.some((row) => row.id === 'assistant'), false);
   assert.equal(chat.find((row) => row.id === 'chat').result.canSubmit, true);
   assert.equal(guideSteps({ goal: 'chat' }, { image: configured, assistant: missing, storage: configured,
-    chat: { assistant: { autoPrompt: true } } }).find((row) => row.id === 'assistant').optional, false);
+    chat: { assistant: { autoPrompt: true } } }).some((row) => row.id === 'assistant'), true);
   assert.ok(!guideSteps({ goal: 'manual' }, { image: configured, storage: configured }).some((row) => row.id === 'assistant'));
+});
+test('typed text failures offer relevant actions without blaming a readable response on device networking', () => {
+  for (const category of ['model', 'quota', 'authentication', 'permission', 'parameters', 'compatibility', 'preset']) {
+    assert.deepEqual(failureActions({ scope: 'assistant', message: '旧的网络失败提示', diagnostic: { errorCategory: category } }),
+      ['assistant-config', 'assistant-diagnostic']);
+  }
+  assert.deepEqual(failureActions({ scope: 'assistant', diagnostic: { errorCategory: 'response' } }),
+    ['assistant-response', 'assistant-config', 'assistant-diagnostic']);
+  assert.deepEqual(failureActions({ scope: 'assistant', failure: { category: 'busy' } }), ['assistant-diagnostic']);
+  assert.equal(failureActions({ scope: 'assistant', diagnostic: { errorCategory: 'network' } })[0], 'assistant-network');
 });
 
 test('image readiness separates configuration, a successful probe and real image verification', () => {
@@ -47,6 +57,21 @@ test('text model enumeration and readable storage do not claim paid calls or wri
   assert.equal(storageReadiness({ location: 'server', installed: false }).canSubmit, false);
   assert.equal(storageReadiness({ error: 'storage offline' }).code, 'error');
   assert.match(storageReadiness({}).detail, /尚未进行写入测试/);
+  assert.equal(storageReadiness({ written: true }).code, 'ready');
+  assert.equal(storageReadiness({ written: true, error: '保存暂不可用' }).code, 'error');
+});
+
+test('an unused independent API credential does not block the current Tavern source', () => {
+  const base = { installed: true, tavernCurrent: 'current-model', credentialError: '此秘钥无法读取' };
+  assert.equal(assistantReadiness({ ...base, source: 'tavern' }).code, 'configured');
+  assert.equal(assistantReadiness({ ...base, source: 'api', endpoint: 'https://example.test', model: 'text' }).code, 'error');
+});
+test('missing models remain manually usable but do not imply the list validated them', () => {
+  const base = { source: 'tavern', installed: true, tavernCurrent: 'removed', modelSource: 'tavern', models: ['available'] };
+  assert.equal(assistantReadiness(base).label, '模型未在列表中');
+  assert.equal(assistantReadiness(base).canSubmit, true);
+  assert.equal(assistantReadiness({ ...base, model: 'available' }).code, 'configured');
+  assert.equal(assistantReadiness({ ...base, succeeded: true }).code, 'ready');
 });
 
 test('failure actions prioritize recovery and never resubmit uncertain generation', () => {
@@ -68,4 +93,9 @@ test('task capacity issues direct users to pending tasks instead of changing the
     '待恢复响应超过 512 MB，请清理已完成任务',
     '待保存的图片响应已达到 512 MB，请打开“查看待处理任务”',
   ]) assert.deepEqual(failureActions({ message }), ['task-records']);
+});
+test('unapplied outfit validation opens the character controls instead of API or storage configuration', () => {
+  for (const message of ['请先填写自定义服装提示词', '请选择有效服装', '服装库已满，请先整理角色档案', '角色或服装配置已变化，请重新生成']) {
+    assert.deepEqual(failureActions({ message }), ['outfit-settings']);
+  }
 });

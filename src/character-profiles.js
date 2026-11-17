@@ -23,6 +23,17 @@ const unique = (values, key, limit) => {
   }).slice(0, limit);
 };
 const joined = (...values) => [...new Set(values.map((value) => text(value, 32000)).filter(Boolean))].join(', ');
+export const OUTFIT_MODES = [['inherit', '跟随档案与剧情'], ['wardrobe', '选择服装库'], ['custom', '自定义服装'], ['ai', '由 AI 决定']];
+export function outfitChoice(value = {}) {
+  return { mode: OUTFIT_MODES.some(([id]) => id === value.mode) ? value.mode : 'inherit',
+    outfitId: text(value.outfitId, 80), prompt: text(value.prompt) };
+}
+export function effectiveOutfit(entry) {
+  const mode = entry.outfitMode || 'inherit';
+  return { mode, prompt: mode === 'custom' ? entry.outfitPrompt || '' : mode === 'ai' ? ''
+    : entry.profile.outfits?.find((item) => item.id === entry.outfitId)?.prompt || '',
+  locked: mode === 'custom' || mode === 'wardrobe' || mode === 'inherit' && entry.profile.lockOutfit };
+}
 
 export function normalizeProfile(value) {
   if (!object(value) || !id(value.id)) return null;
@@ -44,6 +55,9 @@ export function normalizeParticipants(value, profiles) {
   const allowed = new Set(profiles.map((profile) => profile.id));
   return unique(value, 'profileId', SCENE_LIMIT).filter((entry) => allowed.has(entry.profileId)).map((entry) => ({
     profileId: entry.profileId, outfitId: entry.outfitId === undefined ? profiles.find((profile) => profile.id === entry.profileId)?.defaultOutfitId || '' : text(entry.outfitId, 80),
+    ...(OUTFIT_MODES.some(([id]) => id !== 'inherit' && id === entry.outfitMode) ? { outfitMode: entry.outfitMode } : {}),
+    ...(entry.outfitMode === 'custom' ? { outfitPrompt: text(entry.outfitPrompt) } : {}),
+    ...(['once', 'chat', 'global', 'project'].includes(entry.outfitScope) ? { outfitScope: entry.outfitScope } : {}),
     action: text(entry.action, 1000), expression: text(entry.expression, 500),
     positive: text(entry.positive, 2000), negative: text(entry.negative, 1000),
     position: Object.hasOwn(positions, entry.position) ? entry.position : 'auto',
@@ -164,8 +178,8 @@ export function profileContext(scene) {
     id: entry.profileId, name: entry.profile.name, hair: entry.profile.hair, eyes: entry.profile.eyes,
     body: entry.profile.body, features: entry.profile.features, appearance: entry.profile.tags,
     negative: joined(entry.profile.negative, entry.negative),
-    outfit: entry.profile.outfits.find((item) => item.id === entry.outfitId)?.prompt || '',
-    lockAppearance: entry.profile.lockAppearance, lockOutfit: entry.profile.lockOutfit,
+    outfit: effectiveOutfit(entry).prompt,
+    lockAppearance: entry.profile.lockAppearance, lockOutfit: effectiveOutfit(entry).locked,
     action: entry.action, expression: entry.expression, additional: entry.positive, position: entry.position,
   }));
 }
@@ -195,10 +209,10 @@ export function applyCharacterScene(snapshot, value, directions = []) {
     scene.characterPrompts = scene.entries.map((entry) => {
       const profile = entry.profile, change = changes.find((item) => item.profileId === entry.profileId);
       const appearance = joined(profile.tags, profile.hair, profile.eyes, profile.body, profile.features);
-      const outfit = profile.outfits.find((item) => item.id === entry.outfitId)?.prompt || '';
+      const outfit = effectiveOutfit(entry);
       return { id: profile.id, name: profile.name, position: entry.position,
         positive: joined(!profile.lockAppearance && change?.appearance || appearance,
-          !profile.lockOutfit && change?.outfit || outfit,
+          !outfit.locked && change?.outfit || outfit.prompt,
           entry.action || change?.action, entry.expression || change?.expression, entry.positive),
         negative: joined(profile.negative, entry.negative, change?.negative) };
     });
@@ -228,6 +242,65 @@ export function applyCharacterScene(snapshot, value, directions = []) {
   if (params.positive.length > 32000 || params.negative.length > 32000) throw new Error('合并角色后的提示词超过 32000 字符');
   result.characterScene = scene;
   return result;
+}
+
+export function applySceneOutfit(value, profileId, input, scope = 'once') {
+  const scene = normalizeCharacterScene(value);
+  const entry = scene?.entries.find((row) => row.profileId === profileId);
+  if (!entry) throw new Error('此角色尚未加入当前画面');
+  const choice = outfitChoice(input);
+  if (choice.mode === 'custom' && !choice.prompt) throw new Error('请先填写自定义服装提示词');
+  if (choice.mode === 'wardrobe' && !entry.profile.outfits.some((row) => row.id === choice.outfitId)) throw new Error('请选择有效服装');
+  entry.outfitId = choice.mode === 'wardrobe' ? choice.outfitId : entry.profile.defaultOutfitId;
+  delete entry.outfitMode; delete entry.outfitPrompt; delete entry.outfitScope;
+  if (choice.mode !== 'inherit') entry.outfitMode = choice.mode;
+  if (choice.mode === 'custom') entry.outfitPrompt = choice.prompt;
+  if (['once', 'chat', 'global', 'project'].includes(scope)) entry.outfitScope = scope;
+  delete scene.applied; delete scene.characterPrompts;
+  return scene;
+}
+
+export function reconcileTemporaryScene(previous, current, replaceOutfits = []) {
+  const pending = normalizeCharacterScene(previous), scene = normalizeCharacterScene(current);
+  if (!pending || !scene || pending.chatKey !== scene.chatKey
+    || !pending.entries.some((entry) => entry.outfitScope === 'once')) return null;
+  scene.entries = scene.entries.map((entry) => {
+    const saved = pending.entries.find((row) => row.profileId === entry.profileId);
+    if (!saved) return entry;
+    const merged = { ...saved, profile: entry.profile };
+    if (replaceOutfits.includes(entry.profileId)) {
+      for (const key of ['outfitId', 'outfitMode', 'outfitPrompt', 'outfitScope']) {
+        delete merged[key];
+        if (Object.hasOwn(entry, key)) merged[key] = entry[key];
+      }
+    }
+    return merged;
+  });
+  delete scene.applied; delete scene.characterPrompts;
+  return scene.entries.some((entry) => entry.outfitScope === 'once') ? normalizeCharacterScene(scene) : null;
+}
+
+export function setGlobalOutfit(library, profileId, input, newId) {
+  const db = normalizeProfileLibrary(library), profile = db.profiles.find((row) => row.id === profileId);
+  if (!profile) throw new Error('全局档案已不存在');
+  const choice = outfitChoice(input);
+  if (choice.mode === 'custom') {
+    if (!choice.prompt) throw new Error('请先填写自定义服装提示词');
+    const existing = profile.outfits.find((outfit) => outfit.prompt === choice.prompt);
+    if (!existing) {
+      if (!id(newId) || profile.outfits.length >= 20) throw new Error('服装库已满，请先整理角色档案');
+      profile.outfits.push({ id: newId, name: '自定义服装', prompt: choice.prompt });
+    }
+    profile.defaultOutfitId = existing?.id || newId; profile.lockOutfit = true;
+  } else if (choice.mode === 'wardrobe') {
+    if (!profile.outfits.some((row) => row.id === choice.outfitId)) throw new Error('全局档案中没有此服装，请先保存到全局服装库');
+    profile.defaultOutfitId = choice.outfitId; profile.lockOutfit = true;
+  } else if (choice.mode === 'ai') { profile.defaultOutfitId = ''; profile.lockOutfit = false; }
+  for (const entry of db.selection.filter((row) => row.profileId === profileId)) {
+    entry.outfitId = profile.defaultOutfitId;
+    delete entry.outfitMode; delete entry.outfitPrompt; delete entry.outfitScope;
+  }
+  return boundedLibrary(db);
 }
 
 export function restoreSceneProfiles(library, value, chatKey = '') {

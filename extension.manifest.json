@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.13&build=20261114-assistant-errors",
+  "js": "dist/index.js?ver=0.26.14&build=20261117-creation-workflow",
   "author": "小波",
-  "version": "0.26.13",
+  "version": "0.26.14",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

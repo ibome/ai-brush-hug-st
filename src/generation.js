@@ -3,6 +3,7 @@ import { rememberGenerationFailure } from './debug-errors.js';
 import JSZip from 'jszip';
 import { sdwebuiImages, watchSDWebUIProgress } from './sdwebui.js';
 import { canRecoverGeneration, INVALID_IMAGE_RESPONSE } from './generation-recovery.js';
+import { isNovelAIV5 } from './novelai-models.js';
 
 const MAX_IMAGE = 20 * 1024 * 1024;
 const MAX_RESPONSE = 200 * 1024 * 1024;
@@ -117,8 +118,9 @@ export function buildNovelAIRequest(params, characterPrompts = []) {
   const input = [params.artist.trim(), params.positive.trim()].filter(Boolean).join(', ');
   if (!input) throw new GenerationError('请填写生图提示词');
   const v3 = /^(nai-diffusion-3|nai-diffusion-furry-3)$/.test(params.model);
+  const v5 = isNovelAIV5(params.model);
   const parameters = {
-    params_version: /nai-diffusion-5/.test(params.model) ? 4 : 3,
+    params_version: v5 ? 4 : 3,
     width: params.width, height: params.height, steps: params.steps,
     scale: params.scale, seed: params.seed, sampler: params.sampler,
     n_samples: params.nSamples, negative_prompt: params.negative,
@@ -129,6 +131,13 @@ export function buildNovelAIRequest(params, characterPrompts = []) {
     reference_image_multiple: [], reference_information_extracted_multiple: [],
     reference_strength_multiple: [],
   };
+  if (v5) {
+    parameters.image_format = 'png';
+    parameters.straight_alpha = true;
+    parameters.tag_hint_transparent_background = params.transparent === true;
+    // V5 has no selectable noise schedule or Variety+.
+    delete parameters.noise_schedule;
+  }
   if (v3) Object.assign(parameters, { sm: params.sm, sm_dyn: params.smDyn });
   else {
     const characters = characterPrompts.slice(0, 6);
@@ -153,7 +162,7 @@ export function buildNovelAIRequest(params, characterPrompts = []) {
     }));
     parameters.reference_image_multiple_cached = [];
     parameters.use_coords = coords;
-    if (params.variety) parameters.skip_cfg_above_sigma = 19 * Math.sqrt(params.width * params.height / (832 * 1216));
+    if (!v5 && params.variety) parameters.skip_cfg_above_sigma = 19 * Math.sqrt(params.width * params.height / (832 * 1216));
   }
   if (params.sampler === 'k_euler_ancestral') {
     parameters.deliberate_euler_ancestral_bug = false;
