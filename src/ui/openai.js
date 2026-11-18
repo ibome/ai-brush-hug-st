@@ -14,7 +14,7 @@ export const OPENAI_DEFAULTS = Object.freeze({
   model: 'gpt-image-2', artist: '', positive: samples[0].prompt, negative: '',
   size: '1024x1024', width: 1024, height: 1024, n: 1, quality: 'auto',
   parameterMode: 'auto', background: 'auto', outputFormat: 'png',
-  compression: 100, moderation: 'auto', responseFormat: 'auto', extra: '{}', characterMode: 'flat', advanced: normalizeAdvanced(),
+  compression: 100, moderation: 'auto', responseFormat: 'auto', extra: '{}', characterMode: 'flat', decrisper: false, advanced: normalizeAdvanced(),
 });
 const SIZES = [
   ['auto', '自动'], ['1024x1024', '方图 · 1024 × 1024'],
@@ -68,6 +68,7 @@ export function normalizeOpenAI(value = {}) {
   if (openAIQualityOptions(result).some(([id]) => id === source.quality)) result.quality = source.quality;
   if (result.background === 'transparent' && result.outputFormat === 'jpeg') result.outputFormat = 'png';
   if (usesGPTImage(result)) result.responseFormat = 'auto';
+  result.decrisper = source.decrisper === true;
   result.advanced = normalizeAdvanced(source.advanced);
   return result;
 }
@@ -171,6 +172,10 @@ export function buildOpenAIRequest(value, characters = []) {
     'authorization', 'headers', 'token', 'access_token', 'password', 'secret', '__proto__', 'constructor', 'prototype']);
   if (Object.keys(extra).some((key) => reserved.has(key.toLowerCase()))) throw new Error('附加参数不能覆盖界面参数或包含鉴权信息');
   const body = { model: params.model, prompt, n: params.n, ...extra };
+  if (isOpenAINovelAI(params.model) && params.decrisper) {
+    if (Object.keys(extra).some((key) => key.toLowerCase() === 'dynamic_thresholding')) throw new Error('Decrisper 已由开关设置，请移除附加 JSON 中的 dynamic_thresholding');
+    body.dynamic_thresholding = true;
+  }
   if (independentCharacters('openai', params.model, params.characterMode)) {
     if (characters.length > characterLimit('openai', params.model)) throw new Error('当前模型的出场人数超限，请减少人物');
     if (Object.keys(extra).some((key) => ['v4_prompt', 'v4_negative_prompt', 'characterprompts', 'use_coords'].includes(key.toLowerCase()))) {
@@ -264,6 +269,7 @@ export function renderOpenAIParameters(state, models = [], advancedOpen = false,
     ${value.size === 'custom' ? `<div class="nai-dimensions">${number('width', '宽度 (px)')}<button type="button" class="ui-icon-button" data-action="openai-swap-size" title="交换宽高" aria-label="交换宽高">${icon('arrow-left-right')}</button>${number('height', '高度 (px)')}</div>` : ''}
     <div class="two-field-row">${number('n', '每次生成张数')}${select('quality', '图像质量', openAIQualityOptions(value))}</div>
     <details class="advanced-options openai-advanced" data-experience-fold="openai-parameters" ${advancedOpen || state.experience?.level === 'full' ? 'open' : ''}><summary>${icon('settings-2')}其他参数设置${icon('chevron-down')}</summary>
+      ${isOpenAINovelAI(value.model) ? `<label class="nai-toggle"><span>Decrisper<small>仅在接口支持动态阈值参数时开启</small></span><input type="checkbox" role="switch" data-openai="decrisper" ${value.decrisper ? 'checked' : ''} /><span class="nai-toggle-track" aria-hidden="true"></span></label>` : ''}
       <div class="two-field-row">
         ${select('parameterMode', '参数模式', [['auto', '按模型自动识别'], ['gpt', 'GPT Image'], ['basic', '通用图片接口']])}
         ${select('outputFormat', '图片格式', [['png', 'PNG'], ['jpeg', 'JPEG'], ['webp', 'WebP']], !gpt)}

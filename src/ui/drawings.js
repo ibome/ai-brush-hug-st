@@ -20,6 +20,7 @@ import { normalizeProcessing, processingTitle } from '../novelai-processing.js';
 import { extensionMetadata } from '../extension-api.js';
 import { SDWEBUI_DEFAULTS, normalizeSDWebUI } from '../sdwebui.js';
 import { normalizeChatPromptStyle } from '../chat-prompt-style.js';
+import { normalizeFieldSettings } from '../multi-character-fields.js';
 
 const DB_NAME = storageKey('linghuashi-drawings-v1');
 const MAX_IMAGE = 20 * 1024 * 1024;
@@ -43,6 +44,21 @@ const transactionDone = (transaction) => new Promise((resolve, reject) => {
 export function normalizeSnapshot(value) {
   if (!record(value)) return null;
   const characters = value.characterScene ? { characterScene: normalizeCharacterScene(value.characterScene) } : {};
+  if (record(value.promptFields)) characters.promptFields = normalizeFieldSettings(value.promptFields);
+  if (record(value.promptReplacements) && typeof value.promptReplacements.signature === 'string'
+    && value.promptReplacements.signature.length < 400000) {
+    characters.promptReplacements = {
+      signature: value.promptReplacements.signature,
+      ...(typeof value.promptReplacements.input === 'string' && value.promptReplacements.input.length < 400000
+        ? { input: value.promptReplacements.input } : {}),
+      hits: (Array.isArray(value.promptReplacements.hits) ? value.promptReplacements.hits : []).slice(0, 200)
+        .filter((row) => row && typeof row.trigger === 'string' && typeof row.replacement === 'string')
+        .map((row) => ({ field: String(row.field || '').slice(0, 160), trigger: row.trigger.slice(0, 80),
+          replacement: row.replacement.slice(0, 4000), source: String(row.source || '').slice(0, 20) })),
+      warnings: (Array.isArray(value.promptReplacements.warnings) ? value.promptReplacements.warnings : [])
+        .slice(0, 100).map((row) => String(row).slice(0, 200)),
+    };
+  }
   const promptStyle = normalizeChatPromptStyle(value.chatPromptStyle, (value.params || value.config?.params)?.positive)
     || (characters.characterScene?.applied
       ? normalizeChatPromptStyle(value.chatPromptStyle, characters.characterScene.basePositive) : null);
@@ -91,11 +107,12 @@ export function captureSnapshot(state) {
   const chat = currentChat();
   const characterScene = state.characterSceneOverride ? clone(state.characterSceneOverride) : resolveCharacterScene(state.characterProfiles, chat.key, chat.avatars);
   if (state.characterSceneOverrideProvider && state.characterSceneOverrideProvider !== state.provider && characterScene) delete characterScene.applied;
-  if (state.provider === 'openai') return normalizeSnapshot({ provider: 'openai', params: state.openai, characterScene });
-  if (state.provider === 'sdwebui') return normalizeSnapshot({ provider: 'sdwebui', params: state.sdwebui, characterScene });
+  const fields = state.promptProcessing ? { promptFields: state.promptProcessing.fields } : {};
+  if (state.provider === 'openai') return normalizeSnapshot({ provider: 'openai', params: state.openai, characterScene, ...fields });
+  if (state.provider === 'sdwebui') return normalizeSnapshot({ provider: 'sdwebui', params: state.sdwebui, characterScene, ...fields });
   return normalizeSnapshot(state.provider === 'comfyui'
-    ? { provider: 'comfyui', config: clone(state.comfyui), characterScene }
-    : { provider: 'novelai', params: state.novelai, characterScene });
+    ? { provider: 'comfyui', config: clone(state.comfyui), characterScene, ...fields }
+    : { provider: 'novelai', params: state.novelai, characterScene, ...fields });
 }
 
 export function restoreSnapshot(state, snapshot) {
@@ -220,7 +237,7 @@ async function snapshotFromPNG(bytes) {
     if (text.prompt) return { snapshot: { provider: 'comfyui', config: newComfyConfig(parseWorkflow(text.prompt), 'PNG 工作流') }, warning: '' };
     if (/novelai/i.test(text.Software || '') && text.Comment) {
       const metadata = JSON.parse(text.Comment);
-      const aliases = { prompt: 'positive', uc: 'negative', width: 'width', height: 'height', steps: 'steps', scale: 'scale', seed: 'seed', sampler: 'sampler', noise_schedule: 'noiseSchedule', cfg_rescale: 'cfgRescale', n_samples: 'nSamples', sm: 'sm', sm_dyn: 'smDyn', qualityToggle: 'qualityTags' };
+      const aliases = { prompt: 'positive', uc: 'negative', width: 'width', height: 'height', steps: 'steps', scale: 'scale', seed: 'seed', sampler: 'sampler', noise_schedule: 'noiseSchedule', cfg_rescale: 'cfgRescale', n_samples: 'nSamples', sm: 'sm', sm_dyn: 'smDyn', qualityToggle: 'qualityTags', dynamic_thresholding: 'decrisper' };
       const params = {};
       for (const [source, target] of Object.entries(aliases)) if (Object.hasOwn(metadata, source)) params[target] = metadata[source];
       if (!params.positive && text.Description) params.positive = text.Description;

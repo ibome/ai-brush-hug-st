@@ -39,6 +39,14 @@
       assistant: { source: 'api', model: 'fixture-text', endpoint: 'https://fixture.invalid/v1', keyRef: ref, autoPrompt: false },
       connections: { novelai: { endpoint: 'https://fixture.invalid', keyRef: ref } },
     } };
+  if (new URLSearchParams(location.search).has('prompt-processing')) {
+    Object.assign(window.__LINGHUASHI_ENV__.ui, {
+      page: 'processing',
+      novelai: { model: 'nai-diffusion-4-5-full', positive: 'Scene: cafe\nChar1: 1girl, 蓝发, waving |centers:B3\nChar1 UC: 模糊\nNegative: 模糊',
+        negative: '模糊', artist: 'watercolor', width: 832, height: 1216, decrisper: true },
+      promptProcessing: { enabled: false, rules: [] },
+    });
+  }
   const { createBrowserTaskRequest } = await import('../../src/task-persistence.js');
   const { newComicProject } = await import('../../src/comic.js');
   const { resolveCharacterScene } = await import('../../src/character-profiles.js');

@@ -15,6 +15,7 @@ import { normalizeSDWebUIState } from './ui/sdwebui.js';
 import { normalizeReaderSettings } from './chat-reader.js';
 import { normalizeComicLibrary, validateComicLibrary, COMIC_LIMITS, comicProjectFile } from './comic.js';
 import { normalizeLocalTools } from './local-tools.js';
+import { validatePromptProcessing, normalizePromptProcessing, saveTriggerRule } from './prompt-triggers.js';
 
 export const BACKUP_SECTIONS = Object.freeze([
   ['general', '插件设置与主题'], ['connections', '接口配置'], ['parameters', '参数预设与工作流'],
@@ -28,7 +29,7 @@ export const CONFIG_KEYS = Object.freeze({
   parameters: ['novelai', 'novelaiPresets', 'novelaiPresetId', 'openai', 'openaiPresets', 'openaiPresetId',
     'comfyui', 'comfyPresets', 'comfyPresetId', 'sdwebui', 'sdwebuiPresets', 'sdwebuiPresetId', 'workbench', 'vibeLibrary'],
   artists: ['artistLibrary', 'artistLibraryVersion'],
-  tags: ['tagLibrary'],
+  tags: ['tagLibrary', 'promptProcessing'],
   characters: ['characterProfiles'],
   assistant: ['assistant', 'assistantDefaultsVersion', 'assistantSchemes', 'assistantSchemeId'],
   comics: ['comicLibrary'],
@@ -94,6 +95,7 @@ export function normalizeBackupConfig(value = {}, sections = BACKUP_SECTIONS.map
   validateTagTemplates(input.tagLibrary?.templates);
   validateTagMetadata(input.tagLibrary?.custom);
   state.tagLibrary = normalizeTagLibrary(state.tagLibrary);
+  state.promptProcessing = validatePromptProcessing(input.promptProcessing);
   state.workbench = normalizeWorkbench(input.workbench);
   state.drawingReviews = normalizeReviews(input.drawingReviews);
   state.readerSettings = normalizeReaderSettings(input.readerSettings);
@@ -272,8 +274,15 @@ export function mergeBackupConfig(current, imported, sections, mode = 'merge', p
       }
     }
     if (sections.includes('artists')) next.artistLibrary = combineRows(next.artistLibrary, incoming.artistLibrary, 100);
-    if (sections.includes('tags')) next.tagLibrary = mergeTagLibraries(
-      normalizeTagLibrary(next.tagLibrary), normalizeTagLibrary(incoming.tagLibrary));
+    if (sections.includes('tags')) {
+      next.tagLibrary = mergeTagLibraries(normalizeTagLibrary(next.tagLibrary), normalizeTagLibrary(incoming.tagLibrary));
+      next.promptProcessing = normalizePromptProcessing(next.promptProcessing);
+      for (const rule of normalizePromptProcessing(incoming.promptProcessing).rules) {
+        if (next.promptProcessing.rules.some((row) => JSON.stringify([row.aliases, row.replacement, row.target, row.source])
+          === JSON.stringify([rule.aliases, rule.replacement, rule.target, rule.source]))) continue;
+        next.promptProcessing = saveTriggerRule(next.promptProcessing, { ...rule, id: randomUUID() });
+      }
+    }
     if (sections.includes('characters')) {
       const mapping = new Map();
       next.characterProfiles.profiles = combineRows(next.characterProfiles.profiles, incoming.characterProfiles.profiles, 100, mapping, 120);

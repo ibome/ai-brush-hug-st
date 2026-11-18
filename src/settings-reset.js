@@ -5,6 +5,7 @@ import { normalizeComfyParams } from './ui/comfyui.js';
 import { normalizeSDWebUI } from './sdwebui.js';
 import { normalizeAdvanced } from './advanced-generation.js';
 import { normalizeAssistant } from './prompt-assistant.js';
+import { normalizePromptProcessing } from './prompt-triggers.js';
 
 export const RESET_SCOPES = Object.freeze([
   { id: 'general', title: '常规设置', detail: '恢复自动生图、聊天展示、触发格式、任务调度与清理开关。', checked: true },
@@ -30,6 +31,7 @@ export function settingsResetPatch(state, scopes) {
     for (const [key, value] of Object.entries(SETTINGS_DEFAULTS)) {
       if (!retainedSettings.has(key)) patch[key] = value;
     }
+    patch.promptProcessing = normalizePromptProcessing({ rules: state.promptProcessing?.rules });
   }
   if (scopes.includes('generation')) {
     const provider = state.provider;

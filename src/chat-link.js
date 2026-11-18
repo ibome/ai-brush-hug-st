@@ -859,7 +859,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     const type = context.eventTypes[key];
     if (type) { context.eventSource.on(type, handler); listeners.push([type, handler]); }
   };
-  on('GENERATION_STARTED', (type, _options, dryRun) => {
+  // Slash commands can abort generation after STARTED without emitting ENDED.
+  on(context.eventTypes.GENERATION_AFTER_COMMANDS ? 'GENERATION_AFTER_COMMANDS' : 'GENERATION_STARTED', (type, _options, dryRun) => {
     if (!dryRun && type !== 'quiet') {
       stopped = false; generating = true;
       const current = getContext().streamingProcessor;

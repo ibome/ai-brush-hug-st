@@ -2,6 +2,7 @@ import { escapeHtml as esc } from '../config.js';
 import { icon } from '../icons.js';
 import { CREATION_MODES } from '../creation-workflow.js';
 import { POSITION_OPTIONS } from '../character-profiles.js';
+import { renderPromptReplacements } from './prompt-processing.js';
 import '../styles/creation-workflow.css';
 
 export function renderCreationModes(page) {
@@ -17,9 +18,13 @@ export function renderCreationPreview(preview, stale = false) {
     <p>${esc(preview.model)} · ${esc(preview.mode)} · ${preview.width} × ${preview.height} · ${preview.count} 张</p>
     ${preview.model !== preview.selectedModel ? `<p>所选模型：${esc(preview.selectedModel)}；本次使用上方对应的重绘模型。</p>` : ''}
     ${preview.transparent ? '<p>透明背景 PNG 已开启</p>' : preview.transparencyUnavailable ? '<p>本次实际模型不支持透明背景，将按普通图片生成。</p>' : ''}
+    ${preview.decrisper ? '<p>Decrisper 已开启 · 动态阈值处理</p>' : ''}
     ${preview.pendingOutfits?.length ? `<p role="status">尚未应用的服装：${preview.pendingOutfits.map(esc).join('、')}。下方显示已应用配置。</p>` : ''}
     ${preview.characters.length ? `<p>多角色：${esc(preview.characterTransport || '合并描述')} · ${preview.characters.length} 人</p>` : ''}
     ${(preview.characterWarnings || []).map((warning) => `<p role="status">${esc(warning)}</p>`).join('')}
+    ${preview.replacementEnabled || preview.replacements ? `<details><summary>触发词替换记录</summary>${renderPromptReplacements({
+      replacementEnabled: preview.replacementEnabled, replacements: preview.replacements,
+    })}</details>` : ''}
     <details class="prompt-sources" open><summary>提示词组成与来源</summary>
       <dl>${(preview.components || []).map((row) => `<div><dt>${esc(row.label)}<small>${esc(row.source)}</small></dt><dd>${esc(row.text || '未设置')}</dd></div>`).join('')}
       ${(preview.roles || []).map((row) => `<div><dt>${esc(row.name)}<small>${esc(row.source)}</small></dt><dd>

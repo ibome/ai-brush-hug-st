@@ -13,6 +13,7 @@ export const navigation = [
   { id: 'characters', title: '角色档案', icon: 'users-round' },
   { id: 'styles', title: '画师串库', icon: 'palette' },
   { id: 'tags', title: '中文标签库', icon: 'list-filter' },
+  { id: 'processing', title: '提示词处理', icon: 'replace' },
   { id: 'generate', title: '生图工坊', icon: 'wand-sparkles' },
   { id: 'gallery', title: '绘图管理', icon: 'images' },
   { id: 'reader', title: '图文阅读', icon: 'book-open' },

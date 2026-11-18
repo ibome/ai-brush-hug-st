@@ -51,6 +51,7 @@ export const NOVELAI_DEFAULTS = Object.freeze({
   variety: false,
   sm: false,
   smDyn: false,
+  decrisper: false,
   transparent: false,
   advanced: normalizeAdvanced(),
 });
@@ -202,7 +203,7 @@ export function renderNovelAIParameters(state, advancedOpen = false) {
         ${field('负面预设', `<select data-nai="ucPreset">${options([['0', 'Heavy'], ['1', 'Light'], ['2', 'Furry'], ['3', 'Human Focus'], ['4', 'None']], value.ucPreset)}</select>`)}
         <p class="nai-seed-note">种子 -1 表示每次随机</p>
       </div>
-      <div class="nai-toggle-grid">${toggle('qualityTags', '质量标签')}${v5 ? toggle('transparent', '透明背景') : ''}${toggle('variety', 'Variety+', !supportsVariety(value.model), '仅 NAI 4 / 4.5')}${toggle('sm', 'SMEA', !nai3, '仅 NAI 3')}${toggle('smDyn', 'SMEA DYN', !nai3 || !value.sm, '需启用 SMEA')}</div>
+      <div class="nai-toggle-grid">${toggle('qualityTags', '质量标签')}${v5 ? toggle('transparent', '透明背景') : ''}${toggle('variety', 'Variety+', !supportsVariety(value.model), '仅 NAI 4 / 4.5')}${toggle('sm', 'SMEA', !nai3, '仅 NAI 3')}${toggle('smDyn', 'SMEA DYN', !nai3 || !value.sm, '需启用 SMEA')}${toggle('decrisper', 'Decrisper', false, '缓解高 CFG 的画面瑕疵')}</div>
     </details>
   </section>`;
 }

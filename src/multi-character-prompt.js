@@ -1,19 +1,9 @@
 import { normalizeProfile, normalizeCharacterScene, applyCharacterScene, normalizeAliases } from './character-profiles.js';
 import { characterPosition, characterLimit } from './character-layout.js';
 import { parsePrompt, serializePrompt, rebuildPromptGroup, promptIdentity } from './prompt-composer.js';
-import { createChatPromptStyle } from './chat-prompt-style.js';
+import { createChatPromptStyle, chatPromptText } from './chat-prompt-style.js';
+import { multiCharacterFields } from './multi-character-fields.js';
 
-const headers = /(?:^|[;\r\n])[ \t]*(Scene\s+Composition|Character\s+(\d+)\s+(Prompt|UC|Name|ID|Action|Expression|Outfit)|Negative\s+prompt|场景(?:描述|构图)?|角色\s*(\d+)\s*(正向(?:提示词)?|负面(?:提示词)?|名称|名字|ID|动作|表情|服装)|全局负面(?:提示词)?)[：:][ \t]*/giu;
-const keyOf = (match) => {
-  if (/^(?:Scene|场景)/i.test(match[1])) return 'scene';
-  if (/^(?:Negative|全局负面)/i.test(match[1])) return 'negative';
-  const type = match[3] || match[5];
-  if (/^(?:Action|动作)$/i.test(type)) return 'action';
-  if (/^(?:Expression|表情)$/i.test(type)) return 'expression';
-  if (/^(?:Outfit|服装)$/i.test(type)) return 'outfit';
-  return /^(?:Prompt|正向)/i.test(type) ? 'positive' : /^(?:UC|负面)/i.test(type) ? 'negative'
-    : /^ID$/i.test(type) ? 'profileId' : 'name';
-};
 const clean = (value) => value.trim().replace(/[;\s]+$/, '').trim();
 const folded = (value) => value.normalize('NFKC').trim().toLocaleLowerCase();
 
@@ -30,20 +20,20 @@ export function characterDynamics(value) {
   return serializePrompt(filter(parsePrompt(value).items));
 }
 
-export function parseMultiCharacterPrompt(input) {
+export function parseMultiCharacterPrompt(input, fields) {
   if (typeof input !== 'string' || !input.trim()) return null;
   if (input.length > 32000) throw new Error('多角色提示词不能超过 32000 字符');
-  const matches = [...input.matchAll(new RegExp(headers))];
-  if (!matches.some((match) => match[2] || match[4])) return null;
+  const matches = multiCharacterFields(input, fields);
+  if (!matches.some((match) => match.number !== undefined)) return null;
   const characters = new Map(), shared = { scene: '', negative: '' }, warnings = [], seen = new Set();
   const preamble = clean(input.slice(0, matches[0].index));
   for (const [index, match] of matches.entries()) {
-    const number = Number(match[2] || match[4]), key = keyOf(match);
-    const fieldId = `${match[2] || match[4] || 'shared'}:${key}`;
+    const number = match.number, key = match.key;
+    const fieldId = `${number ?? 'shared'}:${key}`;
     if (seen.has(fieldId)) throw new Error(`多角色提示词的 ${fieldId} 字段重复，请保留一组描述`);
     seen.add(fieldId);
-    let content = clean(input.slice(match.index + match[0].length, matches[index + 1]?.index ?? input.length));
-    if (!match[2] && !match[4]) {
+    let content = clean(input.slice(match.end, matches[index + 1]?.index ?? input.length));
+    if (number === undefined) {
       if (shared[key]) throw new Error(`多角色提示词重复填写了${key === 'scene' ? '公共场景' : '全局负面词'}`);
       shared[key] = content;
       continue;
@@ -51,7 +41,13 @@ export function parseMultiCharacterPrompt(input) {
     if (!Number.isInteger(number) || number < 1 || number > 22) throw new Error('角色编号需为 1 至 22');
     if (!characters.has(number)) characters.set(number, { number, name: '', profileId: '', positive: '', negative: '', position: 'auto' });
     const character = characters.get(number);
-    if (character[key]) throw new Error(`角色 ${number} 的${key}字段重复，请保留一组描述`);
+    if (key !== 'position' && character[key]) throw new Error(`角色 ${number} 的${key}字段重复，请保留一组描述`);
+    if (match.position) character.position = characterPosition(match.position);
+    if (key === 'position') {
+      character.position = characterPosition(content);
+      if (character.position === 'auto' && content.toLowerCase() !== 'auto') warnings.push(`角色 ${number} 的坐标无效，已使用自动位置`);
+      continue;
+    }
     if (key === 'positive') {
       content = content.replace(/\|\s*(centers|name|id)\s*[：:]\s*([^|;\r\n]+)/gi, (_, marker, value) => {
         const field = marker.toLowerCase();
@@ -92,8 +88,8 @@ export function matchCharacterProfile(role, profiles) {
   return matches.length > 1 ? { warning: `角色 ${role.number} 匹配到多个同名档案，已保留为本图临时角色；可用角色 ID 指定` } : {};
 }
 
-export function prepareMultiCharacterPrompt(snapshot, input, { profiles = [], chatKey = '', scene: currentScene, basePositive } = {}) {
-  const parsed = parseMultiCharacterPrompt(input);
+export function prepareMultiCharacterPrompt(snapshot, input, { profiles = [], chatKey = '', scene: currentScene, basePositive, fields = snapshot.promptFields } = {}) {
+  const parsed = parseMultiCharacterPrompt(input, fields);
   if (!parsed) return null;
   const next = structuredClone(snapshot), params = next.params || next.config.params;
   if (parsed.characters.length > characterLimit(next.provider, params.model)) {
@@ -135,4 +131,18 @@ export function prepareMultiCharacterPrompt(snapshot, input, { profiles = [], ch
   const preparedParams = prepared.params || prepared.config.params;
   if (entries.length > characterLimit(next.provider, preparedParams.model)) throw new Error('固定出场人物与本图角色合计超过当前模型人数上限');
   return prepared;
+}
+
+export function prepareChatMultiCharacterPrompt(snapshot, input, options = {}) {
+  const params = snapshot.params || snapshot.config.params;
+  const prepared = prepareMultiCharacterPrompt(snapshot, params.positive, options);
+  const structured = prepareMultiCharacterPrompt(prepared || snapshot, input, {
+    ...options, basePositive: createChatPromptStyle(prepared?.characterScene.basePositive ?? params.positive, '', options.defaultPrompt).prefix,
+  });
+  if (structured) return structured;
+  if (!prepared) return null;
+  const scene = prepared.characterScene;
+  prepared.chatPromptStyle = createChatPromptStyle(scene.basePositive, input, options.defaultPrompt);
+  scene.basePositive = chatPromptText(prepared.chatPromptStyle);
+  return applyCharacterScene(prepared, scene);
 }

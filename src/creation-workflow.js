@@ -3,6 +3,7 @@ import { validateAdvanced, ADVANCED_MODES } from './advanced-generation.js';
 import { isNovelAIV5, novelAIImageModel } from './novelai-models.js';
 import { prepareMultiCharacterPrompt } from './multi-character-prompt.js';
 import { characterLimit, independentCharacters, characterLayoutWarnings } from './character-layout.js';
+import { applyPromptTriggers } from './prompt-triggers.js';
 
 export const CREATION_MODES = Object.freeze([
   ['generate', '标签生图', 'braces'],
@@ -12,11 +13,18 @@ export const CREATION_MODES = Object.freeze([
 
 export const creationRevision = (snapshot) => JSON.stringify(snapshot);
 
-export function previewCreation(snapshot, { preset, origin, pendingOutfits = [], profiles } = {}) {
+export function prepareCreation(snapshot, { profiles, processing, tagLibrary } = {}) {
   const initial = snapshot.params || snapshot.config.params;
-  const prepared = prepareMultiCharacterPrompt(snapshot, initial.positive, {
+  const input = snapshot.characterScene?.applied ? snapshot.characterScene.basePositive : initial.positive;
+  const parsed = snapshot.characterScene?.source === 'structured' ? null : prepareMultiCharacterPrompt(snapshot, input, {
     profiles: profiles || snapshot.characterScene?.entries.map((entry) => entry.profile) || [],
-  }) || applyCharacterScene(snapshot, snapshot.characterScene);
+    fields: processing?.fields || snapshot.promptFields,
+  });
+  return applyPromptTriggers(parsed || applyCharacterScene(snapshot, snapshot.characterScene), { settings: processing, tagLibrary });
+}
+
+export function previewCreation(snapshot, { preset, origin, pendingOutfits = [], profiles, processing, tagLibrary } = {}) {
+  const prepared = prepareCreation(snapshot, { profiles, processing, tagLibrary });
   const advanced = validateAdvanced(prepared);
   const params = prepared.params || prepared.config.params;
   const limit = characterLimit(prepared.provider, params.model);
@@ -37,12 +45,16 @@ export function previewCreation(snapshot, { preset, origin, pendingOutfits = [],
   const baseNegative = scene?.applied ? scene.baseNegative : base.negative || '';
   return {
     model, selectedModel,
+    decrisper: (prepared.provider === 'novelai' || prepared.provider === 'openai' && /nai-diffusion/i.test(model))
+      && params.decrisper === true,
     transparent: prepared.provider === 'novelai' && isNovelAIV5(model) && params.transparent === true,
     transparencyUnavailable: prepared.provider === 'novelai' && params.transparent === true && !isNovelAIV5(model),
     mode: ADVANCED_MODES.find(([id]) => id === advanced.mode)?.[1] || '文生图',
     width: params.width, height: params.height, count: params.nSamples || 1,
     positive, negative: params.negative || '',
     pendingOutfits,
+    replacementEnabled: processing?.enabled === true,
+    replacements: prepared.promptReplacements || null,
     characterTransport: independentCharacters(prepared.provider, params.model, params.characterMode) ? '独立角色参数'
       : prepared.provider === 'comfyui' && prepared.config.mapping.characterPrompts ? '角色 JSON 节点与合并描述' : '合并描述',
     characterWarnings: [
@@ -58,7 +70,7 @@ export function previewCreation(snapshot, { preset, origin, pendingOutfits = [],
       const direction = scene.directions?.find((row) => row.profileId === entry.profileId), outfit = effectiveOutfit(entry);
       return {
         name: entry.profile.name, source: { once: '仅下一次生图', chat: '当前聊天', project: '漫画项目', global: '全局默认' }[entry.outfitScope]
-          || (scene.chatKey ? '当前聊天角色档案' : '全局角色档案'),
+          || (scene.source === 'structured' ? '分段提示词 · 本图人物' : scene.chatKey ? '当前聊天角色档案' : '全局角色档案'),
         outfit: (!outfit.locked && direction?.outfit || outfit.prompt) || '由剧情 / AI 决定',
         appearance: !entry.profile.lockAppearance && direction?.appearance
           || [entry.profile.tags, entry.profile.hair, entry.profile.eyes, entry.profile.body, entry.profile.features].filter(Boolean).join(', '),

@@ -127,7 +127,7 @@ export function buildNovelAIRequest(params, characterPrompts = []) {
     n_samples: params.nSamples, negative_prompt: params.negative,
     ucPreset: Number(params.ucPreset), qualityToggle: params.qualityTags,
     cfg_rescale: params.cfgRescale, noise_schedule: params.noiseSchedule,
-    dynamic_thresholding: false, legacy: false, legacy_uc: false,
+    dynamic_thresholding: params.decrisper === true, legacy: false, legacy_uc: false,
     add_original_image: true, controlnet_strength: 1,
     reference_image_multiple: [], reference_information_extracted_multiple: [],
     reference_strength_multiple: [],

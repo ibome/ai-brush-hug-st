@@ -80,9 +80,11 @@ import { migrateProfileLibrary, normalizeProfileLibrary, normalizeProfile, effec
   applySceneOutfit, setGlobalOutfit, reconcileTemporaryScene } from '../character-profiles.js';
 import { characterLimit } from '../character-layout.js';
 import { editCharacterParticipant, selectCharacterParticipant, arrangeCharacterScene } from '../character-scene-editor.js';
-import { prepareMultiCharacterPrompt } from '../multi-character-prompt.js';
+import { prepareMultiCharacterPrompt, prepareChatMultiCharacterPrompt } from '../multi-character-prompt.js';
+import { normalizePromptProcessing, validatePromptProcessing } from '../prompt-triggers.js';
+import { PromptProcessingPanel } from './prompt-processing.js';
 import { renderCharacters as renderCharacterPage, renderCharacterSelection, refreshOutfitDraftFeedback } from './characters.js';
-import { creationRevision, previewCreation } from '../creation-workflow.js';
+import { creationRevision, previewCreation, prepareCreation } from '../creation-workflow.js';
 import { renderCreationModes, renderCreationPreview } from './creation-workflow.js';
 import { OutfitDraftSessions, pendingOutfitDrafts, prepareOutfitDrafts } from '../outfit-drafts.js';
 import { confirmOutfitDrafts } from './outfit-drafts.js';
@@ -218,6 +220,7 @@ state.artistLibrary = normalizeArtistLibrary(state.artistLibraryVersion === 1 ? 
   : styles.map((style) => ({ id: style.id, name: style.title, category: '基础风格', artist: style.tags, target: 'all' })));
 state.artistLibraryVersion = 1;
 state.tagLibrary = normalizeTagLibrary(state.tagLibrary);
+state.promptProcessing = normalizePromptProcessing(state.promptProcessing);
 state.workbench = normalizeWorkbench(state.workbench);
 state.drawingReviews = normalizeReviews(state.drawingReviews);
 state.vibeLibrary = normalizeVibeLibrary(state.vibeLibrary);
@@ -1145,6 +1148,21 @@ function persist() {
   refreshSaveStatus();
   refreshSetupSummary();
 }
+
+const promptProcessingPanel = new PromptProcessingPanel({
+  getSettings: () => state.promptProcessing,
+  setSettings: (value) => {
+    const previous = state.promptProcessing;
+    state.promptProcessing = validatePromptProcessing(value);
+    try { persist(); } catch (error) { state.promptProcessing = previous; throw error; }
+    refreshCreationPreviewState();
+  },
+  preview: () => previewCreation(captureSnapshot(state), {
+    profiles: effectiveProfiles(state.characterProfiles, currentChat().key),
+    processing: state.promptProcessing, tagLibrary: state.tagLibrary,
+  }),
+  render: () => render(true), notify: (message) => toast(message),
+});
 
 function configSaveInfo() {
   const sync = getUIStateSync();
@@ -2121,7 +2139,7 @@ function renderGenerate() {
         ${experienceFold(state, 'generation-modes', '图生图、局部重绘与参考图', advancedPanel.html(), advancedOf(captureSnapshot(state)).mode !== 'text')}
         ${novelai ? renderNovelAIParameters(state, novelaiAdvancedOpen) : openai ? renderOpenAIParameters(state, openaiModels, openaiAdvancedOpen, { ...openaiModelUI, loading: connectionStatus.tone === 'pending' }) : state.provider === 'sdwebui' ? renderSDWebUIParameters(state, sdwebuiProbe, sdwebuiAdvancedOpen) : renderComfyWorkflow(state, comfyProbe, comfyExpanded)}
         ${renderCharacterSelection(state, currentChat(), { frozen: Boolean(state.characterSceneOverride), outfitDrafts: profileUI.outfitDrafts })}
-        <div class="assistant-actions">${button('scan-eye', '预览本次生图', 'creation-preview', 'secondary')}${button('sparkles', '用当前提示词构思', 'creation-assistant', 'secondary')}</div>
+        <div class="assistant-actions">${button('scan-eye', '预览本次生图', 'creation-preview', 'secondary')}${button('sparkles', '用当前提示词构思', 'creation-assistant', 'secondary')}<button type="button" class="ui-button secondary" data-page="processing">${icon('replace')}字段与触发词</button></div>
         ${renderCreationPreview(creationPreviewState?.preview, creationPreviewState && creationPreviewState.revision !== currentCreationRevision())}
       </section>
       ${renderGenerationResult()}
@@ -2138,7 +2156,7 @@ function creationSources() {
 }
 function currentCreationRevision() {
   return creationRevision([captureSnapshot(state), creationSources(), profileUI.outfitDrafts,
-    effectiveProfiles(state.characterProfiles, currentChat().key)]);
+    effectiveProfiles(state.characterProfiles, currentChat().key), state.promptProcessing, state.tagLibrary]);
 }
 function refreshCreationPreviewState() {
   const node = host?.querySelector('[data-creation-preview-state]');
@@ -2343,7 +2361,8 @@ function commitOpenAIFields() {
   host.querySelectorAll('[data-openai-negative-field]').forEach((field) => { field.hidden = !nai; });
   host.querySelectorAll('[data-openai]').forEach((input) => {
     const key = input.dataset.openai;
-    input.value = state.openai[key];
+    if (input.type === 'checkbox') input.checked = state.openai[key];
+    else input.value = state.openai[key];
     if (['outputFormat', 'background', 'moderation'].includes(key)) input.disabled = !gpt;
     if (key === 'compression') input.disabled = !gpt || state.openai.outputFormat === 'png';
     if (key === 'responseFormat') input.disabled = gpt;
@@ -2396,7 +2415,11 @@ function showOpenAIRequest() {
   try {
     commitOpenAIFields();
     const urls = openAIURLs(state.openaiEndpoint, state.openaiPath);
-    const body = buildOpenAIRequest(state.openai);
+    const prepared = prepareCreation(captureSnapshot(state), {
+      profiles: effectiveProfiles(state.characterProfiles, currentChat().key),
+      processing: state.promptProcessing, tagLibrary: state.tagLibrary,
+    });
+    const body = buildOpenAIRequest(prepared.params, prepared.characterScene?.characterPrompts);
     const overlay = document.getElementById('overlay-root');
     overlay.innerHTML = `<dialog class="nai-preset-dialog openai-request-dialog" aria-label="生图请求"><header><h2>生图请求</h2>${iconButton('x', '关闭', 'close-request')}</header><p>POST ${esc(urls.generation)}</p><pre>${esc(JSON.stringify(body, null, 2))}</pre></dialog>`;
     const dialog = overlay.querySelector('dialog');
@@ -3183,7 +3206,7 @@ function renderConsole() {
       repairs: renderFailureActions(assistantFailureActions()),
       prompts: taskPromptPanel.entry(), schemes: assistantSchemePanel.html(), diagnostics: assistantDiagnosticPanel.html(), lint: assistantLintPanel.html(),
       history: assistantHistoryPanel.html(), recovery: assistantRecoveryPanel.html(), context: assistantContextPanel.html(),
-      scene: assistantScenePanel.html(), compatibility: renderAssistantCompatibility(state, assistantUI), budget: renderAssistantBudget(assistantUI.budget) }), comic: () => comicPanel.html(), reader: () => readerPanel.html(), generate: renderGenerate, batch: () => workbenchPanel.html() + renderTasks(), connection: renderConnection, characters: renderCharacters, styles: renderStyles, tags: () => tagPanel.html(), gallery: renderGallery, components: () => componentsPanel.html(), debug: () => debugToolsPanel.html(), changelog: () => changelogPanel.html() }[state.page] || (() => renderSettings(state, backupPanel.html()));
+      scene: assistantScenePanel.html(), compatibility: renderAssistantCompatibility(state, assistantUI), budget: renderAssistantBudget(assistantUI.budget) }), comic: () => comicPanel.html(), reader: () => readerPanel.html(), generate: renderGenerate, batch: () => workbenchPanel.html() + renderTasks(), connection: renderConnection, characters: renderCharacters, styles: renderStyles, tags: () => tagPanel.html(), processing: () => promptProcessingPanel.html(), gallery: renderGallery, components: () => componentsPanel.html(), debug: () => debugToolsPanel.html(), changelog: () => changelogPanel.html() }[state.page] || (() => renderSettings(state, backupPanel.html()));
   const navigationPage = state.page === 'batch' ? 'generate' : state.page;
   const setupPage = ['settings', 'connection', 'generate', 'assistant', 'comic'].includes(state.page);
   const sessionName = isInstalled() ? esc(currentChat().name) : '林间的旅人';
@@ -3276,6 +3299,8 @@ function render(force = false) {
     && editing?.matches('[data-artist-field], [data-artist-search]')) return;
   if (!force && host.dataset.renderedPage === 'tags' && state.page === 'tags'
     && editing?.closest('[data-tag-root]')) return;
+  if (!force && host.dataset.renderedPage === 'processing' && state.page === 'processing'
+    && editing?.closest('[data-processing-root]')) return;
   if (!force && host.dataset.renderedPage === 'batch' && state.page === 'batch'
     && editing?.closest('[data-batch-root]')) return;
   if (!force && host.dataset.renderedPage === state.page && ['characters', 'assistant'].includes(state.page)
@@ -3342,6 +3367,7 @@ function render(force = false) {
   changelogPanel.bind(host);
   componentsPanel.bind(host);
   debugToolsPanel.bind(host);
+  promptProcessingPanel.bind(host);
   readerPanel.bind(host);
   comicPanel.bind(host);
   assistantPresetPanel.bind(host);
@@ -3414,7 +3440,7 @@ export function showPage(page) {
     host?.querySelector('[data-release-fold]')?.scrollIntoView({ block: 'start' });
     return;
   }
-  if (!['settings', 'generate', 'batch', 'gallery', 'assistant', 'comic', 'reader', 'characters', 'styles', 'tags', 'connection', 'components', 'debug', 'changelog'].includes(page)) return;
+  if (!['settings', 'generate', 'batch', 'gallery', 'assistant', 'comic', 'reader', 'characters', 'styles', 'tags', 'processing', 'connection', 'components', 'debug', 'changelog'].includes(page)) return;
   if (state.page === 'reader' && page !== 'reader') readerPanel.leave();
   if (state.page === 'comic' && page !== 'comic') comicPanel.leave();
   if (page === 'changelog' && releasePanel.hasUpdate) releasePanel.open = true;
@@ -4071,6 +4097,12 @@ function openAIGenerationVerified() {
 }
 
 async function prepareGenerationPlan(snapshot, credential, connection, imageEdit) {
+  if (!snapshot.novelaiProcessing) {
+    snapshot = prepareCreation(snapshot, {
+      profiles: effectiveProfiles(state.characterProfiles, snapshot.characterScene?.chatKey || currentChat().key),
+      processing: state.promptProcessing, tagLibrary: state.tagLibrary,
+    });
+  }
   const provider = snapshot.provider;
   const params = snapshot.params || snapshot.config.params;
   const limit = characterLimit(provider, params.model);
@@ -4643,9 +4675,9 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
       }
       let structured;
       try {
-        structured = prepareMultiCharacterPrompt(snapshot, request.prompt, {
+        structured = prepareChatMultiCharacterPrompt(snapshot, request.prompt, {
           profiles: effectiveProfiles(state.characterProfiles, request.binding.chatKey), chatKey: request.binding.chatKey,
-          basePositive: mergeChatPrompt(params.positive, '', samples[0].prompt),
+          defaultPrompt: samples[0].prompt,
         });
       } catch (error) { report('failed', error.message); return; }
       if (structured) {
@@ -5281,6 +5313,7 @@ export function mountPlugin(root, next) {
           const snapshot = captureSnapshot(state);
           creationPreviewState = { revision: currentCreationRevision(), preview: previewCreation(snapshot, {
             profiles: effectiveProfiles(state.characterProfiles, currentChat().key),
+            processing: state.promptProcessing, tagLibrary: state.tagLibrary,
             ...creationSources(), pendingOutfits: pendingOutfitDrafts(snapshot.characterScene, profileUI.outfitDrafts).map((row) => row.name),
           }) };
           render(true); revealSetting('.creation-preview');
@@ -5534,7 +5567,8 @@ export function mountPlugin(root, next) {
     }
     const openaiKey = event.target.dataset.openai;
     if (openaiKey && Object.hasOwn(OPENAI_DEFAULTS, openaiKey) && !event.target.disabled) {
-      state.openai[openaiKey] = event.target.type === 'number' && event.target.value !== '' ? Number(event.target.value) : event.target.value;
+      state.openai[openaiKey] = event.target.type === 'checkbox' ? event.target.checked
+        : event.target.type === 'number' && event.target.value !== '' ? Number(event.target.value) : event.target.value;
       persist(); updateOpenAIDirty(); updateConnectionStatus(); return;
     }
     const connectionKey = event.target.dataset.openaiConnection;

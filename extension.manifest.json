@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.15&build=20261118-multi-character",
+  "js": "dist/index.js?ver=0.26.16&build=20261119-prompt-processing",
   "author": "小波",
-  "version": "0.26.15",
+  "version": "0.26.16",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

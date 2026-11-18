@@ -87,7 +87,8 @@ async function start() {
     if (!dryRun && type !== 'quiet') textGenerating = true;
   };
   const textEnded = () => { textGenerating = false; };
-  const textEvents = [['GENERATION_STARTED', textStarted], ['GENERATION_ENDED', textEnded], ['GENERATION_STOPPED', textEnded]]
+  const textStartEvent = context.eventTypes?.GENERATION_AFTER_COMMANDS ? 'GENERATION_AFTER_COMMANDS' : 'GENERATION_STARTED';
+  const textEvents = [[textStartEvent, textStarted], ['GENERATION_ENDED', textEnded], ['GENERATION_STOPPED', textEnded]]
     .map(([key, handler]) => [context.eventTypes?.[key], handler]).filter(([type]) => type);
   for (const [type, handler] of textEvents) context.eventSource?.on?.(type, handler);
 

@@ -63,6 +63,20 @@ test('prompt source labels distinguish preset equality, edits and applied assist
   assert.match(flat.positive, /Character 1.*blue cloak/);
 });
 
+test('structured-role preview labels the prompt source and shows effective Decrisper support', () => {
+  const value = snapshot('nai-diffusion-4-5-full');
+  value.characterScene = null;
+  value.params.positive = 'Scene: garden\nChar1: adult hiker, yellow jacket\nChar1 UC: hat';
+  value.params.decrisper = true;
+  const preview = previewCreation(value);
+  assert.equal(preview.roles[0].source, '分段提示词 · 本图人物');
+  assert.equal(preview.decrisper, true);
+  const openai = { ...value, provider: 'openai' };
+  assert.equal(previewCreation(openai).decrisper, true);
+  openai.params = { ...value.params, model: 'gpt-image-1' };
+  assert.equal(previewCreation(openai).decrisper, false);
+});
+
 test('inpainting previews agree with the submitted model and effective transparent background', async () => {
   const asset = (id) => ({ id: id.repeat(64), location: 'server', name: 'fixture', width: 832, height: 1216, mime: 'image/png' });
   for (const [selected, actual, transparent] of [
