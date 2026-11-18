@@ -227,3 +227,18 @@ test('multi-scene prompts separate their output count from per-scene sample coun
   assert.match(messages[0].content, /characterStates/);
   assert.equal(JSON.parse(messages[1].content).DRAWING_STATE[0].outfit, 'coat');
 });
+
+test('saved chat plans retain per-image cast, grid position and bounded interaction fields', () => {
+  const characters = Array.from({ length: 8 }, (_, i) => ({ profileId: `p${i}`, action: 'waving',
+    position: i ? 'auto' : 'B3', interaction: { targetId: 'p1', action: 'hugging', mode: 'source', apiKey: 'secret' } }));
+  const saved = storedAssistantPlan({ shouldDraw: true, positive: 'garden', characterIds: ['p0'],
+    illustrations: [{ positive: 'garden', characterIds: ['p0', 'p1'], characters },
+      { positive: 'landscape', characterIds: [] }] });
+  assert.equal(saved.illustrations[0].characters.length, 8);
+  assert.deepEqual(saved.illustrations[0].characterIds, ['p0', 'p1']);
+  assert.deepEqual(saved.illustrations[1].characterIds, []);
+  assert.equal(saved.illustrations[0].characters[0].position, 'B3');
+  assert.deepEqual(saved.illustrations[0].characters[0].interaction, { targetId: 'p1', action: 'hugging', mode: 'source' });
+  assert.equal(JSON.stringify(saved).includes('secret'), false);
+  assert.throws(() => storedAssistantPlan({ characterIds: ['not valid id'] }), /角色列表/);
+});

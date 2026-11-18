@@ -68,7 +68,7 @@ export function compareAssistantDrafts(previous, current) {
   const after = current ? cleanAssistantDraft(current) : null;
   const a = illustrationPlans(before), b = illustrationPlans(after), changes = [];
   const fields = [['shouldDraw', '配图判断'], ['scene', '画面'], ['positive', '正向提示词'], ['negative', '负面提示词'],
-    ['anchor', '原文定位句'], ['aspect', '画幅'], ['reason', '配图理由'], ['characters', '角色动作与外貌']];
+    ['anchor', '原文定位句'], ['aspect', '画幅'], ['reason', '配图理由'], ['characterIds', '本图出场人物'], ['characters', '角色动作与外貌']];
   const show = (value) => value === undefined ? '' : typeof value === 'boolean' ? value ? '可生成' : '无需配图'
     : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   for (let index = 0; index < Math.max(a.length, b.length); index++) {

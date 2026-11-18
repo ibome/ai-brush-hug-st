@@ -76,7 +76,7 @@ export function renderAssistant(state, ui, presetPanel = '', workflowPanel = '',
         ${toggle('inputOnly', '仅处理本次输入', a.inputOnly)}
         ${ui.summary ? `<p class="assistant-context">上下文 ${ui.summary.messages} 条 · 角色 ${ui.summary.characters} 个 · 世界书 ${ui.summary.worldCharacters} 字</p>` : ''}
         ${renderCharacterSelection(state, currentChat(), { compact: true,
-          frozen: Boolean(state.characterSceneOverride?.entries?.length) })}
+          frozen: Boolean(state.characterSceneOverride) })}
         ${plan ? `<div class="assistant-result">
           <div class="settings-band-heading"><h2>${icon('image')}画面与提示词</h2><span class="settings-label">${plan.shouldDraw ? '可生成' : '无需配图'}</span></div>
           ${shots.length > 1 ? `<div class="assistant-shot-tabs" role="tablist" aria-label="配图画面">${shots.map((shot, shotIndex) =>
@@ -85,7 +85,9 @@ export function renderAssistant(state, ui, presetPanel = '', workflowPanel = '',
           ${ui.binding || plan.anchor ? field('原文定位句', `<textarea rows="2" data-assistant-result="anchor" maxlength="1000" aria-label="原文定位句">${esc(plan.anchor || '')}</textarea>`) : ''}
           ${field('正向提示词', `<textarea rows="5" data-assistant-result="positive" maxlength="32000" aria-label="助手正向提示词">${esc(plan.positive || '')}</textarea>`)}
           ${field('负面提示词', `<textarea rows="3" data-assistant-result="negative" maxlength="32000" aria-label="助手负面提示词">${esc(plan.negative || '')}</textarea>`)}
-          ${(plan.characters || []).map((entry) => {
+          ${plan.characterScene?.entries?.length ? `<div class="character-checks" role="group" aria-label="本图出场人物">${plan.characterScene.entries.map((entry) =>
+            `<label><input type="checkbox" data-assistant-cast="${esc(entry.profileId)}" aria-label="${esc(entry.profile.name)}本图出场" ${(plan.characterIds || plan.characterScene.entries.map((row) => row.profileId)).includes(entry.profileId) ? 'checked' : ''} ${busy || entry.participation === 'always' ? 'disabled' : ''}>${esc(entry.profile.name)}${entry.participation === 'always' ? ' · 固定' : ''}</label>`).join('')}</div>` : ''}
+          ${(plan.characters || []).filter((entry) => !plan.characterIds || plan.characterIds.includes(entry.profileId)).map((entry) => {
             const sceneEntry = plan.characterScene?.entries?.find((item) => item.profileId === entry.profileId);
             const profile = sceneEntry?.profile;
             const name = profile?.name || entry.profileId;

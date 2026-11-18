@@ -1,5 +1,6 @@
 import { chatIdentity, digest, eligibleMessage } from './chat.js';
 import { mergeCharacterStates, normalizeCharacterStates } from './assistant-workflow.js';
+import { CHARACTER_STORAGE_LIMIT } from './character-profiles.js';
 
 export const STATE_FIELDS = [['appearance', '外貌', 4000], ['outfit', '服装', 4000],
   ['action', '动作', 1000], ['expression', '表情', 500]];
@@ -46,7 +47,7 @@ async function timeline(context, before = context.chat?.length || 0) {
     basis.push(signature);
     const manual = saved.manual;
     // A snapshot replaces the effective state, including deliberate blanks and removals.
-    if (manual?.version === 1 && Array.isArray(manual.characters) && manual.characters.length <= 6
+    if (manual?.version === 1 && Array.isArray(manual.characters) && manual.characters.length <= CHARACTER_STORAGE_LIMIT
       && await validBasis(context, manual.basis)) {
       characters = normalizeCharacterStates(manual.characters);
       sources = Object.create(null);

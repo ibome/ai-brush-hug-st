@@ -85,7 +85,7 @@ export function composeTaskMessages(base, operation, settings) {
 
 export function normalizeCharacterStates(values) {
   const seen = new Set();
-  return (Array.isArray(values) ? values : []).slice(0, 6).flatMap((row) => {
+  return (Array.isArray(values) ? values : []).slice(0, 22).flatMap((row) => {
     if (!object(row)) return [];
     const profileId = /^[A-Za-z0-9_-]{1,80}$/.test(row.profileId || '') ? row.profileId : '';
     const name = text(row.name, 120), key = profileId || name;
@@ -114,7 +114,7 @@ export function mergeCharacterStates(previous, next) {
     const old = rows.get(key) || {};
     rows.set(key, { ...old, ...Object.fromEntries(Object.entries(row).filter(([, value]) => value !== '')) });
   }
-  return [...rows.values()].slice(-6);
+  return [...rows.values()].slice(-22);
 }
 
 export function illustrationPlans(plan) {
@@ -128,10 +128,30 @@ export function selectedIllustration(plan, index = 0) {
   return { ...single, ...(plan.characterScene ? { characterScene: structuredClone(plan.characterScene) } : {}) };
 }
 
+export function selectIllustrationCharacter(plan, index, profileId, selected) {
+  const next = structuredClone(plan), shot = illustrationPlans(next)[index];
+  const entries = next.characterScene?.entries || [];
+  const entry = entries.find((row) => row.profileId === profileId);
+  if (!shot || !entry) throw new Error('本图角色档案已变化，请重新分析');
+  if (!selected && entry.participation === 'always') throw new Error('此角色设为固定出场，请先在角色档案中调整出场方式');
+  const ids = new Set(shot.characterIds || entries.map((row) => row.profileId));
+  if (selected) ids.add(profileId); else ids.delete(profileId);
+  shot.characterIds = [...ids];
+  if (selected && !shot.characters?.some((row) => row.profileId === profileId)) {
+    shot.characters ||= [];
+    shot.characters.push({ profileId, action: '', expression: '', appearance: '', outfit: '', negative: '' });
+  }
+  return syncPrimaryIllustration(next);
+}
+
 export function freezeIllustrationCharacters(plan, scene, previous = []) {
   const states = normalizeCharacterStates(previous);
   for (const shot of illustrationPlans(plan)) {
-    if (!scene?.entries?.length) { delete shot.characterScene; delete shot.characters; continue; }
+    if (!scene?.entries?.length) { delete shot.characterScene; delete shot.characters; delete shot.characterIds; continue; }
+    if (Array.isArray(shot.characterIds)) {
+      if (shot.characterIds.some((id) => !scene.entries.some((entry) => entry.profileId === id))) throw new Error('助手返回了不属于当前档案的角色，请重新分析');
+      shot.characterIds = [...new Set([...shot.characterIds, ...scene.entries.filter((entry) => entry.participation === 'always').map((entry) => entry.profileId)])];
+    }
     shot.characters = scene.entries.map((entry) => {
       const state = states.find((row) => row.profileId === entry.profileId);
       const direction = shot.characters?.find((row) => row.profileId === entry.profileId);
@@ -143,19 +163,24 @@ export function freezeIllustrationCharacters(plan, scene, previous = []) {
         appearance: profile.lockAppearance ? '' : direction?.appearance || state?.appearance || '',
         outfit: effectiveOutfit(entry).locked ? '' : direction?.outfit || (entry.outfitMode === 'ai' ? '' : state?.outfit) || '',
         negative: direction?.negative || '',
+        ...(direction?.position ? { position: direction.position } : {}),
+        ...(direction?.interaction ? { interaction: structuredClone(direction.interaction) } : {}),
       };
     });
   }
   if (scene?.entries?.length) {
     plan.characterScene = structuredClone(scene);
     plan.characters = structuredClone(illustrationPlans(plan)[0].characters);
-  } else { delete plan.characterScene; delete plan.characters; }
+    const ids = illustrationPlans(plan)[0].characterIds;
+    if (ids !== undefined) plan.characterIds = structuredClone(ids);
+    else delete plan.characterIds;
+  } else { delete plan.characterScene; delete plan.characters; delete plan.characterIds; }
   return plan;
 }
 
 export function syncPrimaryIllustration(plan) {
   if (plan?.illustrations?.length) {
-    for (const field of ['scene', 'positive', 'negative', 'anchor', 'aspect', 'characters']) {
+    for (const field of ['scene', 'positive', 'negative', 'anchor', 'aspect', 'characters', 'characterIds']) {
       if (plan.illustrations[0][field] !== undefined) plan[field] = structuredClone(plan.illustrations[0][field]);
       else delete plan[field];
     }

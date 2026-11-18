@@ -196,8 +196,9 @@ export function buildAssistantMessages({ settings, operation = 'generate', ruleT
     ].join('\n') : '',
     composition: `Composition preference: ${options.composition}. ${template}`,
     characterRules: context.characterScene?.entries?.length ? [
-      'DRAWING_PROFILES supplies the selected characters. Keep their identities separate and draw all selected participants.',
-      'Use only supplied profile IDs. Add a characters array: [{"profileId":"supplied id","action":"English action","expression":"English expression","appearance":"English visual tags","outfit":"English outfit tags","negative":"English unwanted traits"}].',
+      'DRAWING_PROFILES supplies candidate characters. Keep their identities separate. Draw only people visibly present in this particular image; a mention or a memory does not require an appearance.',
+      'Return characterIds containing only supplied profile IDs visibly present in this image. Include every profile with participation="always". An empty array means no profiled people are visible.',
+      'Use only supplied profile IDs. Add a characters array for the included people: [{"profileId":"supplied id","action":"English action","expression":"English expression","appearance":"English visual tags","outfit":"English outfit tags","negative":"English unwanted traits","position":"auto or A1 through E5","interaction":{"targetId":"another included profile ID","action":"English interaction tag","mode":"source or mutual"}}]. Omit interaction when not needed.',
       'Keep positive for shared environment, lighting, framing, character count and interactions; put individual traits and actions in characters.',
       'Locked appearance must match the supplied fixed appearance exactly. Locked outfit must remain the supplied outfit. Explicit action and expression take priority.',
       'Unlocked traits may follow changes established in TARGET, never invent permanent identity changes. No character profile IDs in positive or negative.',
@@ -279,6 +280,13 @@ export function parseAssistantResult(raw, { stored = false, editable = false } =
         ...(text(shot.anchor, 1000).trim() ? { anchor: text(shot.anchor, 1000).trim() } : {}),
         aspect: ['portrait', 'landscape', 'square'].includes(shot.aspect) ? shot.aspect : 'square',
         ...(Array.isArray(shot.characters) ? { characters: normalizeCharacterDirections(shot.characters) } : {}),
+        ...(shot.characterIds !== undefined ? { characterIds: (() => {
+          if (!Array.isArray(shot.characterIds) || shot.characterIds.length > 22
+            || shot.characterIds.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(id))) {
+            throw new Error('模型返回的出场角色列表无效，请重新分析');
+          }
+          return [...new Set(shot.characterIds)];
+        })() } : {}),
       };
     };
     let shots;
@@ -392,5 +400,7 @@ export function applyAssistantPlan(snapshot, plan, settings) {
       if (result.provider === 'openai') params.size = 'custom';
     }
   }
-  return applyCharacterScene(result, plan.characterScene || result.characterScene, plan.characters);
+  const scene = normalizeCharacterScene(plan.characterScene || result.characterScene);
+  if (scene) { delete scene.applied; delete scene.characterPrompts; }
+  return applyCharacterScene(result, scene, plan.characters, plan.characterIds);
 }

@@ -1,17 +1,10 @@
 import { assetReference } from './advanced-generation.js';
+import { characterPosition, characterPositionText, independentCharacters } from './character-layout.js';
+export { POSITION_OPTIONS } from './character-layout.js';
 
 export const PROFILE_LIMIT = 100;
 export const SCENE_LIMIT = 6;
-export const POSITION_OPTIONS = [
-  ['auto', '自动'], ['left', '左侧'], ['center', '中央'], ['right', '右侧'],
-  ['top-left', '左上'], ['top', '上方'], ['top-right', '右上'],
-  ['bottom-left', '左下'], ['bottom', '下方'], ['bottom-right', '右下'],
-];
-const positions = {
-  auto: [0.5, 0.5], left: [0.2, 0.5], center: [0.5, 0.5], right: [0.8, 0.5],
-  'top-left': [0.2, 0.2], top: [0.5, 0.2], 'top-right': [0.8, 0.2],
-  'bottom-left': [0.2, 0.8], bottom: [0.5, 0.8], 'bottom-right': [0.8, 0.8],
-};
+export const CHARACTER_STORAGE_LIMIT = 22;
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const text = (value, limit = 4000) => typeof value === 'string' ? value.slice(0, limit).trim() : '';
 const id = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -23,6 +16,15 @@ const unique = (values, key, limit) => {
   }).slice(0, limit);
 };
 const joined = (...values) => [...new Set(values.map((value) => text(value, 32000)).filter(Boolean))].join(', ');
+export function normalizeAliases(value) {
+  return [...new Set((Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[|,，\n]/) : [])
+    .map((item) => text(item, 120)).filter(Boolean))].slice(0, 20);
+}
+export function characterInteraction(value) {
+  return object(value) && (value.targetId === '' || id(value.targetId)) ? {
+    targetId: value.targetId, action: text(value.action, 500), mode: value.mode === 'mutual' ? 'mutual' : 'source',
+  } : null;
+}
 export const OUTFIT_MODES = [['inherit', '跟随档案与剧情'], ['wardrobe', '选择服装库'], ['custom', '自定义服装'], ['ai', '由 AI 决定']];
 export function outfitChoice(value = {}) {
   return { mode: OUTFIT_MODES.some(([id]) => id === value.mode) ? value.mode : 'inherit',
@@ -42,6 +44,7 @@ export function normalizeProfile(value) {
   }));
   return {
     id: value.id, name: text(value.name, 120) || '新角色', avatar: text(value.avatar, 512),
+    aliases: normalizeAliases(value.aliases),
     enabled: value.enabled !== false, hair: text(value.hair, 800), eyes: text(value.eyes, 800),
     body: text(value.body, 800), features: text(value.features, 1600),
     tags: text(value.tags), negative: text(value.negative, 2000),
@@ -53,14 +56,16 @@ export function normalizeProfile(value) {
 
 export function normalizeParticipants(value, profiles) {
   const allowed = new Set(profiles.map((profile) => profile.id));
-  return unique(value, 'profileId', SCENE_LIMIT).filter((entry) => allowed.has(entry.profileId)).map((entry) => ({
+  return unique(value, 'profileId', CHARACTER_STORAGE_LIMIT).filter((entry) => allowed.has(entry.profileId)).map((entry) => ({
     profileId: entry.profileId, outfitId: entry.outfitId === undefined ? profiles.find((profile) => profile.id === entry.profileId)?.defaultOutfitId || '' : text(entry.outfitId, 80),
     ...(OUTFIT_MODES.some(([id]) => id !== 'inherit' && id === entry.outfitMode) ? { outfitMode: entry.outfitMode } : {}),
     ...(entry.outfitMode === 'custom' ? { outfitPrompt: text(entry.outfitPrompt) } : {}),
     ...(['once', 'chat', 'global', 'project'].includes(entry.outfitScope) ? { outfitScope: entry.outfitScope } : {}),
     action: text(entry.action, 1000), expression: text(entry.expression, 500),
     positive: text(entry.positive, 2000), negative: text(entry.negative, 1000),
-    position: Object.hasOwn(positions, entry.position) ? entry.position : 'auto',
+    position: characterPosition(entry.position),
+    participation: entry.participation === 'always' ? 'always' : 'story',
+    ...(characterInteraction(entry.interaction) ? { interaction: characterInteraction(entry.interaction) } : {}),
   }));
 }
 
@@ -126,6 +131,26 @@ export function saveProfile(library, profile, chatKey = '') {
   return boundedLibrary(db);
 }
 
+export function saveProfileAndSelect(library, profile, { chatKey = '', avatars = [], scope = 'global', limit = SCENE_LIMIT } = {}) {
+  const clean = normalizeProfile(profile);
+  if (!clean?.enabled) throw new Error('请启用此档案后再加入出场');
+  if (scope === 'chat' && !chatKey) throw new Error('请先打开一个酒馆聊天');
+  let db = saveProfile(library, clean, scope === 'chat' ? chatKey : '');
+  if (!effectiveProfiles(db, chatKey).find((entry) => entry.id === clean.id)?.enabled) {
+    throw new Error('当前聊天覆盖已停用此档案，请先启用聊天覆盖');
+  }
+  const scene = resolveCharacterScene(db, chatKey, avatars);
+  if (scene.entries.length > limit) throw new Error(`当前模型一幅画最多选择 ${limit} 个角色；可先仅保存档案`);
+  if (!scene.entries.some((entry) => entry.profileId === clean.id)) {
+    if (scene.entries.length >= limit) throw new Error(`当前模型一幅画最多选择 ${limit} 个角色；可先仅保存档案`);
+    scene.entries.push({ profileId: clean.id, profile: clean, outfitId: clean.defaultOutfitId, position: 'auto' });
+  }
+  const selection = scene.entries.map(({ profile: captured, ...entry }) => entry);
+  if (chatKey) db = updateProfileChat(db, chatKey, { selection });
+  else db = boundedLibrary({ ...db, selection });
+  return db;
+}
+
 function boundedLibrary(value) {
   const db = normalizeProfileLibrary(value);
   if (JSON.stringify(db).length > 750000) throw new Error('角色档案库超过容量，请减少服装描述或删除不用的聊天覆盖');
@@ -144,7 +169,7 @@ export function resolveCharacterScene(library, chatKey = '', avatars = []) {
   const chat = db.chats.find((item) => item.chatKey === chatKey);
   const selection = chatKey ? chat?.selection ?? null : db.selection;
   const selected = selection === null ? profiles.filter((profile) =>
-    profile.enabled && profile.avatar && avatars.includes(profile.avatar)).slice(0, SCENE_LIMIT).map((profile) => ({ profileId: profile.id })) : selection;
+    profile.enabled && profile.avatar && avatars.includes(profile.avatar)).slice(0, CHARACTER_STORAGE_LIMIT).map((profile) => ({ profileId: profile.id })) : selection;
   return normalizeCharacterScene({ version: 1, chatKey, entries: selected.map((entry) => ({
     ...entry, profile: profiles.find((item) => item.id === entry.profileId),
   })).filter((entry) => entry.profile?.enabled) });
@@ -152,22 +177,26 @@ export function resolveCharacterScene(library, chatKey = '', avatars = []) {
 
 export function normalizeCharacterScene(value) {
   if (!object(value) || !Array.isArray(value.entries)) return null;
-  const entries = unique(value.entries, 'profileId', SCENE_LIMIT).flatMap((entry) => {
+  const entries = unique(value.entries, 'profileId', CHARACTER_STORAGE_LIMIT).flatMap((entry) => {
     const profile = normalizeProfile(entry.profile);
     if (!profile || profile.id !== entry.profileId) return [];
     return [{ ...normalizeParticipants([entry], [profile])[0], profile,
       outfitId: entry.outfitId === '' ? '' : profile.outfits.some((outfit) => outfit.id === entry.outfitId) ? entry.outfitId : profile.defaultOutfitId }];
   });
-  const scene = { version: 1, chatKey: text(value.chatKey, 2048), entries };
+  const scene = { version: 1, chatKey: text(value.chatKey, 2048), entries,
+    ...(value.source === 'structured' ? { source: 'structured' } : {}),
+    ...(Array.isArray(value.directions) ? { directions: normalizeCharacterDirections(value.directions)
+      .filter((row) => entries.some((entry) => entry.profileId === row.profileId)) } : {}),
+    ...(Array.isArray(value.warnings) ? { warnings: value.warnings.map((row) => text(row, 300)).filter(Boolean).slice(0, 22) } : {}) };
   if (value.applied === true) {
     scene.applied = true;
     scene.basePositive = text(value.basePositive, 32000);
     scene.baseNegative = text(value.baseNegative, 32000);
-    scene.characterPrompts = unique(value.characterPrompts, 'id', SCENE_LIMIT)
+    scene.characterPrompts = unique(value.characterPrompts, 'id', CHARACTER_STORAGE_LIMIT)
       .filter((entry) => entries.some((item) => item.profileId === entry.id)).map((entry) => ({
         id: entry.id, name: text(entry.name, 120), positive: text(entry.positive, 12000),
         negative: text(entry.negative, 4000),
-        position: Object.hasOwn(positions, entry.position) ? entry.position : 'auto',
+        position: characterPosition(entry.position),
       }));
   }
   return scene;
@@ -175,45 +204,73 @@ export function normalizeCharacterScene(value) {
 
 export function profileContext(scene) {
   return (scene?.entries || []).map((entry) => ({
-    id: entry.profileId, name: entry.profile.name, hair: entry.profile.hair, eyes: entry.profile.eyes,
+    id: entry.profileId, name: entry.profile.name, aliases: entry.profile.aliases, hair: entry.profile.hair, eyes: entry.profile.eyes,
     body: entry.profile.body, features: entry.profile.features, appearance: entry.profile.tags,
     negative: joined(entry.profile.negative, entry.negative),
     outfit: effectiveOutfit(entry).prompt,
     lockAppearance: entry.profile.lockAppearance, lockOutfit: effectiveOutfit(entry).locked,
     action: entry.action, expression: entry.expression, additional: entry.positive, position: entry.position,
+    participation: entry.participation, ...(entry.interaction ? { interaction: entry.interaction } : {}),
   }));
 }
 
 export function normalizeCharacterDirections(values) {
-  return unique(values, 'profileId', SCENE_LIMIT).map((value) => ({
+  return unique(values, 'profileId', CHARACTER_STORAGE_LIMIT).map((value) => ({
     profileId: value.profileId, action: text(value.action, 1000), expression: text(value.expression, 500),
     appearance: text(value.appearance), outfit: text(value.outfit), negative: text(value.negative, 1000),
+    ...(typeof value.position === 'string' ? { position: characterPosition(value.position) } : {}),
+    ...(characterInteraction(value.interaction) ? { interaction: characterInteraction(value.interaction) } : {}),
   }));
 }
 
-export const nativeCharacterPrompts = (provider, model) => provider === 'novelai' && /^nai-diffusion-(?:4|5)(?:-|$)/.test(model || '');
+export const nativeCharacterPrompts = independentCharacters;
 
-export function applyCharacterScene(snapshot, value, directions = []) {
+export function applyCharacterScene(snapshot, value, directions = [], characterIds) {
   const result = structuredClone(snapshot);
   const scene = normalizeCharacterScene(value);
+  if (scene && !scene.applied && Array.isArray(characterIds)) {
+    if (characterIds.some((id) => !scene.entries.some((entry) => entry.profileId === id))) throw new Error('本图包含未知角色档案，请重新选择人物或重新分析');
+    const included = new Set(characterIds);
+    scene.entries = scene.entries.filter((entry) => included.has(entry.profileId) || entry.participation === 'always');
+  }
   if (!scene?.entries.length) {
+    if (scene?.applied || result.characterScene?.applied) {
+      const previous = scene?.applied ? scene : result.characterScene;
+      const params = result.params || result.config.params;
+      params.positive = previous.basePositive || '';
+      params.negative = previous.baseNegative || '';
+    }
     if (scene) result.characterScene = scene;
     if (result.provider === 'comfyui' && result.config.mapping.characterPrompts) result.config.params.characterPrompts = '[]';
     return result;
   }
   const params = result.params || result.config.params;
   if (!scene.applied) {
-    const changes = normalizeCharacterDirections(directions);
+    const changes = normalizeCharacterDirections(directions.length ? directions : scene.directions);
+    scene.directions = changes.filter((row) => scene.entries.some((entry) => entry.profileId === row.profileId));
     scene.basePositive = params.positive || '';
     scene.baseNegative = params.negative || '';
+    for (const entry of scene.entries) {
+      const change = changes.find((item) => item.profileId === entry.profileId);
+      if (!entry.interaction && change?.interaction) entry.interaction = change.interaction;
+    }
+    const interactions = new Map(scene.entries.map((entry) => [entry.profileId, []]));
+    for (const entry of scene.entries) {
+      const change = changes.find((item) => item.profileId === entry.profileId);
+      const interaction = entry.interaction || change?.interaction;
+      if (!interaction?.action || interaction.targetId === entry.profileId || !interactions.has(interaction.targetId)) continue;
+      interactions.get(entry.profileId).push(`${interaction.mode === 'mutual' ? 'mutual' : 'source'}#${interaction.action}`);
+      interactions.get(interaction.targetId).push(`${interaction.mode === 'mutual' ? 'mutual' : 'target'}#${interaction.action}`);
+    }
     scene.characterPrompts = scene.entries.map((entry) => {
       const profile = entry.profile, change = changes.find((item) => item.profileId === entry.profileId);
       const appearance = joined(profile.tags, profile.hair, profile.eyes, profile.body, profile.features);
       const outfit = effectiveOutfit(entry);
-      return { id: profile.id, name: profile.name, position: entry.position,
+      return { id: profile.id, name: profile.name, position: entry.position === 'auto' ? change?.position || 'auto' : entry.position,
         positive: joined(!profile.lockAppearance && change?.appearance || appearance,
           !outfit.locked && change?.outfit || outfit.prompt,
-          entry.action || change?.action, entry.expression || change?.expression, entry.positive),
+          entry.action || change?.action, entry.expression || change?.expression, entry.positive,
+          ...interactions.get(entry.profileId)),
         negative: joined(profile.negative, entry.negative, change?.negative) };
     });
     if (scene.characterPrompts.some((entry) => entry.positive.length > 12000 || entry.negative.length > 4000)) {
@@ -221,17 +278,24 @@ export function applyCharacterScene(snapshot, value, directions = []) {
     }
     scene.applied = true;
   }
-  const native = nativeCharacterPrompts(result.provider, params.model);
+  const native = nativeCharacterPrompts(result.provider, params.model, params.characterMode);
   if (native) {
     params.positive = scene.basePositive;
     params.negative = scene.baseNegative;
   } else {
     const natural = result.provider === 'openai' && !/nai-diffusion/i.test(params.model || '');
     const characterText = scene.characterPrompts.map((entry, index) => {
-      const position = entry.position !== 'auto' ? `position ${entry.position}, ` : '';
-      return `Character ${index + 1} (${entry.name}): ${position}${entry.positive}`;
+      const position = characterPositionText(entry.position);
+      const prompt = entry.positive.replace(/\b(?:source|target|mutual)#/g, '');
+      return `Character ${index + 1} (${entry.name}): ${position ? `${position}, ` : ''}${prompt}`;
     }).join('\n');
-    params.positive = [scene.basePositive, characterText].filter(Boolean).join('\n');
+    const relations = scene.entries.flatMap((entry) => {
+      const relation = entry.interaction || normalizeCharacterDirections(directions).find((row) => row.profileId === entry.profileId)?.interaction;
+      const target = scene.entries.find((row) => row.profileId === relation?.targetId);
+      return target && target !== entry && relation.action
+        ? [`Interaction: ${entry.profile.name} ${relation.mode === 'mutual' ? 'and' : 'toward'} ${target.profile.name}: ${relation.action}`] : [];
+    });
+    params.positive = [scene.basePositive, characterText, ...relations].filter(Boolean).join('\n');
     const negative = scene.characterPrompts.map((entry) => entry.negative).filter(Boolean).join(', ');
     params.negative = joined(scene.baseNegative, negative);
     if (natural && negative) params.positive += `\nAvoid for characters: ${negative}`;

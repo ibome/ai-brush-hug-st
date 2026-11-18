@@ -640,11 +640,12 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       } else if (action === 'copy') {
         const copied = await withDialog(entry, (signal) => copyChatPrompt(row, settings().characterTheme, signal));
         if (copied) notice('提示词已复制');
-      } else if (['repeat', 'repeat-original', 'prompt'].includes(action)) {
+      } else if (['repeat', 'repeat-original', 'repeat-profiles', 'prompt'].includes(action)) {
         const edits = action === 'prompt'
           ? await withDialog(entry, (signal) => editChatPrompt(row, settings().characterTheme, signal)) : undefined;
         if (action === 'prompt' && !edits || !isCurrent(entry)) return;
-        void requestImageVersion(entry, row, edits, action === 'repeat-original' ? 'original' : 'current');
+        void requestImageVersion(entry, row, edits, action === 'repeat-original' ? 'original' : 'current',
+          action === 'repeat-profiles' ? 'current' : 'original');
       } else if (action === 'recover' || action === 'cancel') {
         if (task?.id) await send('linghuashi:chat-image-control', { taskId: task.id, action, binding: entry.binding });
         else if (task?.requestId) await send(action === 'recover' ? 'linghuashi:chat-recover' : 'linghuashi:chat-cancel', { requestId: task.requestId });
@@ -656,7 +657,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     finally { imageOperations.delete(operation); }
   }
 
-  async function requestImageVersion(entry, row, edits, styleMode = 'current') {
+  async function requestImageVersion(entry, row, edits, styleMode = 'current', characterMode = 'original') {
     const groupId = versionGroupId(row);
     const run = async (lock) => {
       if (!lock || destroyed || !isCurrent(entry)) return;
@@ -678,7 +679,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       await new Promise((resolve) => {
         current.release = resolve;
         Promise.resolve(send('linghuashi:chat-image-generate', { requestId, binding: entry.binding,
-          imageId: row.id, edits, randomize: !edits, styleMode, prompt: entry.prompt,
+          imageId: row.id, edits, randomize: !edits, styleMode, characterMode, prompt: entry.prompt,
           automatic: false, storageLocation: row.storageLocation }))
           .catch(() => { current.record.status = 'failed'; resolve(); notice('控制台未能载入，请重试'); scheduledRender(); });
       });

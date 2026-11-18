@@ -19,6 +19,35 @@ function project(count = 4) {
 function storyboard(row) {
   return JSON.stringify({ title: '花园日记', panels: row.panels.map((panel) => ({ ...panel, characterIds: [] })) });
 }
+test('panel position and interactions override project defaults while staying scoped to the selected cast', () => {
+  const row = project(1), panel = row.panels[0];
+  row.characterScene = { entries: [
+    { profileId: 'a', position: 'left', profile: { id: 'a', name: 'A', tags: 'black hair' } },
+    { profileId: 'b', position: 'right', profile: { id: 'b', name: 'B', tags: 'red hair' } },
+    { profileId: 'c', profile: { id: 'c', name: 'C', tags: 'green hair' } },
+  ] };
+  panel.characterIds = ['a', 'b'];
+  panel.characters = [{ profileId: 'a', position: 'D2', action: 'waving',
+    interaction: { targetId: 'b', mode: 'mutual', action: 'holding hands' } }];
+  const snapshot = { provider: 'novelai', params: { model: 'nai-diffusion-4-5-full', positive: '', negative: '' } };
+  const result = comicPanelSnapshot(snapshot, row, panel), characters = result.characterScene.characterPrompts;
+  assert.deepEqual(characters.map((item) => item.id), ['a', 'b']);
+  assert.equal(characters[0].position, 'D2');
+  assert.equal(characters[1].position, 'right');
+  assert.match(characters[0].positive, /waving.*mutual#holding hands/);
+  assert.match(characters[1].positive, /mutual#holding hands/);
+  assert.equal(row.characterScene.entries[0].position, 'left');
+  panel.characterIds = ['a'];
+  assert.doesNotMatch(comicPanelSnapshot(snapshot, row, panel).characterScene.characterPrompts[0].positive, /holding hands/);
+  panel.characterIds = ['a', 'b'];
+  row.characterScene.entries[0].interaction = { targetId: 'b', mode: 'mutual', action: 'hugging' };
+  panel.characters = [];
+  assert.match(comicPanelSnapshot(snapshot, row, panel).characterScene.characterPrompts[0].positive, /mutual#hugging/);
+  panel.characters = [{ profileId: 'a', interaction: { targetId: '', mode: 'source', action: '' } }];
+  const restored = saveComicProject(normalizeComicLibrary(), row).projects[0];
+  assert.doesNotMatch(comicPanelSnapshot(snapshot, restored, restored.panels[0]).characterScene.characterPrompts[0].positive, /hugging/);
+  assert.equal(row.characterScene.entries[0].interaction.action, 'hugging');
+});
 test('comic projects are bounded, independent and retain selected images', () => {
   const row = project(), ref = { id: 'saved-frame', location: 'server' };
   row.panels[0].image = ref;

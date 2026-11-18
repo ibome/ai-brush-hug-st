@@ -128,7 +128,7 @@ export function visualPromptPreview(snapshot, edits = {}) {
   if (next.provider === 'openai' && !compatibleNovel && value.advanced?.mode && value.advanced.mode !== 'text' && value.negative?.trim()) {
     if (blocks.length) blocks[0].text += `\nAvoid: ${value.negative.trim()}`;
   }
-  if (nativeCharacterPrompts(next.provider, value.model)) {
+  if (nativeCharacterPrompts(next.provider, value.model, value.characterMode)) {
     for (const role of next.characterScene?.characterPrompts || []) {
       add(`${role.name} · 角色正向`, role.positive);
       add(`${role.name} · 角色负面`, role.negative);

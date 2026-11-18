@@ -4,6 +4,7 @@ import JSZip from 'jszip';
 import { sdwebuiImages, watchSDWebUIProgress } from './sdwebui.js';
 import { canRecoverGeneration, INVALID_IMAGE_RESPONSE } from './generation-recovery.js';
 import { isNovelAIV5 } from './novelai-models.js';
+import { characterLimit, characterCaptionPayload } from './character-layout.js';
 
 const MAX_IMAGE = 20 * 1024 * 1024;
 const MAX_RESPONSE = 200 * 1024 * 1024;
@@ -140,28 +141,9 @@ export function buildNovelAIRequest(params, characterPrompts = []) {
   }
   if (v3) Object.assign(parameters, { sm: params.sm, sm_dyn: params.smDyn });
   else {
-    const characters = characterPrompts.slice(0, 6);
-    const coords = characters.some((entry) => entry.position !== 'auto');
-    const center = (entry) => {
-      const x = /left/.test(entry.position) ? 0.2 : /right/.test(entry.position) ? 0.8 : 0.5;
-      const y = /top/.test(entry.position) ? 0.2 : /bottom/.test(entry.position) ? 0.8 : 0.5;
-      return { x, y };
-    };
-    parameters.v4_prompt = {
-      caption: { base_caption: input, char_captions: characters.map((entry) => ({
-        char_caption: entry.positive, centers: [center(entry)],
-      })) }, use_coords: coords, use_order: true,
-    };
-    parameters.v4_negative_prompt = {
-      caption: { base_caption: params.negative, char_captions: characters.map((entry) => ({
-        char_caption: entry.negative, centers: [center(entry)],
-      })) }, legacy_uc: false,
-    };
-    parameters.characterPrompts = characters.map((entry) => ({
-      prompt: entry.positive, uc: entry.negative, center: center(entry), enabled: true,
-    }));
+    if (characterPrompts.length > characterLimit('novelai', params.model)) throw new GenerationError(`当前 NovelAI 模型最多支持 ${characterLimit('novelai', params.model)} 个角色，请减少人物`);
+    Object.assign(parameters, characterCaptionPayload(input, params.negative, characterPrompts));
     parameters.reference_image_multiple_cached = [];
-    parameters.use_coords = coords;
     if (!v5 && params.variety) parameters.skip_cfg_above_sigma = 19 * Math.sqrt(params.width * params.height / (832 * 1216));
   }
   if (params.sampler === 'k_euler_ancestral') {

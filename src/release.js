@@ -1,6 +1,6 @@
 export const RELEASE = Object.freeze({
-  version: '0.26.14',
-  build: '20261117-creation-workflow',
+  version: '0.26.15',
+  build: '20261118-multi-character',
   repository: 'ibome/ai-brush-hug-st',
   url: 'https://github.com/ibome/ai-brush-hug-st',
   storageProtocol: 2,

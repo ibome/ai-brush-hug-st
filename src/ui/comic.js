@@ -25,6 +25,7 @@ import { comicChapterRows, shelveComicProject, loadComicChapter, setComicSeries,
 import '../styles/comic.css';
 import { applySceneOutfit, effectiveOutfit } from '../character-profiles.js';
 import { renderOutfitControls, refreshOutfitDraftFeedback } from './characters.js';
+import { POSITION_OPTIONS, POSITION_GRID } from '../character-layout.js';
 
 const command = (action, glyph, label, disabled = false, kind = 'secondary', extra = '') =>
   `<button type="button" class="ui-button ${kind}" data-comic-action="${action}" ${extra} ${disabled ? 'disabled' : ''}>${icon(glyph)}<span>${label}</span></button>`;
@@ -395,8 +396,20 @@ export class ComicPanel {
       <div class="comic-wide comic-cast"><span>本格出场角色</span><div>${(project.characterScene?.entries || []).map((entry) => `<label><input type="checkbox" data-comic-cast="${esc(entry.profileId)}" ${panel.characterIds.includes(entry.profileId) ? 'checked' : ''}>${esc(entry.profile.name)}</label>`).join('') || '<span>无绑定档案</span>'}</div></div>
       ${(project.characterScene?.entries || []).filter((entry) => panel.characterIds.includes(entry.profileId)).map((entry) => {
         const direction = panel.characters.find((row) => row.profileId === entry.profileId);
+        const interaction = direction?.interaction || entry.interaction;
+        const control = (key, content) => `<select data-comic-character="${key}" data-profile-id="${esc(entry.profileId)}">${content}</select>`;
         return `${field(`${esc(entry.profile.name)} · 动作`, `<input data-comic-character="action" data-profile-id="${esc(entry.profileId)}" value="${esc(direction?.action || '')}" maxlength="1000">`)}
-        ${field(`${esc(entry.profile.name)} · 表情`, `<input data-comic-character="expression" data-profile-id="${esc(entry.profileId)}" value="${esc(direction?.expression || '')}" maxlength="500">`)}`;
+        ${field(`${esc(entry.profile.name)} · 表情`, `<input data-comic-character="expression" data-profile-id="${esc(entry.profileId)}" value="${esc(direction?.expression || '')}" maxlength="500">`)}
+        ${field(`${esc(entry.profile.name)} · 本格位置`, control('position', options([['', '跟随项目站位'], ...POSITION_OPTIONS,
+          ...POSITION_GRID.map((key) => [key, `网格 ${key}`])], direction?.position || '')))}
+        <details class="comic-wide character-interaction"><summary>${icon('handshake')}${esc(entry.profile.name)} · 本格互动</summary><div class="comic-form-grid">
+          ${field('互动对象', control('interaction.targetId', options([['', '跟随项目互动'], ['none', '无本格互动'],
+            ...project.characterScene.entries.filter((other) => other.profileId !== entry.profileId && panel.characterIds.includes(other.profileId))
+              .map((other) => [`profile:${other.profileId}`, esc(other.profile.name)])],
+            direction?.interaction ? direction.interaction.targetId ? `profile:${direction.interaction.targetId}` : 'none' : '')))}
+          ${field('互动方式', control('interaction.mode', options([['source', '此角色发起'], ['mutual', '双方共同动作']], interaction?.mode || 'source')))}
+          ${field('互动动作', `<input data-comic-character="interaction.action" data-profile-id="${esc(entry.profileId)}" value="${esc(interaction?.action || '')}" maxlength="500">`)}
+        </div></details>`;
       }).join('')}</div>${this.rewriteHTML(project, panel)}`;
   }
   generation(project) {
@@ -801,7 +814,7 @@ export class ComicPanel {
             delete project.characterScene.applied; delete project.characterScene.characterPrompts;
           }
         }, true, { label: '修改角色锁定或服装' }); this.refreshStatus();
-      } else if (target.matches('select[data-comic-layout],select[data-comic-bubble],select[data-comic-assistant]')) this.input(event);
+      } else if (target.matches('select[data-comic-layout],select[data-comic-bubble],select[data-comic-assistant],select[data-comic-character]')) this.input(event);
       else if (target.matches('[type="checkbox"][data-comic-bubble],[type="checkbox"][data-comic-protection]')) this.input(event);
     };
     if (this.tab !== 'story') {
@@ -875,13 +888,36 @@ export class ComicPanel {
         if (data.comicCharacter && panel) {
           let row = panel.characters.find((row) => row.profileId === data.profileId);
           if (!row) { row = { profileId: data.profileId }; panel.characters.push(row); }
-          row[data.comicCharacter] = target.value;
+          if (data.comicCharacter.startsWith('interaction.')) {
+            if (data.comicCharacter === 'interaction.targetId' && !target.value) delete row.interaction;
+            else if (data.comicCharacter === 'interaction.targetId' && target.value === 'none') {
+              row.interaction = { targetId: '', action: '', mode: 'source' };
+            } else {
+              const inherited = project.characterScene?.entries.find((entry) => entry.profileId === data.profileId)?.interaction;
+              row.interaction = { targetId: '', action: '', mode: 'source', ...(row.interaction || inherited),
+                [data.comicCharacter.split('.')[1]]: data.comicCharacter === 'interaction.targetId'
+                  ? target.value.slice('profile:'.length) : target.value };
+            }
+          } else if (data.comicCharacter === 'position' && !target.value) delete row.position;
+          else row[data.comicCharacter] = target.value;
         }
       }, false, { label: data.comicProtection ? '调整主体保护区' : data.comicBubble ? '修改对白' : data.comicLayout ? '调整排版' : data.comicPanel ? '修改画格'
         : data.comicCharacter ? '修改角色动作' : data.comicAssistant ? '修改分镜调用设置' : '修改剧情设置',
       group: JSON.stringify([panelId, target.closest('[data-bubble-id]')?.dataset.bubbleId, data]) });
       this.layoutSuggestion = null;
       this.root.querySelector('.comic-layout-suggestion')?.remove();
+      if (data.comicCharacter?.startsWith('interaction.')) {
+        const direction = this.panel.characters.find((row) => row.profileId === data.profileId);
+        const interaction = direction?.interaction
+          || this.project.characterScene?.entries.find((entry) => entry.profileId === data.profileId)?.interaction;
+        for (const control of this.root.querySelectorAll('[data-comic-character^="interaction."]')) {
+          if (control.dataset.profileId !== data.profileId) continue;
+          const key = control.dataset.comicCharacter.split('.')[1];
+          control.value = key === 'targetId' ? direction?.interaction
+            ? direction.interaction.targetId ? `profile:${direction.interaction.targetId}` : 'none' : ''
+            : interaction?.[key] || (key === 'mode' ? 'source' : '');
+        }
+      }
       if (data.comicProtection) this.syncProtectionControls(this.panel.protection);
       if (this.tab === 'layout') this.schedulePreview();
       if (data.comicBubble) this.syncBubbleControls(target.closest('[data-bubble-id]').dataset.bubbleId);

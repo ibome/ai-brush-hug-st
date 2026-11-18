@@ -4,6 +4,7 @@ import { icon } from '../icons.js';
 import { samples } from './sample-data.js';
 import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding, resolvePresetConnection } from '../connections.js';
 import { normalizeAdvanced } from '../advanced-generation.js';
+import { independentCharacters, characterCaptionPayload, characterLimit } from '../character-layout.js';
 
 export const OPENAI_MODELS = Object.freeze([
   'gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst',
@@ -13,7 +14,7 @@ export const OPENAI_DEFAULTS = Object.freeze({
   model: 'gpt-image-2', artist: '', positive: samples[0].prompt, negative: '',
   size: '1024x1024', width: 1024, height: 1024, n: 1, quality: 'auto',
   parameterMode: 'auto', background: 'auto', outputFormat: 'png',
-  compression: 100, moderation: 'auto', responseFormat: 'auto', extra: '{}', advanced: normalizeAdvanced(),
+  compression: 100, moderation: 'auto', responseFormat: 'auto', extra: '{}', characterMode: 'flat', advanced: normalizeAdvanced(),
 });
 const SIZES = [
   ['auto', '自动'], ['1024x1024', '方图 · 1024 × 1024'],
@@ -59,6 +60,7 @@ export function normalizeOpenAI(value = {}) {
     size: SIZES.map(([id]) => id), parameterMode: ['auto', 'gpt', 'basic'],
     background: ['auto', 'opaque', 'transparent'], outputFormat: ['png', 'jpeg', 'webp'],
     moderation: ['auto', 'low'], responseFormat: ['auto', 'url', 'b64_json'],
+    characterMode: ['flat', 'novelai-v4', 'character-prompts'],
   };
   for (const [key, values] of Object.entries(choices)) {
     if (values.includes(source[key])) result[key] = source[key];
@@ -140,7 +142,7 @@ export function openAISize(params) {
   return params.size === 'custom' ? `${params.width}x${params.height}` : params.size;
 }
 
-export function buildOpenAIRequest(value) {
+export function buildOpenAIRequest(value, characters = []) {
   const params = normalizeOpenAI(value);
   const prompt = [params.artist.trim(), params.positive.trim()].filter(Boolean).join('\n');
   if (!prompt) throw new Error('请填写生图提示词');
@@ -169,6 +171,17 @@ export function buildOpenAIRequest(value) {
     'authorization', 'headers', 'token', 'access_token', 'password', 'secret', '__proto__', 'constructor', 'prototype']);
   if (Object.keys(extra).some((key) => reserved.has(key.toLowerCase()))) throw new Error('附加参数不能覆盖界面参数或包含鉴权信息');
   const body = { model: params.model, prompt, n: params.n, ...extra };
+  if (independentCharacters('openai', params.model, params.characterMode)) {
+    if (characters.length > characterLimit('openai', params.model)) throw new Error('当前模型的出场人数超限，请减少人物');
+    if (Object.keys(extra).some((key) => ['v4_prompt', 'v4_negative_prompt', 'characterprompts', 'use_coords'].includes(key.toLowerCase()))) {
+      throw new Error('分角色参数由界面生成，请移除附加 JSON 中重复的角色参数');
+    }
+    const payload = characterCaptionPayload(prompt, params.negative, characters);
+    if (params.characterMode === 'novelai-v4') Object.assign(body, {
+      v4_prompt: payload.v4_prompt, v4_negative_prompt: payload.v4_negative_prompt, use_coords: payload.use_coords,
+    });
+    else Object.assign(body, { characterPrompts: payload.characterPrompts, use_coords: payload.use_coords });
+  }
   if (isOpenAINovelAI(params.model) && params.negative.trim()) body.negative_prompt = params.negative.trim();
   if (size !== 'auto' || gpt) body.size = size;
   if (gpt) {
@@ -244,6 +257,9 @@ export function renderOpenAIParameters(state, models = [], advancedOpen = false,
     ${field('风格／画师描述', `<textarea rows="2" data-openai="artist" maxlength="4000" spellcheck="false">${esc(value.artist)}</textarea>`)}
     ${field('生图提示词', `<textarea rows="4" class="openai-positive" data-openai="positive" maxlength="32000" spellcheck="false">${esc(value.positive)}</textarea>`)}
     <label class="ui-field" data-openai-negative-field ${isOpenAINovelAI(value.model) ? '' : 'hidden'}><span>负面提示词</span><textarea rows="3" data-openai="negative" maxlength="32000" spellcheck="false" ${isOpenAINovelAI(value.model) ? '' : 'disabled'}>${esc(value.negative)}</textarea></label>
+    ${isOpenAINovelAI(value.model) ? select('characterMode', '多角色传参（按接口提供方要求选择）', [
+      ['flat', '合并描述 · 通用兼容'], ['novelai-v4', '独立角色 · v4_prompt 格式'], ['character-prompts', '独立角色 · characterPrompts 格式'],
+    ]) : ''}
     ${select('size', '尺寸', SIZES)}
     ${value.size === 'custom' ? `<div class="nai-dimensions">${number('width', '宽度 (px)')}<button type="button" class="ui-icon-button" data-action="openai-swap-size" title="交换宽高" aria-label="交换宽高">${icon('arrow-left-right')}</button>${number('height', '高度 (px)')}</div>` : ''}
     <div class="two-field-row">${number('n', '每次生成张数')}${select('quality', '图像质量', openAIQualityOptions(value))}</div>

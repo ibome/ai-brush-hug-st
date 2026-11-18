@@ -79,6 +79,33 @@ test('smart drafts preserve prompts, message kind and skipped decisions after se
   assert.equal((await fresh.dispatch(f.user(), 'chat/get', { id: bound.id })).status, 'skipped');
 });
 
+test('multi-character drafts retain per-picture cast, grid positions and interactions after restart', async (t) => {
+  const f = await fixture(t);
+  const binding = { id: 'c'.repeat(64), branch: 'd'.repeat(64), chatKey: 'cast-chat', swipe: 0, slot: 0, kind: 'smart' };
+  const requestId = uuid();
+  const character = { profileId: 'blue', action: 'holding hands', expression: 'smiling',
+    appearance: 'blue hair', outfit: 'jacket', negative: 'red hair', position: 'A3',
+    interaction: { targetId: 'red', action: 'holding hands', mode: 'mutual' } };
+  await f.service.dispatch(f.user(), 'chat/reserve', { binding, requestId });
+  await f.service.dispatch(f.user(), 'chat/update', { id: binding.id, requestId, value: {
+    status: 'drafted', assistant: { shouldDraw: true, positive: 'park', characterIds: ['blue', 'red'],
+      characters: [character], illustrations: [
+        { positive: 'park', characterIds: ['blue', 'red'], characters: [character] },
+        { positive: 'bench', characterIds: [], characters: [] },
+      ] },
+  } });
+  const fresh = createStorageService();
+  const row = await fresh.dispatch(f.user(), 'chat/get', { id: binding.id });
+  assert.deepEqual(row.assistant.characterIds, ['blue', 'red']);
+  assert.deepEqual(row.assistant.characters, [character]);
+  assert.deepEqual(row.assistant.illustrations[0].characters, [character]);
+  assert.deepEqual(row.assistant.illustrations[1].characterIds, []);
+  const backup = await fresh.dispatch(f.user(), 'backup/chats');
+  const { normalizeBackupChats } = await import('./backup-records.mjs');
+  const restored = normalizeBackupChats(backup.rows, new Set());
+  assert.deepEqual(restored[0].assistant, row.assistant);
+});
+
 test('expired unsubmitted tasks pause; expired submitted tasks are uncertain and never reclaimable', async (t) => {
   const f = await fixture(t), one = await f.create();
   const owned = await f.claim(one);

@@ -6,6 +6,7 @@ import JSZip from 'jszip';
 import { RELEASE } from '../src/release.js';
 import { thirdPartyNotices } from './third-party-notices.mjs';
 import { localToolsPackage } from './local-tools-package.mjs';
+import { storageModules } from './server-package.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const output = path.join(root, '.release-artifacts');
@@ -62,7 +63,7 @@ await walk(path.join(root, 'docs'), 'docs/', frontend, true);
 await walk(path.join(root, 'LICENSES'), 'LICENSES/', frontend, true);
 await add(frontend, 'examples/linghuashi-client.js', await fs.readFile(path.join(root, 'examples/linghuashi-client.js')), true);
 await walk(path.join(root, 'extension-dist'), 'dist/', frontend, true);
-for (const name of ['index.mjs', 'task-ledger.mjs', 'image-versions.mjs', 'reference-assets.mjs', 'reference-actions.mjs', 'backup-records.mjs']) {
+for (const name of storageModules) {
   await add(backend, `linghuashi-storage/${name}`, await fs.readFile(path.join(root, 'server/linghuashi-storage', name)), true);
 }
 await add(backend, 'linghuashi-storage/LICENSE', await fs.readFile(path.join(root, 'LICENSE')), true);

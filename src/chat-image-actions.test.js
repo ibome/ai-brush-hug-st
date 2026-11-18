@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyChatImageEdit, applyChatImageStyle, chatImageBelongsTo, chatImagePrompt, chatImagePromptText, chatImageTaskBusy } from './chat-image-actions.js';
+import { applyChatImageEdit, applyChatImageStyle, refreshChatImageCharacters, chatImageBelongsTo, chatImagePrompt, chatImagePromptText, chatImageTaskBusy } from './chat-image-actions.js';
 globalThis.window ||= { addEventListener() {} };
 const { imageEditDraft, prepareImageEdit } = await import('./image-edit.js');
 const { applyCharacterScene } = await import('./character-profiles.js');
@@ -248,4 +248,44 @@ test('importing an image as current parameters does not add a second copy of its
   const result = applyChatImageStyle(imageEditDraft(original), original);
   assert.equal(result.params.positive, 'oil painting, garden');
   assert.deepEqual(result.chatPromptStyle, original.chatPromptStyle);
+});
+
+test('explicit current-profile reroll changes only the original cast and keeps per-image direction and position', () => {
+  const original = applyCharacterScene({ provider: 'novelai', params: { model: 'nai-diffusion-4-5-full',
+    positive: 'oil painting, garden', negative: 'blur' }, chatPromptStyle: createChatPromptStyle('oil painting', 'garden') },
+  { chatKey: 'chat-a', entries: [
+    { profileId: 'a', position: 'B3', profile: { id: 'a', name: 'A', hair: 'black hair',
+      outfits: [{ id: 'dress', prompt: 'white dress' }] } },
+    { profileId: 'b', position: 'D3', profile: { id: 'b', name: 'B', tags: 'silver hair' } },
+  ] }, [{ profileId: 'a', action: 'waving' }]);
+  const before = structuredClone(original);
+  const current = { provider: 'novelai', params: { positive: 'watercolor', negative: 'lowres', artist: '' } };
+  const profiles = [{ id: 'a', enabled: true, name: 'A', hair: 'green hair',
+    outfits: [{ id: 'coat', prompt: 'blue coat' }] }, { id: 'newcomer', enabled: true, name: 'New' }];
+  const live = { entries: profiles.map((profile) => ({ profileId: profile.id, profile })) };
+  const draft = refreshChatImageCharacters(applyChatImageStyle(imageEditDraft(original), current), profiles, live);
+  const result = prepareImageEdit(draft);
+  assert.deepEqual(result.characterScene.entries.map((row) => row.profileId), ['a', 'b']);
+  assert.match(result.characterScene.characterPrompts[0].positive, /green hair.*blue coat.*waving/);
+  assert.doesNotMatch(result.characterScene.characterPrompts[0].positive, /black hair|white dress/);
+  assert.equal(result.characterScene.characterPrompts[0].position, 'B3');
+  assert.match(result.characterScene.characterPrompts[1].positive, /silver hair/);
+  assert.match(result.characterScene.warnings.join(' '), /不存在/);
+  assert.equal(result.characterScene.basePositive, 'watercolor, garden');
+  assert.equal(result.params.negative, 'lowres');
+  assert.deepEqual(original, before);
+  const normal = prepareImageEdit(applyChatImageStyle(imageEditDraft(original), current));
+  assert.match(normal.characterScene.characterPrompts[0].positive, /black hair.*white dress.*waving/);
+});
+
+test('legacy rerolls recover recognizable actions without carrying the old appearance into refreshed profiles', () => {
+  const legacy = applyCharacterScene({ provider: 'novelai', params: { model: 'nai-diffusion-4-5-full',
+    positive: 'garden', negative: '' } }, { entries: [
+    { profileId: 'a', profile: { id: 'a', tags: 'black hair' } },
+  ] }, [{ profileId: 'a', action: 'waving' }]);
+  delete legacy.characterScene.directions;
+  const result = prepareImageEdit(refreshChatImageCharacters(imageEditDraft(legacy),
+    [{ id: 'a', enabled: true, tags: 'green hair' }]));
+  assert.match(result.characterScene.characterPrompts[0].positive, /green hair.*waving/);
+  assert.doesNotMatch(result.characterScene.characterPrompts[0].positive, /black hair/);
 });

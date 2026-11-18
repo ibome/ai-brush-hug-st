@@ -10,7 +10,7 @@ import { apiError, publicExtensionTask } from '../extension-api.js';
 import { createExtensionTaskService } from '../extension-tasks.js';
 import { extensionCapabilities, extensionPresets, prepareExtensionSnapshot, publicImageParameters } from './extension-generation.js';
 import { imageEditDraft, prepareImageEdit, imageEditMessages, applyImageRewrite, drawingSeed, imageEditAvailability } from '../image-edit.js';
-import { applyChatImageEdit, applyChatImageStyle, chatImageBelongsTo } from '../chat-image-actions.js';
+import { applyChatImageEdit, applyChatImageStyle, refreshChatImageCharacters, chatImageBelongsTo } from '../chat-image-actions.js';
 import { blockingChatWindow, waitForChatWindow, mergeChatPrompt } from '../chat-preparation.js';
 import { createChatPromptStyle, inferChatPromptStyle } from '../chat-prompt-style.js';
 import { renderImageEditor } from './image-editor.js';
@@ -56,7 +56,7 @@ import { renderAssistant, assistantModelChoices } from './assistant.js';
 import { AssistantPresetPanel } from './assistant-presets.js';
 import { composeAssistantPresetMessages, selectedAssistantPresetEntries } from '../assistant-presets.js';
 import { composeTaskMessages, illustrationPlans, selectedIllustration, freezeIllustrationCharacters,
-  syncPrimaryIllustration, evidencedCharacterStates } from '../assistant-workflow.js';
+  syncPrimaryIllustration, evidencedCharacterStates, selectIllustrationCharacter } from '../assistant-workflow.js';
 import { AssistantWorkflowPanel } from './assistant-workflow.js';
 import { TaskPromptPanel } from './assistant-rules.js';
 import { START_GOALS, normalizeExperience, imageReadiness, assistantReadiness, storageReadiness, failureActions, guideSteps, guideStepComplete } from '../start-guide.js';
@@ -75,15 +75,19 @@ import { compatibilityIdentity, compatibilityFor, resolveAssistantCompatibility,
 import { renderAssistantCompatibility, renderAssistantBudget } from './assistant-compatibility.js';
 import { replaceSelectedScene, sceneReanalysisMessages } from '../assistant-scene.js';
 import '../styles/assistant.css';
-import { migrateProfileLibrary, normalizeProfileLibrary, normalizeProfile, effectiveProfiles, saveProfile, deleteProfile,
+import { migrateProfileLibrary, normalizeProfileLibrary, normalizeProfile, effectiveProfiles, saveProfile, saveProfileAndSelect, deleteProfile,
   updateProfileChat, resolveCharacterScene, applyCharacterScene, normalizeCharacterScene, restoreSceneProfiles,
   applySceneOutfit, setGlobalOutfit, reconcileTemporaryScene } from '../character-profiles.js';
+import { characterLimit } from '../character-layout.js';
+import { editCharacterParticipant, selectCharacterParticipant, arrangeCharacterScene } from '../character-scene-editor.js';
+import { prepareMultiCharacterPrompt } from '../multi-character-prompt.js';
 import { renderCharacters as renderCharacterPage, renderCharacterSelection, refreshOutfitDraftFeedback } from './characters.js';
 import { creationRevision, previewCreation } from '../creation-workflow.js';
 import { renderCreationModes, renderCreationPreview } from './creation-workflow.js';
 import { OutfitDraftSessions, pendingOutfitDrafts, prepareOutfitDrafts } from '../outfit-drafts.js';
 import { confirmOutfitDrafts } from './outfit-drafts.js';
 import { ProfileAIPanel } from './profile-ai.js';
+import { confirmDiscardChanges, confirmProfileDeletion } from './discard-changes.js';
 import { requestAssistantText } from '../prompt-assistant.js';
 import '../styles/characters.css';
 import '../styles/profile-ai.css';
@@ -2116,7 +2120,7 @@ function renderGenerate() {
         ${renderArtistQuickPick(state)}
         ${experienceFold(state, 'generation-modes', '图生图、局部重绘与参考图', advancedPanel.html(), advancedOf(captureSnapshot(state)).mode !== 'text')}
         ${novelai ? renderNovelAIParameters(state, novelaiAdvancedOpen) : openai ? renderOpenAIParameters(state, openaiModels, openaiAdvancedOpen, { ...openaiModelUI, loading: connectionStatus.tone === 'pending' }) : state.provider === 'sdwebui' ? renderSDWebUIParameters(state, sdwebuiProbe, sdwebuiAdvancedOpen) : renderComfyWorkflow(state, comfyProbe, comfyExpanded)}
-        ${renderCharacterSelection(state, currentChat(), { frozen: Boolean(state.characterSceneOverride?.entries?.length), outfitDrafts: profileUI.outfitDrafts })}
+        ${renderCharacterSelection(state, currentChat(), { frozen: Boolean(state.characterSceneOverride), outfitDrafts: profileUI.outfitDrafts })}
         <div class="assistant-actions">${button('scan-eye', '预览本次生图', 'creation-preview', 'secondary')}${button('sparkles', '用当前提示词构思', 'creation-assistant', 'secondary')}</div>
         ${renderCreationPreview(creationPreviewState?.preview, creationPreviewState && creationPreviewState.revision !== currentCreationRevision())}
       </section>
@@ -2133,7 +2137,8 @@ function creationSources() {
     origin: creationPromptOrigin?.provider === state.provider ? creationPromptOrigin : null };
 }
 function currentCreationRevision() {
-  return creationRevision([captureSnapshot(state), creationSources(), profileUI.outfitDrafts]);
+  return creationRevision([captureSnapshot(state), creationSources(), profileUI.outfitDrafts,
+    effectiveProfiles(state.characterProfiles, currentChat().key)]);
 }
 function refreshCreationPreviewState() {
   const node = host?.querySelector('[data-creation-preview-state]');
@@ -2821,7 +2826,7 @@ function loadProfileDraft(profileId = profileUI.draft?.id) {
 }
 
 function discardProfileChanges() {
-  return !profileUI.dirty || window.confirm('放弃当前档案尚未保存的修改？');
+  return !profileUI.dirty || confirmDiscardChanges('角色档案有未保存修改', profileUI.draft?.name || '当前角色档案');
 }
 
 function useLiveCharacterScene() {
@@ -2869,19 +2874,17 @@ function saveProfileParticipants(selection, replaceOutfits = []) {
 }
 
 function updateProfileParticipant(target) {
-  const temporary = state.characterSceneOverride?.entries.some((entry) => entry.outfitScope === 'once');
-  const chat = currentChat();
-  const scene = temporary ? normalizeCharacterScene(state.characterSceneOverride)
-    : resolveCharacterScene(state.characterProfiles, chat.key, chat.avatars);
-  const entry = scene?.entries.find((item) => item.profileId === target.dataset.profileId);
-  if (!entry) return;
-  entry[target.dataset.participantField] = target.value;
-  if (temporary) {
-    useLiveCharacterScene();
-    delete scene.applied; delete scene.characterPrompts;
-    state.characterSceneOverride = scene; state.characterSceneOverrideProvider = state.provider;
-    persist();
-  } else saveProfileParticipants(scene.entries.map(({ profile, ...item }) => item));
+  const scene = editCharacterParticipant(captureSnapshot(state).characterScene,
+    target.dataset.profileId, target.dataset.participantField, target.value);
+  if (state.characterSceneOverride) saveCharacterSceneOverride(scene);
+  else saveProfileParticipants(scene.entries.map(({ profile, ...item }) => item));
+}
+
+function saveCharacterSceneOverride(scene) {
+  useLiveCharacterScene();
+  state.characterSceneOverride = scene;
+  state.characterSceneOverrideProvider = state.provider;
+  persist();
 }
 
 function updateOutfitDraft(target) {
@@ -2951,14 +2954,11 @@ function consumeTemporaryOutfits(submitted) {
 
 function setProfileParticipant(profileId, checked) {
   const chat = currentChat();
-  const scene = resolveCharacterScene(state.characterProfiles, chat.key, chat.avatars);
-  const selection = scene.entries.map(({ profile, ...entry }) => entry).filter((entry) => entry.profileId !== profileId);
-  if (checked) {
-    if (selection.length >= 6) throw new Error('一幅画最多选择 6 个角色');
-    const profile = effectiveProfiles(state.characterProfiles, chat.key).find((item) => item.id === profileId);
-    selection.push({ profileId, outfitId: profile.defaultOutfitId, position: 'auto' });
-  }
-  saveProfileParticipants(selection);
+  const params = state.provider === 'comfyui' ? state.comfyui.params : state[state.provider];
+  const scene = selectCharacterParticipant(captureSnapshot(state).characterScene, profileId, checked,
+    effectiveProfiles(state.characterProfiles, chat.key), characterLimit(state.provider, params.model));
+  if (state.characterSceneOverride) saveCharacterSceneOverride(scene);
+  else saveProfileParticipants(scene.entries.map(({ profile, ...entry }) => entry));
 }
 
 async function importProfiles(file) {
@@ -2969,7 +2969,7 @@ async function importProfiles(file) {
     if (raw.version !== 1 || !Array.isArray(raw.profiles)) throw new Error('请选择灵画师导出的角色档案 JSON');
     const imported = normalizeProfileLibrary(raw);
     if (!imported.profiles.length) throw new Error('文件中没有有效角色档案');
-    if (!discardProfileChanges()) return;
+    if (!await discardProfileChanges()) return;
     const collisions = imported.profiles.filter((profile) => state.characterProfiles.profiles.some((item) => item.id === profile.id));
     if (collisions.length && !window.confirm(`导入将覆盖 ${collisions.length} 个同 ID 全局档案，继续？`)) return;
     let next = state.characterProfiles;
@@ -3047,7 +3047,7 @@ function connectionDialog(action) {
 }
 
 function discardArtistChanges() {
-  return !artistUI.dirty || window.confirm('画师串有未保存修改，放弃这些修改？');
+  return !artistUI.dirty || confirmDiscardChanges('画师串有未保存修改', artistUI.draft?.name || '当前画师串');
 }
 
 function artistDraft(value) {
@@ -3075,7 +3075,7 @@ function artistFileInput(action) {
     try {
       if (action === 'import') {
         if (file.size > 1024 * 1024) throw new Error('导入文件需小于 1 MB');
-        if (!discardArtistChanges()) return;
+        if (!await discardArtistChanges()) return;
         const previous = state.artistLibrary;
         state.artistLibrary = importArtistLibrary(previous, JSON.parse(await file.text()));
         try { persist(); } catch (error) { state.artistLibrary = previous; throw error; }
@@ -4073,6 +4073,8 @@ function openAIGenerationVerified() {
 async function prepareGenerationPlan(snapshot, credential, connection, imageEdit) {
   const provider = snapshot.provider;
   const params = snapshot.params || snapshot.config.params;
+  const limit = characterLimit(provider, params.model);
+  if (snapshot.characterScene?.entries.length > limit) throw new GenerationError(`当前模型最多支持 ${limit} 个角色，请减少本图出场人数`);
   let body, url, base, outputNode;
   const headers = {};
   const advanced = snapshot.novelaiProcessing ? { mode: 'text' } : validateAdvanced(snapshot);
@@ -4098,7 +4100,7 @@ async function prepareGenerationPlan(snapshot, credential, connection, imageEdit
       throw new GenerationError('请先在接口配置填写 API Key');
     }
     if (credential.key.trim()) headers.Authorization = `Bearer ${credential.key.trim()}`;
-    body = buildOpenAIRequest(params);
+    body = buildOpenAIRequest(params, snapshot.characterScene?.characterPrompts);
     if ((imageEdit || advanced.mode !== 'text') && !isOpenAINovelAI(params.model) && params.negative.trim()) body.prompt += `\nAvoid: ${params.negative.trim()}`;
   } else if (provider === 'sdwebui') {
     base = sdwebuiBase(credential.endpoint);
@@ -4301,6 +4303,7 @@ export function receiveChatCommand(data) {
       || !/^[a-f0-9-]{36}$/.test(data.requestId || '') || chatRequests.has(data.requestId)
       || !['browser', 'server'].includes(data.storageLocation)
       || data.styleMode !== undefined && !['current', 'original'].includes(data.styleMode)
+      || data.characterMode !== undefined && !['original', 'current'].includes(data.characterMode)
       || data.prompt !== undefined && (typeof data.prompt !== 'string' || data.prompt.length > 32000)) return;
     if (chatInbox.length >= 32) {
       chatPost('linghuashi:chat-task', { requestId: data.requestId, imageId: data.imageId, status: 'failed', error: '生图队列已满，请稍后重试' }); return;
@@ -4478,6 +4481,11 @@ async function enqueueChatImage(request) {
       original = applyChatImageStyle(original, captureSnapshot({ ...state, provider: original.provider }),
         samples[0].prompt, request.prompt);
     }
+    if (request.characterMode === 'current') {
+      const chatKey = request.binding.chatKey;
+      const live = resolveCharacterScene(state.characterProfiles, chatKey, currentChat().key === chatKey ? currentChat().avatars : []);
+      original = refreshChatImageCharacters(original, effectiveProfiles(state.characterProfiles, chatKey), live);
+    }
     const draft = applyChatImageEdit(original, request.edits, request.randomize === true);
     const snapshot = prepareImageEdit(draft), relation = editRelation(parent, request.edits ? '聊天修改提示词' : '聊天再画一张');
     relation.number = Math.max(...groupVersions(rows, parent.id).map((row) => row.version?.number || 1)) + 1;
@@ -4619,7 +4627,7 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
       snapshot.assistant = assistantPlan;
     } catch (error) { report('failed', error.message); return; }
   }
-  const params = snapshot.params || snapshot.config.params;
+  let params = snapshot.params || snapshot.config.params;
   if (request) {
     if (!await validateChatRequest(request)) { report('cancelled'); return; }
   }
@@ -4633,8 +4641,20 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
         params.negative = snapshot.characterScene.baseNegative;
         delete snapshot.characterScene.applied;
       }
-      snapshot.chatPromptStyle = createChatPromptStyle(params.positive, request.prompt, samples[0].prompt);
-      params.positive = mergeChatPrompt(params.positive, request.prompt, samples[0].prompt);
+      let structured;
+      try {
+        structured = prepareMultiCharacterPrompt(snapshot, request.prompt, {
+          profiles: effectiveProfiles(state.characterProfiles, request.binding.chatKey), chatKey: request.binding.chatKey,
+          basePositive: mergeChatPrompt(params.positive, '', samples[0].prompt),
+        });
+      } catch (error) { report('failed', error.message); return; }
+      if (structured) {
+        snapshot = structured;
+        params = snapshot.params || snapshot.config.params;
+      } else {
+        snapshot.chatPromptStyle = createChatPromptStyle(params.positive, request.prompt, samples[0].prompt);
+        params.positive = mergeChatPrompt(params.positive, request.prompt, samples[0].prompt);
+      }
     } else {
       const promptStyle = inferChatPromptStyle(params.positive, assistantPlan.positive, samples[0].prompt);
       if (promptStyle) snapshot.chatPromptStyle = promptStyle;
@@ -4647,11 +4667,17 @@ async function enqueueGeneration(request, assistantResult, imageEdit) {
     : { endpoint: state.openaiEndpoint, path: state.openaiPath, timeout: state.openaiTimeout };
   try {
     await tasksReady;
+    if (!request && !imageEdit && !assistantPlan) {
+      snapshot = prepareMultiCharacterPrompt(snapshot, params.positive, {
+        profiles: effectiveProfiles(state.characterProfiles, currentChat().key), chatKey: currentChat().key,
+      }) || snapshot;
+      params = snapshot.params || snapshot.config.params;
+    }
     const scene = snapshot.characterScene;
     if (request && scene?.chatKey && scene.chatKey !== request.binding.chatKey) {
       throw new Error('角色档案快照属于另一聊天，请重新准备提示词');
     }
-    if (!imageEdit) snapshot = applyCharacterScene(snapshot, scene, assistantPlan?.characters);
+    if (!imageEdit) snapshot = applyCharacterScene(snapshot, scene, assistantPlan?.characters, assistantPlan?.characterIds);
     if ((!imageEdit || request?.quickImage && !request.edits) && state.confirm) {
       const confirmation = request?.quickImage ? imageEditDraft(snapshot) : snapshot;
       if (!await confirmGeneration(confirmation, request)) { report('cancelled'); return; }
@@ -4917,7 +4943,7 @@ export function mountPlugin(root, next) {
     }
     if (target.dataset.page) {
       if (target.closest('.plugin-nav')) workflowReturn = null;
-      if (state.page === 'styles' && artistUI.dirty && target.dataset.page !== 'styles' && !discardArtistChanges()) return;
+      if (state.page === 'styles' && artistUI.dirty && target.dataset.page !== 'styles' && !await discardArtistChanges()) return;
       if (state.page === 'styles' && target.dataset.page !== 'styles' && artistUI.dirty) {
         artistDraft(state.artistLibrary.find((entry) => entry.id === artistUI.draft?.id) || state.artistLibrary[0] || null);
         artistUI.dirty = false;
@@ -4926,11 +4952,11 @@ export function mountPlugin(root, next) {
       return;
     }
     if (target.dataset.artistSelect) {
-      if (discardArtistChanges()) { artistDraft(state.artistLibrary.find((entry) => entry.id === target.dataset.artistSelect)); render(); }
+      if (await discardArtistChanges()) { artistDraft(state.artistLibrary.find((entry) => entry.id === target.dataset.artistSelect)); render(); }
       return;
     }
     if (target.dataset.profileSelect || target.dataset.profileScope) {
-      if (!discardProfileChanges()) return;
+      if (!await discardProfileChanges()) return;
       if (target.dataset.profileScope) profileUI.scope = target.dataset.profileScope;
       loadProfileDraft(target.dataset.profileSelect); render(); return;
     }
@@ -4964,7 +4990,7 @@ export function mountPlugin(root, next) {
         } catch (error) { toast(error.message); }
         break;
       case 'artist-new': case 'artist-capture': case 'artist-copy':
-        if (!discardArtistChanges()) break;
+        if (!await discardArtistChanges()) break;
         if (target.dataset.action === 'artist-copy') artistDraft({ ...artistUI.draft, id: randomUUID(), name: `${artistUI.draft?.name || '画风'} 副本`.slice(0, 40) });
         else if (target.dataset.action === 'artist-capture') {
           const params = state.provider === 'comfyui' ? state.comfyui.params : state[state.provider];
@@ -5254,6 +5280,7 @@ export function mountPlugin(root, next) {
           pendingSave.flush();
           const snapshot = captureSnapshot(state);
           creationPreviewState = { revision: currentCreationRevision(), preview: previewCreation(snapshot, {
+            profiles: effectiveProfiles(state.characterProfiles, currentChat().key),
             ...creationSources(), pendingOutfits: pendingOutfitDrafts(snapshot.characterScene, profileUI.outfitDrafts).map((row) => row.name),
           }) };
           render(true); revealSetting('.creation-preview');
@@ -5300,15 +5327,20 @@ export function mountPlugin(root, next) {
       case 'test-connection': checkConnection(true); break;
       case 'network-diagnostics': debugToolsPanel.selectProvider(state.provider); showPage('debug'); break;
       case 'debug-tools': showPage('debug'); break;
-      case 'save-character':
+      case 'save-character': case 'save-character-use':
         try {
           if (!profileUI.draft?.name.trim()) throw new Error('请填写档案名称');
           if (profileUI.scope === 'chat' && profileUI.chatKey !== currentChat().key) throw new Error('聊天已切换，请重新选择档案后保存');
-          state.characterProfiles = saveProfile(state.characterProfiles, profileUI.draft, profileUI.scope === 'chat' ? currentChat().key : '');
-          useLiveCharacterScene(); loadProfileDraft(); persist(); render(); toast('角色档案已保存');
+          const join = target.dataset.action === 'save-character-use', chat = currentChat();
+          const params = state.provider === 'comfyui' ? state.comfyui.params : state[state.provider];
+          state.characterProfiles = join ? saveProfileAndSelect(state.characterProfiles, profileUI.draft, {
+            chatKey: chat.key || '', avatars: chat.avatars || [], scope: profileUI.scope,
+            limit: characterLimit(state.provider, params.model),
+          }) : saveProfile(state.characterProfiles, profileUI.draft, profileUI.scope === 'chat' ? chat.key : '');
+          useLiveCharacterScene(); loadProfileDraft(); persist(); render(); toast(join ? '角色档案已保存并加入出场' : '角色档案已保存');
         } catch (error) { profileUI.error = error.message; render(); } break;
       case 'profile-ai-open':
-        if (!discardProfileChanges()) break;
+        if (!await discardProfileChanges()) break;
         loadProfileDraft(); await profileAI.open(); break;
       case 'save-preset': persist(); toast('已保存'); break;
       case 'edit-prompt': editPrompt = !editPrompt; render(); break;
@@ -5320,9 +5352,11 @@ export function mountPlugin(root, next) {
         if (window.parent !== window) postWindowMessage(window.parent, { type: 'draw-lab:surface', surface: 'console' });
         break;
       case 'new-character':
-        if (!discardProfileChanges()) break;
+        if (!await discardProfileChanges()) break;
         profileUI.scope = 'global';
         profileUI.draft = normalizeProfile({ id: randomUUID(), name: '新角色' });
+        profileUI.chatKey = currentChat().key || '';
+        state.page = 'characters';
         profileUI.dirty = true; profileUI.error = ''; render(); host.querySelector('[data-profile-field="name"]')?.focus(); break;
       case 'profiles-open': showPage('characters'); break;
       case 'profile-reference-upload': host.querySelector('[data-profile-reference-file]')?.click(); break;
@@ -5338,6 +5372,19 @@ export function mountPlugin(root, next) {
         break;
       case 'profile-refresh-cards': await refreshProfileCards(); break;
       case 'profile-live-scene': useLiveCharacterScene(); persist(); render(); break;
+      case 'profile-position': {
+        updateProfileParticipant({ dataset: { profileId: target.dataset.profileId, participantField: 'position' },
+          value: target.dataset.position });
+        render(true); break;
+      }
+      case 'profile-layout': {
+        const scene = captureSnapshot(state).characterScene;
+        if (!scene) break;
+        const arranged = arrangeCharacterScene(scene, target.dataset.layout);
+        if (state.characterSceneOverride) saveCharacterSceneOverride(arranged);
+        else saveProfileParticipants(arranged.entries.map(({ profile, ...entry }) => entry));
+        render(true); break;
+      }
       case 'profile-discard': loadProfileDraft(); render(); break;
       case 'profile-new-outfit': {
         const draft = profileUI.draft;
@@ -5353,18 +5400,20 @@ export function mountPlugin(root, next) {
           profileUI.dirty = true; render();
         } break;
       case 'profile-clear-override': {
-        if (!discardProfileChanges()) break;
+        if (!await discardProfileChanges()) break;
         const key = currentChat().key, chat = state.characterProfiles.chats.find((item) => item.chatKey === key);
         state.characterProfiles = updateProfileChat(state.characterProfiles, key, {
           overrides: chat.overrides.filter((item) => item.id !== profileUI.draft.id),
         });
         useLiveCharacterScene(); loadProfileDraft(); persist(); render(); break;
       }
-      case 'profile-delete':
-        if (window.confirm(`删除“${profileUI.draft.name}”及其聊天覆盖？已保存图片的角色快照会保留。`)) {
-          state.characterProfiles = deleteProfile(state.characterProfiles, profileUI.draft.id);
+      case 'profile-delete': {
+        const profile = profileUI.draft;
+        if (profile && await confirmProfileDeletion(profile.name)) {
+          state.characterProfiles = deleteProfile(state.characterProfiles, profile.id);
           useLiveCharacterScene(); loadProfileDraft(); persist(); render(); toast('档案已删除');
         } break;
+      }
       case 'profile-export':
         downloadJson('灵画师-角色档案.json', { version: 1, profiles: profileUI.scope === 'chat'
           ? effectiveProfiles(state.characterProfiles, currentChat().key) : state.characterProfiles.profiles }); break;
@@ -5412,7 +5461,7 @@ export function mountPlugin(root, next) {
       return;
     }
     if (event.target.dataset.participantField && event.target.tagName !== 'SELECT') {
-      updateProfileParticipant(event.target);
+      try { updateProfileParticipant(event.target); } catch (error) { toast(error.message); }
       return;
     }
     if (event.target.dataset.assistantCharacter && state.assistantDraft) {
@@ -5621,6 +5670,14 @@ export function mountPlugin(root, next) {
       return;
     }
     if (event.target.matches('[data-profile-import]')) { await importProfiles(event.target.files[0]); return; }
+    if (event.target.hasAttribute('data-assistant-cast') && state.assistantDraft) {
+      try {
+        state.assistantDraft = selectIllustrationCharacter(state.assistantDraft, assistantUI.illustrationIndex || 0,
+          event.target.dataset.assistantCast, event.target.checked);
+        pendingSave.flush(); persist(); render(true);
+      } catch (error) { toast(error.message); }
+      return;
+    }
     if (event.target.dataset.profileField && profileUI.draft) {
       const key = event.target.dataset.profileField;
       if (event.target.type === 'checkbox' || event.target.tagName === 'SELECT') {
@@ -5812,7 +5869,7 @@ export function mountPlugin(root, next) {
     host.querySelector('.chat-messages').append(article);
     input.value = ''; article.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); paintIcons();
   });
-  document.getElementById('overlay-root').addEventListener('click', (event) => {
+  document.getElementById('overlay-root').addEventListener('click', async (event) => {
     const action = event.target.closest('button[data-action]')?.dataset.action;
     if (action === 'close-viewer') closeDrawingViewer();
     if (action === 'viewer-review') markReviewed(event.target.closest('[data-rating]').dataset.rating);
@@ -5857,7 +5914,7 @@ export function mountPlugin(root, next) {
     if (action === 'viewer-restore-profiles') {
       const item = viewedDrawing();
       const key = currentChat().key || '';
-      if (!discardProfileChanges()) return;
+      if (!await discardProfileChanges()) return;
       if (!window.confirm(`将图片中的角色档案恢复到${key ? '当前聊天覆盖' : '全局档案'}？同 ID 的档案会被覆盖。`)) return;
       try {
         state.characterProfiles = restoreSceneProfiles(state.characterProfiles, item.snapshot.characterScene, key);

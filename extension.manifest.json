@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.14&build=20261117-creation-workflow",
+  "js": "dist/index.js?ver=0.26.15&build=20261118-multi-character",
   "author": "小波",
-  "version": "0.26.14",
+  "version": "0.26.15",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

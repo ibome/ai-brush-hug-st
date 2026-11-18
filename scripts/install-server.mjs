@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { storageModules } from './server-package.mjs';
 const argument = process.argv.indexOf('--st-root');
 if (argument < 0 || !process.argv[argument + 1]) throw new Error('Usage: node scripts/install-server.mjs --st-root /path/to/SillyTavern');
 const root = await fs.realpath(path.resolve(process.argv[argument + 1]));
@@ -13,7 +14,7 @@ if (await fs.realpath(plugins) !== plugins) throw new Error('Plugin directory mu
 const target = path.join(plugins, 'linghuashi-storage'), source = fileURLToPath(new URL('../server/linghuashi-storage/', import.meta.url));
 await fs.mkdir(target, { recursive: true });
 if (await fs.realpath(target) !== target) throw new Error('Storage plugin directory must not be a symbolic link');
-const files = ['index.mjs', 'task-ledger.mjs', 'image-versions.mjs', 'reference-assets.mjs', 'reference-actions.mjs', 'backup-records.mjs'];
+const files = storageModules;
 const backup = path.join(root, 'backups', 'linghuashi', `server-${new Date().toISOString().replace(/[:.]/g, '-')}`);
 await fs.mkdir(backup, { recursive: true, mode: 0o700 });
 for (const name of files) {

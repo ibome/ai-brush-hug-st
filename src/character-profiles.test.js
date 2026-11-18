@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeProfile, normalizeProfileLibrary, migrateProfileLibrary, saveProfile, deleteProfile, updateProfileChat,
+import { normalizeProfile, normalizeProfileLibrary, migrateProfileLibrary, saveProfile, saveProfileAndSelect, deleteProfile, updateProfileChat,
   effectiveProfiles, resolveCharacterScene, applyCharacterScene, normalizeCharacterScene, restoreSceneProfiles } from './character-profiles.js';
 import { buildAssistantMessages, parseAssistantResult, applyAssistantPlan } from './prompt-assistant.js';
 import { characterDirectory, collectAssistantContext } from './assistant-host.js';
@@ -58,7 +58,33 @@ test('explicit empty selection disables profiles and automatic mode can be resto
   assert.equal(resolveCharacterScene(db, 'chat', ['one.png']).entries.length, 1);
   assert.equal(db.chats.length, 0);
 });
-test('disabled profiles, deleted IDs and excess participants do not enter requests', () => {
+test('save and join selects a manual new profile only for the active scene and retains existing character settings', () => {
+  const original = library(), before = structuredClone(original);
+  const db = saveProfileAndSelect(original, { id: 'new', name: '旅人', hair: 'blue hair' },
+    { chatKey: 'chat-one', avatars: ['one.png'], limit: 6 });
+  assert.deepEqual(resolveCharacterScene(db, 'chat-one', ['one.png']).entries.map((row) => row.profileId), ['a', 'new']);
+  assert.deepEqual(resolveCharacterScene(db, 'chat-two', ['two.png']).entries.map((row) => row.profileId), ['b']);
+  assert.deepEqual(db.selection, original.selection);
+  assert.deepEqual(original, before);
+  const workshop = saveProfileAndSelect(original, { ...a, hair: 'purple hair' }, { limit: 6 });
+  assert.equal(workshop.selection[0].position, 'left');
+  assert.equal(workshop.selection.length, 2);
+  assert.equal(resolveCharacterScene(workshop).entries[0].profile.hair, 'purple hair');
+});
+test('save and join never partially saves a disabled or over-capacity profile and honors chat overrides', () => {
+  const original = library(), before = structuredClone(original);
+  assert.throws(() => saveProfileAndSelect(original, { id: 'new', name: '旅人' }, { limit: 2 }), /最多选择 2/);
+  assert.throws(() => saveProfileAndSelect(original, { ...a, enabled: false }), /启用此档案/);
+  assert.throws(() => saveProfileAndSelect(original, a, { scope: 'chat' }), /打开一个/);
+  const disabled = saveProfile(original, { ...a, enabled: false }, 'chat-one');
+  assert.throws(() => saveProfileAndSelect(disabled, a, { chatKey: 'chat-one' }), /聊天覆盖已停用/);
+  const restored = saveProfileAndSelect(disabled, a, { chatKey: 'chat-one', scope: 'chat' });
+  assert.equal(resolveCharacterScene(restored, 'chat-one').entries[0].profileId, 'a');
+  assert.deepEqual(original, before);
+  const automatic = normalizeProfileLibrary({ profiles: [a, b] });
+  assert.throws(() => saveProfileAndSelect(automatic, a, { chatKey: 'chat', avatars: ['one.png', 'two.png'], limit: 1 }), /最多选择 1/);
+});
+test('disabled profiles and deleted IDs stay excluded while model-specific limits are deferred to generation', () => {
   let db = saveProfile(library(), { ...a, enabled: false });
   assert.equal(resolveCharacterScene(db).entries.length, 1);
   db = deleteProfile(db, 'b');
@@ -66,7 +92,12 @@ test('disabled profiles, deleted IDs and excess participants do not enter reques
   assert.equal(resolveCharacterScene(db).entries.length, 0);
   const profiles = Array.from({ length: 8 }, (_, i) => ({ ...a, id: `p${i}` }));
   db = normalizeProfileLibrary({ profiles, selection: profiles.map((profile) => ({ profileId: profile.id })) });
-  assert.equal(resolveCharacterScene(db).entries.length, 6);
+  const scene = resolveCharacterScene(db);
+  assert.equal(scene.entries.length, 8);
+  const v4 = applyCharacterScene(snapshot(), scene);
+  assert.throws(() => buildNovelAIRequest(v4.params, v4.characterScene.characterPrompts), /6/);
+  const v5 = applyCharacterScene(snapshot('novelai', 'nai-diffusion-5-full'), scene);
+  assert.equal(buildNovelAIRequest(v5.params, v5.characterScene.characterPrompts).parameters.characterPrompts.length, 8);
 });
 test('locked appearance and outfit reject generated changes while allowing character-specific action and expression', () => {
   const scene = resolveCharacterScene(library());

@@ -19,10 +19,14 @@ export function replaceSelectedScene(plan, index, replacement, locks = []) {
     if (old[field] === undefined) delete next[field];
     else next[field] = structuredClone(old[field]);
   }
+  if (locks.includes('characters')) {
+    if (old.characterIds === undefined) delete next.characterIds;
+    else next.characterIds = structuredClone(old.characterIds);
+  }
   if (base.illustrations?.length) { base.illustrations[index] = next; syncPrimaryIllustration(base); }
   else {
     base.shouldDraw = next.shouldDraw;
-    for (const field of [...SCENE_LOCK_FIELDS.map(([key]) => key), 'reason']) {
+    for (const field of [...SCENE_LOCK_FIELDS.map(([key]) => key), 'reason', 'characterIds']) {
       if (next[field] === undefined) delete base[field]; else base[field] = structuredClone(next[field]);
     }
   }

@@ -331,7 +331,14 @@ export function comicPanelSnapshot(base, project, panel) {
     } else throw new Error('当前接口或模型未启用人物参考图能力，请更换模型或在项目角色中取消参考图');
   }
   const scene = normalizeCharacterScene(project.characterScene);
-  if (scene) scene.entries = scene.entries.filter((entry) => panel.characterIds.includes(entry.profileId));
+  if (scene) {
+    scene.entries = scene.entries.filter((entry) => panel.characterIds.includes(entry.profileId)).map((entry) => {
+      const direction = panel.characters.find((row) => row.profileId === entry.profileId);
+      return { ...entry, ...(direction?.position !== undefined ? { position: direction.position } : {}),
+        ...(direction?.interaction ? { interaction: direction.interaction } : {}) };
+    });
+    delete scene.applied; delete scene.characterPrompts;
+  }
   delete snapshot.characterScene;
   const result = applyCharacterScene(snapshot, scene, panel.characters);
   if (result.provider === 'openai' && !/nai-diffusion/i.test(params.model) && result.params.negative) {

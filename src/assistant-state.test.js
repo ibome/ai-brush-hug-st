@@ -60,6 +60,23 @@ test('deliberate blank fields and removed characters do not reappear through old
   assert.equal((await readDrawingState(ctx))[0].outfit, '');
 });
 
+test('manual corrections survive reload and undo with more than six drawing profiles', async () => {
+  const ctx = context();
+  const characters = Array.from({ length: 8 }, (_, index) => ({
+    profileId: `person-${index}`, name: `人物${index + 1}`, outfit: 'blue coat', evidence: '微笑着坐下',
+  }));
+  const scene = { chatKey: chatIdentity(ctx), entries: characters.map((row) => ({ profileId: row.profileId })) };
+  await saveDrawingState(ctx, (await bindSmartSlot(ctx, ctx.chat[1])).binding, characters, scene, []);
+  const state = await inspectDrawingState(ctx);
+  assert.equal(state.characters.length, 8);
+  const edit = await reviseDrawingState(ctx, request(state, { key: 'person-7', values: values('green coat') }));
+  const restored = await readDrawingState({ ...ctx, chat: structuredClone(ctx.chat) });
+  assert.equal(restored.length, 8);
+  assert.equal(restored.find((row) => row.profileId === 'person-7').outfit, 'green coat');
+  await undoDrawingState(ctx, request(edit.inspection), edit.undo);
+  assert.equal((await readDrawingState(ctx)).find((row) => row.profileId === 'person-7').outfit, 'blue coat');
+});
+
 test('same-message reanalysis respects a manual snapshot and later evidence advances it normally', async () => {
   const ctx = context(); await seed(ctx);
   const edited = await reviseDrawingState(ctx, request(await inspectDrawingState(ctx), { values: values() }));

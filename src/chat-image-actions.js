@@ -1,4 +1,5 @@
-import { nativeCharacterPrompts } from './character-profiles.js';
+import { nativeCharacterPrompts, normalizeCharacterScene, normalizeProfile } from './character-profiles.js';
+import { characterDynamics } from './multi-character-prompt.js';
 import { canRecoverGeneration } from './generation-recovery.js';
 import { chatPromptText, createChatPromptStyle, inferChatPromptStyle, normalizeChatPromptStyle } from './chat-prompt-style.js';
 
@@ -27,7 +28,7 @@ export function chatImagePromptText(row) {
     params.positive ? `正向提示词：\n${params.positive}` : '',
     params.negative ? `负面提示词：\n${params.negative}` : '',
   ];
-  if (nativeCharacterPrompts(snapshot?.provider, params.model) && snapshot?.characterScene?.applied) {
+  if (nativeCharacterPrompts(snapshot?.provider, params.model, params.characterMode) && snapshot?.characterScene?.applied) {
     for (const [index, role] of (snapshot.characterScene.characterPrompts || []).entries()) {
       sections.push(`角色 ${index + 1}${role.name ? `（${role.name}）` : ''}：\n${role.positive || ''}`
         + (role.negative ? `\n负面提示词：${role.negative}` : ''));
@@ -58,6 +59,46 @@ export function applyChatImageStyle(draft, current, samplePrompt = '', sourcePro
   if (!recorded && currentPrefix && scene.startsWith(`${currentPrefix}, `)) scene = scene.slice(currentPrefix.length + 2);
   next.chatPromptStyle = createChatPromptStyle(currentPrefix, scene);
   params.positive = chatPromptText(next.chatPromptStyle);
+  return next;
+}
+
+export function refreshChatImageCharacters(draft, profiles, currentScene) {
+  const next = structuredClone(draft), scene = normalizeCharacterScene(next.characterScene);
+  if (!scene?.entries.length) return next;
+  const live = normalizeCharacterScene(currentScene);
+  const warnings = [...(scene.warnings || [])];
+  if (!scene.directions) scene.directions = (scene.characterPrompts || []).map((role) => ({
+    profileId: role.id, action: characterDynamics(role.positive),
+  }));
+  scene.entries = scene.entries.map((entry) => {
+    const profile = normalizeProfile(profiles.find((row) => row.id === entry.profileId && row.enabled !== false));
+    if (!profile) {
+      warnings.push(`「${entry.profile.name}」的当前档案已停用或不存在，继续使用原图记录。`);
+      return entry;
+    }
+    const direction = scene.directions.find((row) => row.profileId === entry.profileId);
+    if (direction) { direction.appearance = ''; direction.outfit = ''; }
+    const active = live?.entries.find((row) => row.profileId === entry.profileId);
+    const updated = { ...entry, profile };
+    if (active) {
+      for (const key of ['outfitId', 'outfitMode', 'outfitPrompt', 'outfitScope']) {
+        delete updated[key];
+        if (Object.hasOwn(active, key)) updated[key] = active[key];
+      }
+    } else {
+      updated.outfitId = profile.defaultOutfitId;
+      for (const key of ['outfitMode', 'outfitPrompt', 'outfitScope']) delete updated[key];
+    }
+    return updated;
+  });
+  const params = next.params || next.config.params;
+  if (scene.applied) {
+    scene.basePositive = params.positive;
+    scene.baseNegative = params.negative;
+  }
+  delete scene.applied; delete scene.characterPrompts;
+  scene.warnings = [...new Set(warnings)];
+  next.characterScene = normalizeCharacterScene(scene);
   return next;
 }
 

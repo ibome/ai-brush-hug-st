@@ -18,12 +18,14 @@ export function renderCreationPreview(preview, stale = false) {
     ${preview.model !== preview.selectedModel ? `<p>所选模型：${esc(preview.selectedModel)}；本次使用上方对应的重绘模型。</p>` : ''}
     ${preview.transparent ? '<p>透明背景 PNG 已开启</p>' : preview.transparencyUnavailable ? '<p>本次实际模型不支持透明背景，将按普通图片生成。</p>' : ''}
     ${preview.pendingOutfits?.length ? `<p role="status">尚未应用的服装：${preview.pendingOutfits.map(esc).join('、')}。下方显示已应用配置。</p>` : ''}
+    ${preview.characters.length ? `<p>多角色：${esc(preview.characterTransport || '合并描述')} · ${preview.characters.length} 人</p>` : ''}
+    ${(preview.characterWarnings || []).map((warning) => `<p role="status">${esc(warning)}</p>`).join('')}
     <details class="prompt-sources" open><summary>提示词组成与来源</summary>
       <dl>${(preview.components || []).map((row) => `<div><dt>${esc(row.label)}<small>${esc(row.source)}</small></dt><dd>${esc(row.text || '未设置')}</dd></div>`).join('')}
       ${(preview.roles || []).map((row) => `<div><dt>${esc(row.name)}<small>${esc(row.source)}</small></dt><dd>
         <p>外貌：${esc(row.appearance || '未指定')}</p><p>服装：${esc(row.outfit)}</p>${row.action ? `<p>动作 / 表情：${esc(row.action)}</p>` : ''}</dd></div>`).join('')}</dl></details>
     <label class="ui-field"><span>合并正向提示词</span><textarea rows="4" readonly aria-label="预览合并正向提示词">${esc(preview.positive)}</textarea></label>
     <label class="ui-field"><span>合并负面提示词</span><textarea rows="3" readonly aria-label="预览合并负面提示词">${esc(preview.negative)}</textarea></label>
-    ${preview.characters.map((entry) => `<details><summary>${esc(entry.name)} · ${esc(POSITION_OPTIONS.find(([id]) => id === entry.position)?.[1] || '自动')}</summary><p>${esc(entry.positive)}</p>${entry.negative ? `<p>负面：${esc(entry.negative)}</p>` : ''}</details>`).join('')}
+    ${preview.characters.map((entry) => `<details><summary>${esc(entry.name)} · ${esc(POSITION_OPTIONS.find(([id]) => id === entry.position)?.[1] || entry.position || '自动')}</summary><p>${esc(entry.positive)}</p>${entry.negative ? `<p>负面：${esc(entry.negative)}</p>` : ''}</details>`).join('')}
   </section>`;
 }

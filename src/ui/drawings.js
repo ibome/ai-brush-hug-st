@@ -106,7 +106,7 @@ export function restoreSnapshot(state, snapshot) {
   else if (value.provider === 'sdwebui') state.sdwebui = normalizeSDWebUI(value.partial ? { ...state.sdwebui, ...value.params } : value.params);
   else state.comfyui = clone(value.config);
   state.provider = value.provider;
-  state.characterSceneOverride = value.characterScene?.entries?.length ? clone(value.characterScene) : null;
+  state.characterSceneOverride = value.characterScene ? clone(value.characterScene) : null;
   state.characterSceneOverrideProvider = state.characterSceneOverride ? value.provider : '';
   return value.partial ? `已覆盖图片中记录的 ${providerTitle(value.provider)} 参数，未记录的项已保留` : `已覆盖当前 ${providerTitle(value.provider)} 参数`;
 }

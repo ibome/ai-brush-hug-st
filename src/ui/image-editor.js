@@ -6,6 +6,7 @@ import { renderComfyParameters } from './comfyui.js';
 import { renderSDWebUIParameters } from './sdwebui.js';
 import { normalizeVersion } from '../../server/linghuashi-storage/image-versions.mjs';
 import { imageEditAvailability } from '../image-edit.js';
+import { POSITION_OPTIONS, POSITION_GRID } from '../character-layout.js';
 
 const command = (name, label, action, disabled = false, reason = '') => `<button type="button" class="ui-button" data-action="${action}" ${disabled ? 'disabled' : ''} ${reason ? `title="${esc(reason)}"` : ''}>${icon(name)}<span>${label}</span></button>`;
 
@@ -39,7 +40,7 @@ export function renderImageEditor(item, ui, advancedHTML = '') {
       ${roles.length ? `<section class="image-edit-roles"><h3>本图角色提示词</h3>${roles.map((role, index) => `<div>
         <label class="ui-field"><span>${esc(role.name)} · 正向提示词</span><textarea rows="3" maxlength="12000" data-image-edit-role="${index}" data-role-field="positive">${esc(role.positive)}</textarea></label>
         <label class="ui-field"><span>${esc(role.name)} · 负面提示词</span><textarea rows="2" maxlength="4000" data-image-edit-role="${index}" data-role-field="negative">${esc(role.negative)}</textarea></label>
-        <label class="ui-field"><span>${esc(role.name)} · 画面位置</span><select data-image-edit-role="${index}" data-role-field="position">${['auto', 'left', 'center', 'right', 'top', 'bottom'].map((position) => `<option value="${position}" ${role.position === position ? 'selected' : ''}>${({ auto: '自动', left: '左侧', center: '中央', right: '右侧', top: '上方', bottom: '下方' })[position]}</option>`).join('')}</select></label>
+        <label class="ui-field"><span>${esc(role.name)} · 画面位置</span><select data-image-edit-role="${index}" data-role-field="position" aria-label="${esc(role.name)} · 画面位置">${[...POSITION_OPTIONS, ...POSITION_GRID.map((position) => [position, `网格 ${position}`])].map(([position, label]) => `<option value="${position}" ${role.position === position ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       </div>`).join('')}</section>` : ''}</fieldset></div>
     <footer><span class="image-edit-status" role="status">${esc(ui.error || available.issue)}</span><div>${command('rotate-ccw', '恢复原参数', 'image-edit-reset', locked)}${command('sparkles', ui.submitting ? '正在加入任务' : '重绘为新版本', 'image-edit-generate', locked || Boolean(available.issue))}</div></footer>
   </dialog>`;
