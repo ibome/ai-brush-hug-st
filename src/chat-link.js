@@ -15,6 +15,7 @@ import { apiError } from './extension-api.js';
 import { createChatReader } from './chat-reader.js';
 import { canRecoverGeneration, unusableGenerationResponse, taskCapacityIssue } from './generation-recovery.js';
 import { createChatRenderQueue } from './chat-render-queue.js';
+import { branchParent, createChatAncestry, indexBranchImages } from './chat-branch.js';
 
 const labels = {
   preparing: '准备生图', confirming: '等待确认提示词', queued: '排队中', running: '正在生图',
@@ -46,6 +47,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   let channel;
   let dialogSession;
   let backgroundSync;
+  let branchImages;
+  const chatAncestry = createChatAncestry();
   const imageOperations = new Set();
   const imageLoads = new Map();
   const versionSelections = new Map();
@@ -59,9 +62,11 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   const syncRecords = createChatSync((chatKey) => store.sync(chatKey));
   const reader = createChatReader({
     getContext, settings, isBusy: isGenerating,
-    load: async (key) => {
+    load: async (key, context) => {
       await ready;
-      return store ? store.readerData(key) : { records: [], images: [], warnings: ['图片存储不可用，只能读取正文'] };
+      if (!store) return { records: [], images: [], warnings: ['图片存储不可用，只能读取正文'] };
+      const ancestors = await chatAncestry(context);
+      return { ...await store.readerData(key, { ancestors }), ancestors };
     },
     image: async (id, location) => store?.image(id, location),
     preview: (row) => row?.thumbnailURL || (row?.thumbnail instanceof Blob ? URL.createObjectURL(row.thumbnail) : ''),
@@ -98,6 +103,29 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       if (!destroyed) scheduledRender(true);
     });
     return state;
+  }
+  function loadBranchImages(context, chatKey) {
+    const parent = branchParent(context);
+    if (!parent) { branchImages = null; return null; }
+    const key = JSON.stringify([chatKey, parent]);
+    if (branchImages?.key !== key) branchImages = { key, refreshAt: 0 };
+    const state = branchImages;
+    if (!state.loading && Date.now() >= state.refreshAt) {
+      state.loading = true;
+      void (async () => {
+        try {
+          const ancestors = await chatAncestry(context);
+          if (branchImages !== state || destroyed) return;
+          const data = await store.readerData(null, { ancestors, refresh: false });
+          state.lookup = indexBranchImages(data, ancestors);
+        } finally {
+          state.loading = false;
+          state.refreshAt = Date.now() + 15000;
+          if (branchImages === state && !destroyed) scheduledRender(true);
+        }
+      })().catch(() => {});
+    }
+    return state.lookup;
   }
   async function reconcileSafely(local = false) {
     try { await reconcile(local); }
@@ -164,6 +192,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     const options = settings();
     const chatKey = chatIdentity(context);
     const readRecord = (id) => store.get(id, { fast: true });
+    const inherited = options.enabled && chatKey ? loadBranchImages(context, chatKey) : null;
+    const locations = ['server', 'local'].includes(options.cacheLocation) ? ['server', 'browser'] : ['browser', 'server'];
     const assistant = normalizeAssistant(options.assistant);
     if (!options.auto && !assistant.autoPrompt) pendingReplies.clear();
     const visible = new Map();
@@ -173,23 +203,37 @@ export function createChatLink({ account, getContext, settings, send, open, noti
         const message = context.chat[Number(node.getAttribute('mesid'))];
         const text = message?.mes;
         const slots = await bindImageSlots(context, message, options.triggerPrefix, options.triggerSuffix);
+        const known = new Map();
+        const findRecord = async (slot) => {
+          const own = await readRecord(slot.binding.id);
+          return own || await inherited?.(context, message, slot, locations);
+        };
         if (!slots.length) {
           const smart = await bindSmartSlot(context, message);
           if (smart) {
             slots.push(smart);
-            const parent = await readRecord(smart.binding.id);
-            for (let index = 1; index < illustrationPlans(parent?.assistant).length; index++) {
+            const parent = await findRecord(smart);
+            known.set(smart.binding.id, parent);
+            const count = illustrationPlans(parent?.assistant).length;
+            for (let index = 1; index < (inherited ? 4 : count); index++) {
               const child = await bindSmartSlot(context, message, index);
-              if (child) slots.push(child);
+              if (!child) continue;
+              if (index >= count) {
+                const record = await findRecord(child);
+                if (!record) continue;
+                known.set(child.binding.id, record);
+              }
+              slots.push(child);
             }
           }
         }
         for (const slot of slots) {
+          const record = known.has(slot.binding.id) ? known.get(slot.binding.id) : await findRecord(slot);
           let entry = entries.get(slot.binding.id);
           if (!entry || entry.message !== message) {
-            entry = { ...slot, message, text, record: await readRecord(slot.binding.id) };
+            entry = { ...slot, message, text, record };
             entries.set(slot.binding.id, entry);
-          } else entry.record = await readRecord(slot.binding.id);
+          } else entry.record = record;
           if (entry.binding.kind === 'smart') entry.prompt = entry.record?.assistant?.positive || '';
           if (bindingIsCurrent(entry, context, options)) visible.set(entry.binding.id, { entry, node });
         }
@@ -398,6 +442,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     section.className = 'slot';
     section.dataset.slot = entry.binding.id;
     const record = entry.record;
+    const inherited = record?.binding?.id && record.binding.id !== entry.binding.id;
     const checking = preparingSlots.has(entry.binding.id);
     const owned = checking || requests.has(record?.requestId);
     const pending = checking || CHAT_PENDING.has(record?.status);
@@ -405,7 +450,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       document.getElementById('linghuashi-extension-host')?.dataset.theme,
       checking, owned, pending, entry.progress,
       record && [record.status, record.phase, record.error, record.recoverable,
-        record.taskId, record.requestId, record.savedIds, record.assistant]];
+        record.taskId, record.requestId, record.savedIds, record.assistant, record.binding?.id]];
     section.innerHTML = `<header><strong>${smart ? `灵画师 · 智能配图${entry.binding.slot ? ` ${entry.index + 1}` : ''}` : `灵画师 · 配图 ${entry.index + 1}`}</strong><span class="status"></span><div class="actions"></div></header><details class="prompt-details"><summary>提示词</summary><p class="prompt"></p></details>`;
     section.querySelector('.prompt').textContent = entry.prompt;
     if (smart && !record) {
@@ -418,7 +463,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     section.querySelector('.status').textContent = checking ? '正在核对已有任务' : pending && !owned
       ? record?.taskId ? '其他页面执行中，等待同步' : '任务记录待核对'
       : (record?.status === 'preparing' ? generationTransitionState(record)?.title : pending ? phases[record?.phase] : '')
-        || labels[record?.status] || '等待生成';
+        || (inherited ? '沿用来源聊天配图' : labels[record?.status]) || '等待生成';
     const command = (label, glyph, action, disabled = false) => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -457,7 +502,9 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       section.append(error);
     }
     if (record?.savedIds?.length) {
-      command('绘图管理', 'images', () => { open('gallery'); send('linghuashi:chat-view', { id: record.savedIds[0] }); });
+      if (inherited) {
+        if (!smart || entry.index === 0) command('在此分支生图', 'sparkles', () => { void request(entry, false); });
+      } else command('绘图管理', 'images', () => { open('gallery'); send('linghuashi:chat-view', { id: record.savedIds[0] }); });
       if (options.inline !== false && !store.imagesFresh(record.storageLocation)) loadImagesInBackground(record.storageLocation);
       if (options.inline !== false && !store.imagesReady(record.storageLocation)) {
         const loading = loadImagesInBackground(record.storageLocation);
@@ -482,7 +529,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
           }
           catch { imageReadFailed = true; break; }
           if (turn !== revision || destroyed) return container;
-          if (!row?.blob) continue;
+          if (!row?.blob || inherited && !chatImageBelongsTo(row, record.binding)) continue;
           const groupId = versionGroupId(row);
           if (displayed.has(groupId)) continue;
           displayed.add(groupId);
@@ -516,9 +563,14 @@ export function createChatLink({ account, getContext, settings, send, open, noti
             versions.map((version) => [version.id, version.version]),
             task && [task.id, task.status, task.phase, task.progress, task.error, task.remote, task.recoverable, Boolean(task.execution)],
             taskPending, versionSelections.get(versionKey)]);
-          appendImageTools({ container: picture, controlsContainer: controlsGroup, row, versions, task, pending: taskPending || pending, theme: options.characterTheme,
-            onAction: (action) => { void imageAction(entry, row, action, task); },
-            onVersion: (versionId) => { void selectImageVersion(entry, row, versionId); } });
+          if (inherited) {
+            controlsGroup.append(quickButton('arrow-down-to-line', '下载原图', () => { void imageAction(entry, row, 'download'); }));
+            if (row.snapshot) controlsGroup.append(quickButton('copy', '复制提示词', () => { void imageAction(entry, row, 'copy'); }));
+          } else {
+            appendImageTools({ container: picture, controlsContainer: controlsGroup, row, versions, task, pending: taskPending || pending, theme: options.characterTheme,
+              onAction: (action) => { void imageAction(entry, row, action, task); },
+              onVersion: (versionId) => { void selectImageVersion(entry, row, versionId); } });
+          }
           const selection = versionSelections.get(versionKey);
           if (selection && (selection.saving || selection.id !== row.id)) markVersionPending(picture, controlsGroup);
           pictures.append(picture);
@@ -541,7 +593,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
         } else if (!pictures.childElementCount) {
           section.querySelector('.status').textContent = record.storageLocation === 'server'
             ? '服务器图片已删除或文件缺失' : '浏览器图片已清理或位于其他设备';
-          command('重新生成', 'sparkles', () => { void request(entry, false); });
+          if (!inherited) command('重新生成', 'sparkles', () => { void request(entry, false); });
         }
       }
     }
@@ -621,7 +673,10 @@ export function createChatLink({ account, getContext, settings, send, open, noti
     if (versionSelections.has(`${row.storageLocation}:${versionGroupId(row)}`)) return;
     imageOperations.add(operation);
     try {
-      if (!chatImageBelongsTo(row, entry.binding)) throw new Error('配图与原消息的关联已变化，请刷新聊天');
+      const binding = entry.record?.binding || entry.binding;
+      if (!chatImageBelongsTo(row, binding) || (binding.id !== entry.binding.id && !['view', 'copy', 'download'].includes(action))) {
+        throw new Error('配图与原消息的关联已变化，请刷新聊天');
+      }
       if (action === 'favorite') {
         const latest = (await store.versions(row.id, row.storageLocation)).find((item) => item.id === row.id);
         if (!latest || !isCurrent(entry)) return;
@@ -651,7 +706,7 @@ export function createChatLink({ account, getContext, settings, send, open, noti
         else if (task?.requestId) await send(action === 'recover' ? 'linghuashi:chat-recover' : 'linghuashi:chat-cancel', { requestId: task.requestId });
       } else {
         open(action === 'restore' ? 'generate' : 'gallery');
-        await send('linghuashi:chat-image-open', { id: row.id, action, binding: entry.binding, storageLocation: row.storageLocation });
+        await send('linghuashi:chat-image-open', { id: row.id, action, binding, storageLocation: row.storageLocation });
       }
     } catch (error) { notice(error.message); }
     finally { imageOperations.delete(operation); }
@@ -789,7 +844,8 @@ export function createChatLink({ account, getContext, settings, send, open, noti
       void request(entry, false);
       return;
     }
-    const restored = data.binding ? entries.get(data.binding.id) : null;
+    const candidate = data.binding ? entries.get(data.binding.id) : null;
+    const restored = candidate?.record?.binding?.id && candidate.record.binding.id !== candidate.binding.id ? null : candidate;
     const entry = requests.get(data.requestId) || (restored?.record?.requestId === data.requestId
       || restored && store?.hasImageRequest(restored.binding.id, data.requestId) ? restored : null);
     if (entry && data.type === 'linghuashi:chat-draft-submit') {
@@ -900,7 +956,10 @@ export function createChatLink({ account, getContext, settings, send, open, noti
   }
   if (typeof BroadcastChannel !== 'undefined') {
     channel = new BroadcastChannel(`linghuashi-chat:${account}`);
-    channel.onmessage = scheduledRender;
+    channel.onmessage = () => {
+      if (branchImages) branchImages.refreshAt = 0;
+      scheduledRender();
+    };
   }
   scheduledRender();
   const syncTimer = setInterval(() => {

@@ -11,12 +11,14 @@
 <p>隔离存储和模拟任务，聊天正文持续发生无关更新。</p>
 <output id="checks">等待检查</output>
 <button id="check-stability">检查卡片稳定与进度更新</button>
+<button id="create-branch" hidden>创建测试分支</button>
+<button id="toggle-swipe" hidden>切换回复版本</button>
 <div id="chat"></div>
 <p id="notice" role="status"></p>
 <script type="module">
   import { randomUUID } from '../../src/crypto-compat.js';
   import { createChatLink } from '../../src/chat-link.js';
-  import { bindImageSlots } from '../../src/chat.js';
+  import { bindImageSlots, chatIdentity } from '../../src/chat.js';
   import { selectVersion } from '../../server/linghuashi-storage/image-versions.mjs';
 
   const parameters = new URLSearchParams(location.search);
@@ -42,10 +44,12 @@
   article.querySelector('.mes_text').prepend(decoration);
   document.querySelector('#chat').append(article);
   const slot = (await bindImageSlots(context, message))[0];
+  const branchTest = parameters.has('branch');
+  const sourceName = context.chatId;
   let record, saved = false, submissions = 0, updates = 0, sawProgress = false, mutations = 0, firstCardMs;
   let sawPicture = false, lostPicture = false;
   const startedAt = performance.now();
-  if (parameters.has('existing')) {
+  if (parameters.has('existing') || branchTest) {
     saved = true;
     record = { binding:slot.binding, requestId:randomUUID(), status:'completed', savedIds:['fixture-lake'], updatedAt:Date.now() };
     if (parameters.has('multiple')) record.savedIds.push('fixture-second');
@@ -59,6 +63,7 @@
       version:{ groupId:id === 'fixture-lake-v2' ? 'fixture-lake' : id, number:id === 'fixture-lake-v2' ? 2 : 1 },
   }));
   const calls = [], opened = [];
+  let originalRecord;
   let observation = null;
   let imageRequest;
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,6 +85,11 @@
       decoded:Boolean(shadow?.querySelector('.picture img')?.naturalWidth),
       recognized: observation?.recognized.length || 0, inserted: observation?.inserted.length || 0,
       secureContext:window.isSecureContext, viewport:document.documentElement.clientWidth,
+      ...(branchTest ? {
+        chat: context.chatId, swipe: context.chat[0].swipe_id, image: shadow?.querySelector('.picture-entry')?.dataset.image,
+        originals: rows.filter((row) => row.chatBinding.id === slot.binding.id).map((row) => row.id),
+        generatedIn: calls.findLast((row) => row.type === 'linghuashi:chat-generate')?.binding.chatKey,
+      } : {}),
     }, null, 2);
   };
   const link = createChatLink({ account, getContext:() => context, settings:() => settings,
@@ -89,8 +99,8 @@
       if (parameters.has('scan-slow') && ['task/list', 'chat/list', 'list'].includes(action)) await delay(3000);
       if (slow && ['chat/get', 'chat/list', 'task/list', 'list'].includes(action)) await delay(250);
       if (action === 'task/list') return { rows:[] };
-      if (action === 'chat/list') return record ? [structuredClone(record)] : [];
-      if (action === 'chat/get') return structuredClone(record);
+      if (action === 'chat/list') return [record, originalRecord].filter((row) => row?.binding.chatKey === body.chatKey).map((row) => structuredClone(row));
+      if (action === 'chat/get') return structuredClone([record, originalRecord].find((row) => row?.binding.id === body.id));
       if (action === 'chat/reserve') {
         record = { binding:body.binding, requestId:body.requestId, status:'preparing', savedIds:[], updatedAt:Date.now() };
         return structuredClone(record);
@@ -100,7 +110,8 @@
         record = { ...record, ...body.value, updatedAt:Date.now() };
         return structuredClone(record);
       }
-      if (action === 'list') return { rows:saved ? rows.map((row) => ({ ...row, chatRequestId:record.requestId })) : [] };
+      if (action === 'list') return { rows:saved ? rows.map((row) => ({ ...row,
+        chatRequestId:row.chatRequestId || (originalRecord || record)?.requestId })) : [] };
       if (action === 'favorite') {
         rows = rows.map((row) => row.id === body.id ? { ...row, favorite:body.favorite } : row);
         return {};
@@ -136,7 +147,10 @@
       setTimeout(async () => {
         saved = true;
         if (context.streamingProcessor) context.streamingProcessor.isFinished = true;
-        await link.receive({ type:'linghuashi:chat-task', requestId:data.requestId, status:'completed', savedIds:['fixture-lake'] });
+        const imageId = branchTest ? 'fixture-second' : 'fixture-lake';
+        if (branchTest) rows.push({ ...rows[0], id:imageId, chatBinding:data.binding,
+          version:{ groupId:imageId, number:1 }, chatRequestId:data.requestId });
+        await link.receive({ type:'linghuashi:chat-task', requestId:data.requestId, status:'completed', savedIds:[imageId] });
       }, 1800);
     },
   });
@@ -147,6 +161,26 @@
       requestId:record.requestId, savedIds:record.savedIds, ...value }); },
   };
   const checkTimer = setInterval(checks, 50);
+  if (branchTest) {
+    settings.auto = true;
+    const create = document.querySelector('#create-branch'), swipe = document.querySelector('#toggle-swipe');
+    create.hidden = false;
+    create.onclick = () => {
+      context.chatId = 'branch-copy';
+      context.chatMetadata = { main_chat: sourceName };
+      context.chat = [structuredClone(message)];
+      originalRecord = record;
+      record = null;
+      create.disabled = true;
+      swipe.hidden = false;
+      link.refresh();
+    };
+    swipe.onclick = () => {
+      context.chat[0].swipe_id = 1 - context.chat[0].swipe_id;
+      article.querySelector('.mes_text').textContent = context.chat[0].mes;
+      link.refresh();
+    };
+  }
   document.querySelector('#check-stability').onclick = async () => {
     clearInterval(checkTimer);
     const card = document.querySelector('.linghuashi-chat-images');

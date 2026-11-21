@@ -59,6 +59,22 @@ test('only the selected version is included and deleted selection falls back to 
   d.records[0].savedIds = ['pic-0'];
   assert.equal(images(await buildReadingSnapshot(c, options, d))[0].id, 'pic-0');
 });
+test('a Tavern branch reads and exports inherited images and prefers its own new pictures', async () => {
+  const { c, d } = await fixture();
+  const branch = { ...c, chatId: 'branch', chatMetadata: { main_chat: c.chatId }, chat: structuredClone(c.chat) };
+  d.ancestors = [chatIdentity(c)];
+  const reader = createChatReader({ getContext: () => branch, settings: () => options, load: async () => d,
+    image: async (id) => d.images.find((item) => item.id === id), preview: () => '' });
+  let snapshot = await reader.receive('reader-read', {});
+  assert.deepEqual(images(snapshot).map((pic) => pic.id), ['pic-0', 'pic-1']);
+  assert.equal((await reader.receive('reader-image', { chatKey: snapshot.chatKey, revision: snapshot.revision, key: 'browser:pic-0' })).blob.size, 5);
+  const [slot] = await bindImageSlots(branch, branch.chat[0], options.triggerPrefix, options.triggerSuffix);
+  d.images.push(row('branch-new-image', slot.binding, { storageLocation: 'server' }));
+  snapshot = await reader.receive('reader-read', {});
+  assert.deepEqual(images(snapshot).map((pic) => pic.id), ['branch-new-image', 'pic-1']);
+  branch.chat[0].swipe_id = 1;
+  assert.ok(images(await reader.receive('reader-read', {})).every((pic) => pic.missing));
+});
 test('browser and server pictures remain distinct, missing images carry their source floor', async () => {
   const { c, d, slots } = await fixture();
   d.images.push(row('pic-0', slots[0].binding, { storageLocation: 'server' }));

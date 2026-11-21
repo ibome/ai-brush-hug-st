@@ -145,22 +145,31 @@ export async function openChatStore(account, { mode = () => 'browser', request: 
     return { ...row, storageLocation: location };
   };
   return {
-    async readerData(chatKey) {
-      invalidateImages();
+    async readerData(chatKey, { ancestors = [], refresh = true } = {}) {
+      if (refresh) invalidateImages();
+      const keys = new Set([chatKey, ...ancestors].filter(Boolean));
+      if (!keys.size) return { records: [], images: [], warnings: [] };
+      const serverRecords = async () => {
+        const batches = await Promise.allSettled([...keys].map((key) => serverRequest('chat/list', { chatKey: key })));
+        return [batches.flatMap((batch) => batch.status === 'fulfilled' ? batch.value : []),
+          batches.some((batch) => batch.status === 'rejected')];
+      };
       const results = await Promise.allSettled([
-        Promise.all([requestResult(db.transaction('meta', 'readonly').objectStore('meta').getAll()), imageRows('browser')]),
-        serverRequest ? Promise.all([serverRequest('chat/list', { chatKey }), imageRows('server')]) : Promise.resolve([[], []]),
+        Promise.all([requestResult(db.transaction('meta', 'readonly').objectStore('meta').getAll()).then((rows) => [rows, false]), imageRows('browser')]),
+        serverRequest ? Promise.all([serverRecords(), imageRows('server')]) : Promise.resolve([[[], false], []]),
       ]);
       const records = [], images = [], warnings = [];
       results.forEach((result, index) => {
         const location = index === 0 ? 'browser' : 'server';
+        const warning = `${index === 0 ? '浏览器' : '酒馆服务器'}图片记录暂时无法读取，部分配图可能缺失`;
         if (result.status !== 'fulfilled') {
-          warnings.push(`${index === 0 ? '浏览器' : '酒馆服务器'}图片记录暂时无法读取，部分配图可能缺失`);
+          warnings.push(warning);
           return;
         }
-        const [saved, rows] = result.value;
-        records.push(...saved.filter((row) => row.binding?.chatKey === chatKey).map((row) => ({ ...row, storageLocation: location })));
-        images.push(...rows.filter((row) => row.chatBinding?.chatKey === chatKey).map((row) => ({ ...row, storageLocation: location })));
+        const [[saved, incomplete], rows] = result.value;
+        if (incomplete) warnings.push(warning);
+        records.push(...saved.filter((row) => keys.has(row.binding?.chatKey)).map((row) => ({ ...row, storageLocation: location })));
+        images.push(...rows.filter((row) => keys.has(row.chatBinding?.chatKey)).map((row) => ({ ...row, storageLocation: location })));
       });
       return { records, images, warnings };
     },

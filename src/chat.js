@@ -43,6 +43,24 @@ export async function digest(value) {
   return sha256Hex(new TextEncoder().encode(value));
 }
 
+function messageIdentity(context, message) {
+  // Date and speaker survive message deletion/reordering; index is only a fallback.
+  return message.send_date
+    ? [String(message.send_date), String(message.name || '')]
+    : ['undated', context.chat.indexOf(message), String(message.name || '')];
+}
+
+function slotId(chatKey, identity, { swipe, branch, slot, kind }, prompt) {
+  const fields = kind === 'smart' ? ['smart', ...(slot ? [slot] : [])] : [slot, prompt];
+  return digest(JSON.stringify([chatKey, identity, swipe, branch, ...fields]));
+}
+
+export async function bindAncestorSlot(context, message, slot, chatKey) {
+  const binding = { ...slot.binding, chatKey };
+  binding.id = await slotId(chatKey, messageIdentity(context, message), binding, slot.prompt);
+  return binding;
+}
+
 export async function bindImageSlots(context, message, prefix, suffix) {
   const chatKey = chatIdentity(context);
   if (!chatKey || !eligibleMessage(message)) return [];
@@ -51,19 +69,14 @@ export async function bindImageSlots(context, message, prefix, suffix) {
   const prompts = parseImageTags(text, prefix, suffix);
   if (!prompts.length) return [];
   const branch = await digest(text);
-  // Date and speaker survive message deletion/reordering; index is only a fallback.
-  const identity = message.send_date
-    ? [String(message.send_date), String(message.name || '')]
-    : ['undated', context.chat.indexOf(message), String(message.name || '')];
-  return Promise.all(prompts.map(async (slot) => ({
-    ...slot,
-    binding: {
-      id: await digest(JSON.stringify([chatKey, identity, swipe, branch, slot.index, slot.prompt])),
-      chatKey, branch, swipe, slot: slot.index,
+  const identity = messageIdentity(context, message);
+  return Promise.all(prompts.map(async (slot) => {
+    const binding = { chatKey, branch, swipe, slot: slot.index,
       characterName: String(context.name2 || message.name || '').slice(0, 120),
       chatName: String(context.getCurrentChatId?.() ?? context.chatId ?? '').slice(0, 120),
-    },
-  })));
+    };
+    return { ...slot, binding: { ...binding, id: await slotId(chatKey, identity, binding, slot.prompt) } };
+  }));
 }
 
 export async function bindSmartSlot(context, message, slot = 0) {
@@ -71,14 +84,11 @@ export async function bindSmartSlot(context, message, slot = 0) {
   if (!chatKey || !eligibleMessage(message) || !Number.isInteger(slot) || slot < 0 || slot > 3) return null;
   const branch = await digest(message.mes);
   const swipe = Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0;
-  const identity = message.send_date ? [String(message.send_date), String(message.name || '')]
-    : ['undated', context.chat.indexOf(message), String(message.name || '')];
-  return { index: slot, prompt: '', binding: {
-    id: await digest(JSON.stringify([chatKey, identity, swipe, branch, 'smart', ...(slot ? [slot] : [])])),
-    chatKey, branch, swipe, slot, kind: 'smart',
+  const binding = { chatKey, branch, swipe, slot, kind: 'smart',
     characterName: String(context.name2 || message.name || '').slice(0, 120),
     chatName: String(context.getCurrentChatId?.() ?? context.chatId ?? '').slice(0, 120),
-  } };
+  };
+  return { index: slot, prompt: '', binding: { ...binding, id: await slotId(chatKey, messageIdentity(context, message), binding, '') } };
 }
 
 export function bindingIsCurrent(entry, context, settings) {

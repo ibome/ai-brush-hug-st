@@ -1,5 +1,6 @@
 import { bindImageSlots, bindSmartSlot, chatIdentity, digest, eligibleMessage } from './chat.js';
 import { chatImageBelongsTo } from './chat-image-actions.js';
+import { branchParent, indexBranchImages } from './chat-branch.js';
 import { currentDrawing, versionGroupId } from '../server/linghuashi-storage/image-versions.mjs';
 
 export const READER_LIMITS = Object.freeze({ messages: 3000, characters: 4000000, images: 600, exportBytes: 64 * 1024 * 1024 });
@@ -47,12 +48,13 @@ export function readerParts(text, placements) {
 const sameBinding = (a, b) => a && b && ['id', 'chatKey', 'branch', 'swipe', 'slot'].every((key) => a[key] === b[key]);
 const imageKey = (row) => `${row.storageLocation}:${row.id}`;
 const dimension = (value) => Number.isFinite(Number(value)) ? Math.max(1, Math.min(32768, Math.round(Number(value)))) : 1;
-function slotImages(binding, data, index) {
+function slotImages(binding, data, index, inherited) {
   const result = [], groups = new Set();
   for (const location of ['browser', 'server']) {
+    if (inherited && inherited.storageLocation !== location) continue;
     const rows = data.images.filter((row) => row.storageLocation === location);
-    const record = data.records.find((row) => row.storageLocation === location && sameBinding(row.binding, binding));
-    const ids = [...new Set([...(record?.savedIds || []),
+    const record = inherited || data.records.find((row) => row.storageLocation === location && sameBinding(row.binding, binding));
+    const ids = inherited?.savedIds || [...new Set([...(record?.savedIds || []),
       ...rows.filter((row) => chatImageBelongsTo(row, binding)).map((row) => row.id)])];
     for (const id of ids) {
       const selected = currentDrawing(rows, id);
@@ -76,9 +78,12 @@ export async function buildReadingSnapshot(context, settings, data, range, signa
   const chatKey = chatIdentity(context), chat = context.chat || [];
   if (!chatKey) throw new Error('请先打开聊天');
   const { start, end } = readerRange(chat.length, range), messages = [], source = [];
+  const ancestors = data.ancestors || [];
+  const chatKeys = new Set([chatKey, ...ancestors]);
+  const inherited = indexBranchImages(data, ancestors);
   const smartSlots = new Map();
   for (const binding of [...data.records.map((row) => row.binding), ...data.images.map((row) => row.chatBinding)]) {
-    if (binding?.kind !== 'smart' || binding.chatKey !== chatKey) continue;
+    if (binding?.kind !== 'smart' || !chatKeys.has(binding.chatKey)) continue;
     if (!smartSlots.has(binding.branch)) smartSlots.set(binding.branch, new Set());
     smartSlots.get(binding.branch).add(binding.slot);
   }
@@ -96,12 +101,16 @@ export async function buildReadingSnapshot(context, settings, data, range, signa
       const candidates = !tagged.length && smartSlots.size ? smartSlots.get(await digest(body)) : null;
       const slots = tagged.length ? tagged : (await Promise.all([...(candidates || [])].map((slot) => bindSmartSlot(context, message, slot)))).filter(Boolean);
       for (const slot of slots) {
-        const pictures = slotImages(slot.binding, data, index);
+        let pictures = slotImages(slot.binding, data, index);
+        let record = data.records.find((row) => sameBinding(row.binding, slot.binding));
+        if (!pictures.length && !record && ancestors.length) {
+          record = await inherited(context, message, slot, ['browser', 'server']);
+          if (record) pictures = slotImages(record.binding, data, index, record);
+        }
         if (!tagged.length && !pictures.length) continue;
         if (!pictures.length) pictures.push({ key: `pending:${slot.binding.id}`, index, missing: true, title: '此处暂无已保存配图' });
         images += pictures.length;
         if (images > READER_LIMITS.images) throw new Error('所选配图超过 600 张，请缩小楼层范围');
-        const record = data.records.find((row) => sameBinding(row.binding, slot.binding));
         const position = tagged.length ? slot.start : anchorEnd(body, record?.assistant?.anchor);
         placements.push({ start: position, end: tagged.length ? slot.end : position, slot: slot.binding.slot, images: pictures });
       }
@@ -125,7 +134,7 @@ export function createChatReader({ getContext, settings, load, image, preview, i
       if (characters > READER_LIMITS.characters) throw new Error('所选正文超过 400 万字符，请缩小楼层范围');
       return [row?.mes, row?.swipe_id || 0, row?.name, row?.is_user, row?.is_system, row?.send_date];
     });
-    return JSON.stringify([context.chat?.length, context.name2, rows]);
+    return JSON.stringify([context.chat?.length, context.name2, branchParent(context), rows]);
   }
   async function collect(range, signal) {
     if (destroyed) throw new Error('图文阅读已关闭');
@@ -141,7 +150,7 @@ export function createChatReader({ getContext, settings, load, image, preview, i
       }
       return current;
     };
-    const data = await load(key);
+    const data = await load(key, context);
     const snapshot = await buildReadingSnapshot(check(), settings(), data, range, signal);
     check();
     return { snapshot, data };
