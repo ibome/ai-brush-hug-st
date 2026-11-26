@@ -1,6 +1,6 @@
 export const RELEASE = Object.freeze({
-  version: '0.26.17',
-  build: '20261122-chat-branches',
+  version: '0.26.18',
+  build: '20261126-preset-key-fallback',
   repository: 'ibome/ai-brush-hug-st',
   url: 'https://github.com/ibome/ai-brush-hug-st',
   storageProtocol: 2,

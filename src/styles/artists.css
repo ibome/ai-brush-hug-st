@@ -4,6 +4,7 @@
 .named-connections small { color: var(--muted); font-weight: normal; }
 .named-connection-actions { display: flex; gap: 3px; flex-wrap: wrap; }
 .preset-binding { margin-bottom: 18px; }
+.preset-binding-note { margin: -10px 0 18px; color: var(--secondary); font-size: 12px; }
 .artist-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
 .artist-toolbar .search-input { flex: 1; min-width: 180px; }
 .artist-toolbar > select { max-width: 170px; min-height: 36px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font: inherit; padding: 6px 9px; }

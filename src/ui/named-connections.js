@@ -1,6 +1,6 @@
 import { escapeHtml as esc } from '../config.js';
 import { icon } from '../icons.js';
-import { normalizeConnection } from '../connections.js';
+import { normalizeConnection, resolvePresetConnection } from '../connections.js';
 
 export function renderNamedConnections(state, manage = false) {
   const provider = state.provider, entries = state.connectionProfiles[provider], id = state.connectionProfileIds[provider];
@@ -13,9 +13,17 @@ export function renderNamedConnections(state, manage = false) {
   </div>`;
 }
 
-export function renderPresetBinding(state) {
+export function renderPresetBinding(state, preset) {
   const provider = state.provider, binding = state.presetBindings[provider];
+  let note = '';
+  if (binding && binding === (preset?.connectionProfileId || (preset?.connection ? 'legacy' : ''))) {
+    let connection;
+    try { connection = resolvePresetConnection(state, provider, preset); } catch {}
+    if (JSON.stringify(connection) !== JSON.stringify(normalizeConnection(provider, state.connections[provider]))) {
+      note = '<p class="preset-binding-note" role="status">当前使用接口配置中的接口。多个预设共用同一接口时，可选择「仅保存参数」，再保存预设。</p>';
+    }
+  }
   return `<label class="ui-field preset-binding"><span>预设关联接口</span><select data-preset-binding><option value="" ${!binding ? 'selected' : ''}>仅保存参数 · 保留当前接口</option>
     <option value="legacy" ${binding === 'legacy' ? 'selected' : ''}>保存当前接口与秘钥快照</option>
-    ${state.connectionProfiles[provider].map((entry) => `<option value="${esc(entry.id)}" ${binding === entry.id ? 'selected' : ''}>绑定：${esc(entry.name)}</option>`).join('')}</select></label>`;
+    ${state.connectionProfiles[provider].map((entry) => `<option value="${esc(entry.id)}" ${binding === entry.id ? 'selected' : ''}>绑定：${esc(entry.name)}</option>`).join('')}</select></label>${note}`;
 }

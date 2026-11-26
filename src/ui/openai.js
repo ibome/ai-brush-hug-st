@@ -2,7 +2,7 @@ import { randomUUID } from '../crypto-compat.js';
 import { escapeHtml as esc } from '../config.js';
 import { icon } from '../icons.js';
 import { samples } from './sample-data.js';
-import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding, resolvePresetConnection } from '../connections.js';
+import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding } from '../connections.js';
 import { normalizeAdvanced } from '../advanced-generation.js';
 import { independentCharacters, characterCaptionPayload, characterLimit } from '../character-layout.js';
 
@@ -98,13 +98,13 @@ export const selectedOpenAIPreset = (state) => state.openaiPresets.find((preset)
   || { id: 'default', name: '默认配置', params: { ...OPENAI_DEFAULTS } };
 export const openAIPresetDirty = (state) => JSON.stringify(normalizeOpenAI(state.openai))
   !== JSON.stringify(selectedOpenAIPreset(state).params) || connectionDirty(state, 'openai', selectedOpenAIPreset(state));
-export function loadOpenAIPreset(state, id) {
+export function loadOpenAIPreset(state, id, options) {
   const preset = id === 'default' ? { id, params: OPENAI_DEFAULTS } : state.openaiPresets.find((item) => item.id === id);
   if (!preset) throw new Error('找不到该预设');
-  resolvePresetConnection(state, 'openai', preset);
+  const params = normalizeOpenAI(preset.params);
+  applyPresetConnection(state, 'openai', preset, options);
   state.openaiPresetId = preset.id;
-  state.openai = normalizeOpenAI(preset.params);
-  applyPresetConnection(state, 'openai', preset);
+  state.openai = params;
   return preset;
 }
 export function saveOpenAIPreset(state, name) {

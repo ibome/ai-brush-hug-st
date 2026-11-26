@@ -4,9 +4,9 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "dist/index.js?ver=0.26.17&build=20261122-chat-branches",
+  "js": "dist/index.js?ver=0.26.18&build=20261126-preset-key-fallback",
   "author": "小波",
-  "version": "0.26.17",
+  "version": "0.26.18",
   "auto_update": false,
   "minimum_client_version": "1.12.13"
 }

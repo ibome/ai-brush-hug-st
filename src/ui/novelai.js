@@ -2,7 +2,7 @@ import { randomUUID } from '../crypto-compat.js';
 import { escapeHtml as esc } from '../config.js';
 import { icon } from '../icons.js';
 import { samples } from './sample-data.js';
-import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding, resolvePresetConnection } from '../connections.js';
+import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding } from '../connections.js';
 import { normalizeAdvanced } from '../advanced-generation.js';
 import { isNovelAIV5 } from '../novelai-models.js';
 
@@ -133,13 +133,13 @@ export function novelAIPresetDirty(state) {
     || connectionDirty(state, 'novelai', selectedNovelAIPreset(state));
 }
 
-export function loadNovelAIPreset(state, id) {
+export function loadNovelAIPreset(state, id, options) {
   const preset = id === 'default' ? { id, params: NOVELAI_DEFAULTS } : state.novelaiPresets.find((item) => item.id === id);
   if (!preset) throw new Error('找不到该预设');
-  resolvePresetConnection(state, 'novelai', preset);
+  const params = normalizeNovelAI(preset.params);
+  applyPresetConnection(state, 'novelai', preset, options);
   state.novelaiPresetId = preset.id;
-  state.novelai = normalizeNovelAI(preset.params);
-  applyPresetConnection(state, 'novelai', preset);
+  state.novelai = params;
   return preset;
 }
 

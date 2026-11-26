@@ -2,7 +2,7 @@ import { randomUUID } from '../crypto-compat.js';
 import { escapeHtml as esc } from '../config.js';
 import { icon } from '../icons.js';
 import { samples } from './sample-data.js';
-import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding, resolvePresetConnection } from '../connections.js';
+import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding } from '../connections.js';
 import { normalizeAdvanced } from '../advanced-generation.js';
 
 export const COMFY_FIELDS = Object.freeze({
@@ -206,13 +206,13 @@ export function comfyPresetDirty(state) {
     || connectionDirty(state, 'comfyui', selectedComfyPreset(state));
 }
 
-export function loadComfyPreset(state, id) {
+export function loadComfyPreset(state, id, options) {
   const preset = id === 'default' ? { id, config: newComfyConfig() } : state.comfyPresets.find((item) => item.id === id);
   if (!preset) throw new Error('找不到该工作流预设');
-  resolvePresetConnection(state, 'comfyui', preset);
+  const config = clone(preset.config);
+  applyPresetConnection(state, 'comfyui', preset, options);
   state.comfyPresetId = id;
-  state.comfyui = clone(preset.config);
-  applyPresetConnection(state, 'comfyui', preset);
+  state.comfyui = config;
   return preset;
 }
 

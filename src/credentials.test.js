@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCredentialVault } from './credential-vault.js';
 import { credentialError, credentialFailure, credentialSavedMessage } from './credential-errors.js';
-import { normalizeConnections, normalizeConnection, saveConnectionProfile, deleteConnectionProfile, setCurrentConnection } from './connections.js';
+import { normalizeConnections, normalizeConnection, preparePresetConnection, saveConnectionProfile, deleteConnectionProfile, setCurrentConnection } from './connections.js';
 globalThis.window = { addEventListener() {} };
 const { normalizeNovelAIState, saveNovelAIPreset, loadNovelAIPreset, novelAIPresetDirty } = await import('./ui/novelai.js');
 const { normalizeOpenAIState, saveOpenAIPreset, loadOpenAIPreset } = await import('./ui/openai.js');
 const { normalizeComfyState, saveComfyPreset, loadComfyPreset } = await import('./ui/comfyui.js');
+const { normalizeSDWebUIState, saveSDWebUIPreset, loadSDWebUIPreset } = await import('./ui/sdwebui.js');
+const { renderPresetBinding } = await import('./ui/named-connections.js');
 const { captureSnapshot } = await import('./ui/drawings.js');
 
 const storage = () => {
@@ -15,7 +17,7 @@ const storage = () => {
 };
 const fixture = () => {
   const state = {};
-  normalizeNovelAIState(state); normalizeOpenAIState(state); normalizeComfyState(state);
+  normalizeNovelAIState(state); normalizeOpenAIState(state); normalizeComfyState(state); normalizeSDWebUIState(state);
   normalizeConnections(state);
   return state;
 };
@@ -128,6 +130,61 @@ test('missing bindings reject before changing generation parameters', () => {
   state.novelaiPresets.push({ id: 'missing', name: 'Missing', params: { ...state.novelai, steps: 2 }, connectionProfileId: 'missing-service' });
   assert.throws(() => loadNovelAIPreset(state, 'missing'), /已删除/);
   assert.deepEqual(state.novelai, original);
+});
+
+test('preset parameters load independently when the bound key is unavailable', async () => {
+  for (const [provider, save, load, field] of [
+    ['novelai', saveNovelAIPreset, loadNovelAIPreset, 'novelai'],
+    ['openai', saveOpenAIPreset, loadOpenAIPreset, 'openai'],
+    ['comfyui', saveComfyPreset, loadComfyPreset, 'comfyui'],
+    ['sdwebui', saveSDWebUIPreset, loadSDWebUIPreset, 'sdwebui'],
+  ]) {
+    const state = fixture();
+    state.provider = provider;
+    const workingRef = 'browser:fb6ddca3-b81b-4461-86c6-2c4e1da68004';
+    setCurrentConnection(state, provider, { endpoint: 'https://unavailable.example', keyRef: ref });
+    const binding = provider === 'novelai' ? 'legacy' : saveConnectionProfile(state, provider, 'Other service').id;
+    state.presetBindings[provider] = binding;
+    const params = () => state[field].params || state[field];
+    params().positive = 'preset prompt';
+    const preset = save(state, 'Other parameters');
+    setCurrentConnection(state, provider, { endpoint: 'https://working.example', keyRef: workingRef });
+    const working = saveConnectionProfile(state, provider, 'Working service');
+    load(state, 'default');
+
+    const result = await preparePresetConnection(state, provider, preset, (keyRef) => {
+      assert.equal(keyRef, ref);
+      throw credentialError('CREDENTIAL_MISSING');
+    });
+    assert.equal(result.connection, null);
+    assert.equal(result.warning.code, 'CREDENTIAL_MISSING');
+    load(state, preset.id, { keepConnection: Boolean(result.warning) });
+    assert.equal(params().positive, 'preset prompt');
+    assert.deepEqual(state.connections[provider], working.connection);
+    assert.equal(state.connectionProfileIds[provider], working.id);
+    assert.equal(state.presetBindings[provider], binding);
+    assert.match(renderPresetBinding(state, preset), /当前使用接口配置中的接口/);
+
+    const restored = await preparePresetConnection(state, provider, preset, () => 'fixture-key');
+    assert.equal(restored.key, 'fixture-key');
+    assert.equal(restored.connection.keyRef, ref);
+    assert.equal(restored.warning, undefined);
+    load(state, preset.id);
+    assert.deepEqual(state.connections[provider], restored.connection);
+    assert.doesNotMatch(renderPresetBinding(state, preset), /当前使用接口配置中的接口/);
+  }
+});
+
+test('preset credential resolution distinguishes an absent binding, a keyless interface, and a missing key', async () => {
+  const state = fixture();
+  const readUnexpectedly = () => assert.fail('should not read a secret');
+  const paramsOnly = await preparePresetConnection(state, 'novelai', { connectionProfileId: '' }, readUnexpectedly);
+  assert.deepEqual(paramsOnly, { connection: null, key: '' });
+  const keyless = await preparePresetConnection(state, 'novelai', { connection: { endpoint: 'https://fixture.example' } }, readUnexpectedly);
+  assert.deepEqual(keyless, { connection: { endpoint: 'https://fixture.example', keyRef: '' }, key: '' });
+  const missing = await preparePresetConnection(state, 'novelai', { connection: { keyRef: ref } }, () => '');
+  assert.equal(missing.connection, null);
+  assert.ok(missing.warning);
 });
 
 test('image parameter snapshots exclude every provider connection and secret reference', () => {

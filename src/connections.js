@@ -1,4 +1,5 @@
 import { randomUUID } from './crypto-compat.js';
+import { credentialError, credentialFailure } from './credential-errors.js';
 export const CONNECTION_PROVIDERS = ['novelai', 'openai', 'comfyui', 'sdwebui'];
 const text = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const timeout = (value, fallback, max) => Math.max(5, Math.min(max, Math.round(Number(value) || fallback)));
@@ -90,8 +91,8 @@ export function connectionDirty(state, provider, preset) {
     !== JSON.stringify(normalizeConnection(provider, preset.connection));
 }
 
-export function applyPresetConnection(state, provider, preset) {
-  const value = resolvePresetConnection(state, provider, preset);
+export function applyPresetConnection(state, provider, preset, { keepConnection = false } = {}) {
+  const value = keepConnection ? null : resolvePresetConnection(state, provider, preset);
   if (state.presetBindings) state.presetBindings[provider] = preset?.connectionProfileId || (preset?.connection ? 'legacy' : '');
   if (!value) return;
   setCurrentConnection(state, provider, value);
@@ -127,6 +128,18 @@ export function resolvePresetConnection(state, provider, preset) {
   }
   return Object.hasOwn(preset || {}, 'connectionProfileId') ? null
     : preset?.connection ? normalizeConnection(provider, preset.connection) : null;
+}
+
+export async function preparePresetConnection(state, provider, preset, readKey) {
+  const connection = resolvePresetConnection(state, provider, preset);
+  if (!connection?.keyRef) return { connection, key: '' };
+  try {
+    const key = await readKey(connection.keyRef);
+    if (!key) throw credentialError('CREDENTIAL_MISSING');
+    return { connection, key };
+  } catch (error) {
+    return { connection: null, warning: credentialFailure(error, 'read') };
+  }
 }
 
 export function savePresetBinding(state, provider, preset) {

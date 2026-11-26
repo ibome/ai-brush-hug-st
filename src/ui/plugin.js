@@ -93,7 +93,7 @@ import { confirmDiscardChanges, confirmProfileDeletion } from './discard-changes
 import { requestAssistantText } from '../prompt-assistant.js';
 import '../styles/characters.css';
 import '../styles/profile-ai.css';
-import { CONNECTION_PROVIDERS, normalizeConnection, normalizeConnections, resolvePresetConnection,
+import { CONNECTION_PROVIDERS, normalizeConnection, normalizeConnections, preparePresetConnection,
   saveConnectionProfile, deleteConnectionProfile, setCurrentConnection } from '../connections.js';
 import { emptyArtist, normalizeArtistLibrary, saveArtist, importArtistLibrary, applyArtist } from '../artist-library.js';
 import { renderArtists, renderArtistDirectory, renderArtistQuickPick } from './artists.js';
@@ -2069,32 +2069,44 @@ async function loadCurrentPreset(provider, id) {
     await saveConnection(provider);
     const list = state[{ novelai: 'novelaiPresets', openai: 'openaiPresets', comfyui: 'comfyPresets', sdwebui: 'sdwebuiPresets' }[provider]];
     const preset = list.find((item) => item.id === id);
-    const connection = resolvePresetConnection(state, provider, preset);
-    const key = connection
-      ? await credentialRequest('read', provider, { ref: connection.keyRef }) : credentials[provider].key;
+    const currentKey = credentials[provider].key;
+    const currentRef = state.connections[provider].keyRef;
+    const { connection, key, warning } = await preparePresetConnection(state, provider, preset,
+      (ref) => currentKey && ref === currentRef ? currentKey : credentialRequest('read', provider, { ref }));
     const load = { novelai: loadNovelAIPreset, openai: loadOpenAIPreset, comfyui: loadComfyPreset, sdwebui: loadSDWebUIPreset }[provider];
-    load(state, id);
+    load(state, id, { keepConnection: Boolean(warning) });
+    keyVisible = false;
     if (connection) {
       Object.assign(credentials[provider], {
         key, endpoint: state.connections[provider].endpoint, auth: state.connections[provider].auth || 'none',
       });
       credentialState[provider].message = key ? credentialSavedMessage(connection.keyRef) : '';
       credentialState[provider].error = false;
+      resetConnection();
     }
-    keyVisible = false;
-    if (provider === 'openai') {
+    persist();
+    let syncFailed = false;
+    if (connection && provider === 'openai') {
       apiEditRevision++;
-      await syncAssistantConnection('openai');
+      try { await syncAssistantConnection('openai'); }
+      catch { syncFailed = true; }
     }
-    resetConnection();
-    persist(); render(); checkConnection();
-    toast(connection ? '关联接口、秘钥与参数已载入' : '参数已载入，当前接口与秘钥已保留');
+    render();
+    if (connection) void checkConnection();
+    if (warning) {
+      const reason = warning.code === 'CREDENTIAL_MISSING' ? '当前账号或浏览器无法读取预设关联的秘钥。' : warning.message;
+      toast(`参数已载入，继续使用当前接口。${reason}`);
+    }
+    else if (syncFailed) toast('参数和关联接口已载入，提示词助手的接口同步失败');
+    else toast(connection ? '关联接口与参数已载入' : '参数已载入，继续使用当前接口');
   });
 }
 
 function renderPresets(actions = '') {
-  return ({ novelai: renderNovelAIPresets, openai: renderOpenAIPresets, comfyui: renderComfyPresets, sdwebui: renderSDWebUIPresets })[state.provider](state, actions)
-    + renderPresetBinding(state);
+  const provider = state.provider;
+  const selected = { novelai: selectedNovelAIPreset, openai: selectedOpenAIPreset, comfyui: selectedComfyPreset, sdwebui: selectedSDWebUIPreset }[provider](state);
+  return ({ novelai: renderNovelAIPresets, openai: renderOpenAIPresets, comfyui: renderComfyPresets, sdwebui: renderSDWebUIPresets })[provider](state, actions)
+    + renderPresetBinding(state, selected);
 }
 
 function renderKeyInput(placeholder, extra = '') {

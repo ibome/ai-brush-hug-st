@@ -2,7 +2,7 @@ import { randomUUID } from '../crypto-compat.js';
 import { escapeHtml as esc } from '../config.js';
 import { icon } from '../icons.js';
 import { SDWEBUI_DEFAULTS, SDWEBUI_LIMITS, normalizeSDWebUI } from '../sdwebui.js';
-import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding, resolvePresetConnection } from '../connections.js';
+import { applyPresetConnection, connectionDirty, presetConnection, savePresetBinding } from '../connections.js';
 
 export function normalizeSDWebUIState(state) {
   state.sdwebui = normalizeSDWebUI(state.sdwebui);
@@ -20,12 +20,12 @@ export const selectedSDWebUIPreset = (state) => state.sdwebuiPresets.find((item)
   || { id: 'default', name: '默认配置', params: normalizeSDWebUI() };
 export const sdwebuiPresetDirty = (state) => JSON.stringify(normalizeSDWebUI(state.sdwebui)) !== JSON.stringify(selectedSDWebUIPreset(state).params)
   || connectionDirty(state, 'sdwebui', selectedSDWebUIPreset(state));
-export function loadSDWebUIPreset(state, id) {
+export function loadSDWebUIPreset(state, id, options) {
   const preset = id === 'default' ? { id, params: normalizeSDWebUI() } : state.sdwebuiPresets.find((item) => item.id === id);
   if (!preset) throw new Error('找不到该 SDWebUI 预设');
-  resolvePresetConnection(state, 'sdwebui', preset);
-  state.sdwebui = structuredClone(preset.params); state.sdwebuiPresetId = id;
-  applyPresetConnection(state, 'sdwebui', preset);
+  const params = structuredClone(preset.params);
+  applyPresetConnection(state, 'sdwebui', preset, options);
+  state.sdwebui = params; state.sdwebuiPresetId = id;
   return preset;
 }
 export function saveSDWebUIPreset(state, name) {
